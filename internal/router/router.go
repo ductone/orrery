@@ -216,6 +216,14 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 		if a.Model == s.CurrentModel {
 			return -1
 		}
+		if s.CurrentModel == "" && p.cfg.DefaultModel != "" {
+			if a.Model == p.cfg.DefaultModel {
+				return -1
+			}
+			if b.Model == p.cfg.DefaultModel {
+				return 1
+			}
+		}
 		return strings.Compare(a.Model, b.Model)
 	})
 	chosen := valid[0]

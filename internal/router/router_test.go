@@ -50,6 +50,19 @@ func TestFrontierFloor(t *testing.T) {
 		t.Fatalf("floor chose %s", d.Model.ID)
 	}
 }
+
+func TestDefaultModelBreaksInitialScoreTie(t *testing.T) {
+	l := &ledger{}
+	p := NewV1(config.RouterConfig{LambdaCost: .35, DefaultModel: "xai/grok-4.6"}, l)
+	d, _, err := p.Decide(context.Background(), RoutingState{SessionID: "s", Point: TurnStart, Phase: Plan, InputTokens: 1000, AvailableModels: []string{"xai/grok-4.5", "xai/grok-4.6"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Model.ID != "xai/grok-4.6" {
+		t.Fatalf("default-model tie-break chose %s", d.Model.ID)
+	}
+}
+
 func TestImplementRoutesEfficientAtDefaultWeight(t *testing.T) {
 	l := &ledger{}
 	p := NewV1(config.RouterConfig{LambdaCost: .35}, l)
