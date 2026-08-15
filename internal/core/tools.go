@@ -151,6 +151,8 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 	if phase == router.Explore {
 		child.Depth = 0
 		child.Budget.MaxDepth = 0
+		child.Budget.MaxTokens = min(child.Budget.MaxTokens, 150_000)
+		child.Budget.MaxUSD = min(child.Budget.MaxUSD, 0.35)
 	}
 	jobDecision, jobWhy, err := e.policy.Decide(ctx, jobState)
 	if err != nil {
