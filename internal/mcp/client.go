@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -249,8 +248,11 @@ func newStdio(ctx context.Context, argv []string) (*stdioClient, error) {
 func (c *stdioClient) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	b, _ := json.Marshal(rpcRequest{"2.0", c.id.Add(1), method, params})
-	if _, err := fmt.Fprintf(c.in, "Content-Length: %d\r\n\r\n%s", len(b), b); err != nil {
+	id := c.id.Add(1)
+	b, _ := json.Marshal(rpcRequest{"2.0", id, method, params})
+	// MCP stdio messages are single-line JSON-RPC messages. Content-Length
+	// framing belongs to LSP and is rejected by conforming MCP servers.
+	if _, err := c.in.Write(append(b, '\n')); err != nil {
 		return nil, err
 	}
 	type result struct {
@@ -259,31 +261,24 @@ func (c *stdioClient) Call(ctx context.Context, method string, params any) (json
 	}
 	ch := make(chan result, 1)
 	go func() {
-		line, err := c.out.ReadString('\n')
-		if err != nil {
-			ch <- result{nil, err}
-			return
-		}
-		n := 0
-		if strings.HasPrefix(strings.ToLower(line), "content-length:") {
-			n, _ = strconv.Atoi(strings.TrimSpace(strings.SplitN(line, ":", 2)[1]))
-			for {
-				h, e := c.out.ReadString('\n')
-				if e != nil {
-					ch <- result{nil, e}
-					return
-				}
-				if strings.TrimSpace(h) == "" {
-					break
-				}
+		for {
+			line, err := c.out.ReadBytes('\n')
+			if err != nil {
+				ch <- result{nil, err}
+				return
 			}
-		} else {
-			ch <- result{nil, errors.New("invalid MCP framing")}
+			line = bytes.TrimSpace(line)
+			var envelope struct {
+				ID *int64 `json:"id"`
+			}
+			if json.Unmarshal(line, &envelope) != nil || envelope.ID == nil || *envelope.ID != id {
+				// Notifications are intentionally deferred to phase boundaries by
+				// Manager. Ignore them here while waiting for this request's reply.
+				continue
+			}
+			ch <- result{line, nil}
 			return
 		}
-		raw := make([]byte, n)
-		_, err = io.ReadFull(c.out, raw)
-		ch <- result{raw, err}
 	}()
 	select {
 	case x := <-ch:
