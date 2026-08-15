@@ -168,6 +168,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		forceSynthesis := req.Workspace.Isolation == "shared-ro" && s.Turn >= 6
 		forceAdvance := parentJob == "" && s.Phase == string(router.Explore) && progress.phaseTurns >= 8
 		forcePlanSynthesis := parentJob == "" && s.Phase == string(router.Plan) && progress.delegated
+		forceImplementation := parentJob == "" && s.Phase == string(router.Implement) && progress.noProgressTurns >= 3 && !progress.edited
 		build := func(m model.ModelSpec, d router.Decision) (provider.Request, error) {
 			history, err := e.providerMessages(ctx, sid)
 			if err != nil {
@@ -185,6 +186,10 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			if forceAdvance || forcePlanSynthesis {
 				system += " The exploration turn limit has been reached. Existing evidence is sufficient. Read/search tools are unavailable for this turn; update the todo and plan, make the smallest justified edit, or run verification."
 				definitions = reg.DefinitionsOnly("todo", "edit", "job_result")
+			}
+			if forceImplementation {
+				system += " Implementation is stalled after decisive evidence. Only todo and edit are available. Make the smallest justified edit now."
+				definitions = reg.DefinitionsOnly("todo", "edit")
 			}
 			return provider.Request{System: system, DurableSpec: "TASK\n" + s.Spec + "\n\nDURABLE SUMMARY\n" + s.DurableSummary, Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the durable summary.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: definitions, MaxOutput: min(8000, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
 		}
