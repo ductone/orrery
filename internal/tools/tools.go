@@ -130,7 +130,7 @@ func (r *Registry) search(_ context.Context, a map[string]any) (any, error) {
 	}
 	glob := asString(a["glob"])
 	maxResults := asInt(a["max_results"], 200)
-	var out []map[string]any
+	out := []map[string]any{}
 	err = filepath.WalkDir(r.root, func(p string, d fs.DirEntry, e error) error {
 		if e != nil {
 			return nil
@@ -168,6 +168,17 @@ func (r *Registry) search(_ context.Context, a map[string]any) (any, error) {
 func globMatch(pattern, name string) bool {
 	pattern = filepath.ToSlash(pattern)
 	name = filepath.ToSlash(name)
+	if open := strings.IndexByte(pattern, '{'); open >= 0 {
+		if close := strings.IndexByte(pattern[open+1:], '}'); close >= 0 {
+			close += open + 1
+			for _, alternative := range strings.Split(pattern[open+1:close], ",") {
+				if globMatch(pattern[:open]+alternative+pattern[close+1:], name) {
+					return true
+				}
+			}
+			return false
+		}
+	}
 	if !strings.Contains(pattern, "/") {
 		ok, _ := path.Match(pattern, path.Base(name))
 		return ok
@@ -284,7 +295,7 @@ func commandSummary(path string, runErr error) (any, error) {
 	lines := strings.Split(string(b), "\n")
 	summary := lines
 	if len(lines) > 20 {
-		summary = append(append([]string{}, lines[:10]...), lines[len(lines)-10:]...)
+		summary = append(append(append([]string{}, lines[:10]...), fmt.Sprintf("... %d lines omitted; full output: %s ...", len(lines)-20, path)), lines[len(lines)-10:]...)
 	}
 	out := map[string]any{"ok": runErr == nil, "summary": strings.Join(summary, "\n"), "log": path}
 	if runErr != nil {

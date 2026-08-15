@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,6 +33,33 @@ func TestSearchGlobMatchesWorkspaceRelativePathRecursively(t *testing.T) {
 	}
 	if len(v.([]map[string]any)) != 1 {
 		t.Fatalf("results=%v", v)
+	}
+}
+
+func TestGlobMatchSupportsBraceAlternatives(t *testing.T) {
+	if !globMatch("frontend/**/*.{tsx,ts}", "frontend/components/core/view.tsx") {
+		t.Fatal("brace glob did not match")
+	}
+	if globMatch("frontend/**/*.{tsx,ts}", "frontend/components/core/view.go") {
+		t.Fatal("brace glob matched wrong suffix")
+	}
+}
+
+func TestCommandSummaryMarksOmittedLines(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "log")
+	lines := make([]string, 30)
+	for i := range lines {
+		lines[i] = fmt.Sprint(i)
+	}
+	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")), 0600); err != nil {
+		t.Fatal(err)
+	}
+	v, err := commandSummary(p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(v.(map[string]any)["summary"].(string), "lines omitted") {
+		t.Fatalf("summary=%v", v)
 	}
 }
 func TestReadScheme(t *testing.T) {
