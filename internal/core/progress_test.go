@@ -37,6 +37,27 @@ func TestProgressRecognizesEditsAndVerification(t *testing.T) {
 	}
 }
 
+func TestSuccessfulSpawnMarksDelegationAndNudgeIsOncePerPhase(t *testing.T) {
+	p := newProgressTracker()
+	p.beginTurn("explore")
+	p.observe(provider.ToolCall{Name: "spawn"}, map[string]any{"id": "job"}, nil)
+	if !p.delegated {
+		t.Fatal("successful spawn did not satisfy delegation")
+	}
+	p.phaseTurns = 7
+	if !p.shouldNudge() {
+		t.Fatal("expected phase nudge")
+	}
+	p.markNudged()
+	if p.shouldNudge() {
+		t.Fatal("nudge repeated in same phase")
+	}
+	p.beginTurn("implement")
+	if p.nudges != 0 {
+		t.Fatal("phase change did not reset nudge")
+	}
+}
+
 func isSuppressed(v any) bool {
 	m, _ := v.(map[string]any)
 	b, _ := m["suppressed"].(bool)

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,5 +41,13 @@ func TestCopyTreePrunesDependencies(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dst, "vendor")); !os.IsNotExist(err) {
 		t.Fatalf("vendor copied: %v", err)
+	}
+}
+
+func TestPrepareSharedReadOnlyUsesExistingCheckout(t *testing.T) {
+	root := t.TempDir()
+	got, isolation, err := prepareWorkspace(context.Background(), root, filepath.Join(t.TempDir(), "job"), "shared-ro")
+	if err != nil || got != root || isolation != "shared-ro" {
+		t.Fatalf("path=%q isolation=%q error=%v", got, isolation, err)
 	}
 }

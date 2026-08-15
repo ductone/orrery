@@ -26,6 +26,9 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		root = e.cfg.WorkspaceRoot
 	}
 	r := builtin.New(root)
+	if req.Workspace.Isolation == "shared-ro" {
+		r = builtin.NewReadOnly(root)
+	}
 	r.Add("todo", "Replace the ordered todo plan. Phase is explore, plan, implement, diagnose, review, or wrap-up.", obj(map[string]any{"items": map[string]any{"type": "array", "items": obj(map[string]any{"text": str(), "phase": str(), "status": map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "completed"}}}, "text", "phase", "status")}}, "items"), func(ctx context.Context, a map[string]any) (any, error) {
 		b, _ := json.Marshal(a["items"])
 		var ts []store.Todo
@@ -145,6 +148,10 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 		phase = router.Review
 	}
 	jobState := router.RoutingState{SessionID: sid, Turn: parentSession.Turn, Point: point, Phase: phase, InputTokens: estimate(spec), EstimatedOutput: 4000, AvailableModels: e.providers.AvailableIDs(), ImplementerFamily: model.Family(child.Hints.ImplementerFamily)}
+	if phase == router.Explore {
+		child.Depth = 0
+		child.Budget.MaxDepth = 0
+	}
 	jobDecision, jobWhy, err := e.policy.Decide(ctx, jobState)
 	if err != nil {
 		return nil, err
@@ -219,7 +226,9 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 func prepareWorkspace(ctx context.Context, src, jobDir, mode string) (string, string, error) {
 	dst := filepath.Join(jobDir, "workspace")
 	switch mode {
-	case "worktree", "shared-ro":
+	case "shared-ro":
+		return src, mode, nil
+	case "worktree":
 		cmd := exec.CommandContext(ctx, "git", "-C", src, "worktree", "add", "--detach", dst, "HEAD")
 		if out, err := cmd.CombinedOutput(); err == nil {
 			return dst, mode, nil
@@ -238,7 +247,10 @@ func prepareWorkspace(ctx context.Context, src, jobDir, mode string) (string, st
 }
 
 func cleanupWorkspace(parent, workspace, isolation string) {
-	if isolation == "worktree" || isolation == "shared-ro" {
+	if isolation == "shared-ro" {
+		return
+	}
+	if isolation == "worktree" {
 		cmd := exec.Command("git", "-C", parent, "worktree", "remove", "--force", workspace)
 		if cmd.Run() == nil {
 			return

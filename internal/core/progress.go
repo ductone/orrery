@@ -62,6 +62,9 @@ func (p *progressTracker) observe(call provider.ToolCall, value any, callErr err
 		switch name {
 		case "todo", "spawn":
 			p.turnProgress = true
+			if name == "spawn" {
+				p.delegated = true
+			}
 		case "edit":
 			p.turnProgress = true
 			p.turnEdited = true
@@ -83,7 +86,6 @@ func (p *progressTracker) observe(call provider.ToolCall, value any, callErr err
 func (p *progressTracker) endTurn() {
 	if p.turnProgress {
 		p.noProgressTurns = 0
-		p.nudges = 0
 		return
 	}
 	p.noProgressTurns++
@@ -94,7 +96,7 @@ func (p *progressTracker) shouldDelegate() bool {
 }
 
 func (p *progressTracker) shouldNudge() bool {
-	return (p.phase == "explore" || p.phase == "plan") && (p.noProgressTurns >= 4 || p.phaseTurns >= 7)
+	return p.nudges == 0 && (p.phase == "explore" || p.phase == "plan") && (p.noProgressTurns >= 4 || p.phaseTurns >= 7)
 }
 
 func (p *progressTracker) markNudged() { p.nudges++ }

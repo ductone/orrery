@@ -37,12 +37,17 @@ type commandJob struct {
 }
 
 func New(root string) *Registry {
-	r := &Registry{root: root, handlers: map[string]Handler{}, schemes: map[string]Handler{}, jobs: map[string]*commandJob{}}
-	r.add("read", "Read a file or directory. Files include hashline anchors.", schema(map[string]any{"path": str(), "start": num(), "limit": num()}, "path"), r.read)
-	r.add("search", "Regex search file contents with optional glob.", schema(map[string]any{"pattern": str(), "glob": str(), "max_results": num()}, "pattern"), r.search)
+	r := NewReadOnly(root)
 	r.add("edit", "Apply content-anchored hashline hunks. Structural declaration deletion is rejected unless explicitly allowed.", schema(map[string]any{"path": str(), "hunks": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"anchor": str(), "offset": num(), "delete": num(), "insert": map[string]any{"type": "array", "items": str()}, "allow_structural_change": boolean()}, "required": []string{"anchor", "delete", "insert"}, "additionalProperties": false}}}, "path", "hunks"), r.edit)
 	r.add("exec", "Run a shell command in the workspace. Use background=true for long jobs.", schema(map[string]any{"command": str(), "background": boolean(), "timeout_seconds": num()}, "command"), r.run)
 	r.add("job", "Wait for, cancel, or read logs from a background exec job.", schema(map[string]any{"id": str(), "action": map[string]any{"type": "string", "enum": []string{"wait", "cancel", "logs"}}}, "id", "action"), r.job)
+	return r
+}
+
+func NewReadOnly(root string) *Registry {
+	r := &Registry{root: root, handlers: map[string]Handler{}, schemes: map[string]Handler{}, jobs: map[string]*commandJob{}}
+	r.add("read", "Read a file or directory. Files include hashline anchors.", schema(map[string]any{"path": str(), "start": num(), "limit": num()}, "path"), r.read)
+	r.add("search", "Regex search file contents with optional glob.", schema(map[string]any{"pattern": str(), "glob": str(), "max_results": num()}, "pattern"), r.search)
 	return r
 }
 func (r *Registry) add(n, d string, s map[string]any, h Handler) {

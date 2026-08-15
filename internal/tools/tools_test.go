@@ -16,6 +16,16 @@ func TestExecFailureIsAnError(t *testing.T) {
 		t.Fatalf("value=%v error=%v", v, err)
 	}
 }
+func TestReadOnlyRegistryOmitsMutationAndShellTools(t *testing.T) {
+	r := NewReadOnly(t.TempDir())
+	names := map[string]bool{}
+	for _, d := range r.Definitions() {
+		names[d.Name] = true
+	}
+	if !names["read"] || !names["search"] || names["edit"] || names["exec"] || names["job"] {
+		t.Fatalf("tools=%v", names)
+	}
+}
 
 func TestSearchGlobMatchesWorkspaceRelativePathRecursively(t *testing.T) {
 	root := t.TempDir()
