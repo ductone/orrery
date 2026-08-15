@@ -1,0 +1,22 @@
+listen: "127.0.0.1:7433"
+workspace_root: "~/src"
+database: ".orrery/orrery.db"
+providers:
+  anthropic: {api_key: "!cmd op read op://dev/anthropic/key"}
+  openai: {api_key: "!cmd op read op://dev/openai/key"}
+  xai: {api_key: "!cmd op read op://dev/xai/key"}
+  together: {api_key: "!cmd op read op://dev/together/key"}
+mcp:
+  c1-gateway:
+    transport: http
+    url: "https://mcp.internal.example/v1"
+    auth_header: "!cmd op read op://dev/c1-gateway/token"
+router:
+  lambda_cost: 0.35
+  frontier_floor_phases: [plan, diagnose, review]
+  disable_switch: false
+budget:
+  session_usd: 25
+  job_default_fraction: 0.2
+telemetry:
+  otlp_endpoint: "http://localhost:4318"

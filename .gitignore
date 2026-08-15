@@ -1,0 +1,7 @@
+/orrery
+/orrery.yaml
+/.orrery/
+*.db
+*.db-shm
+*.db-wal
+coverage.out
