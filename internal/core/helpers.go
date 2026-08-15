@@ -18,6 +18,14 @@ func emptyFinalResponse(m provider.Message) bool {
 	return len(m.ToolCalls) == 0 && strings.TrimSpace(m.Content) == ""
 }
 
+func serializedToolCallResponse(m provider.Message) bool {
+	if len(m.ToolCalls) > 0 {
+		return false
+	}
+	content := strings.ToLower(m.Content)
+	return strings.Contains(content, "dsml") && strings.Contains(content, "tool_calls") || strings.Contains(content, "<tool_call")
+}
+
 func (e *Engine) compact(ctx context.Context, sid string, emit EmitFunc) {
 	msgs, _ := e.store.Messages(ctx, sid)
 	keepAt := compactionKeepIndex(msgs, 4)

@@ -63,3 +63,13 @@ func isSuppressed(v any) bool {
 	b, _ := m["suppressed"].(bool)
 	return b
 }
+
+func TestSerializedToolCallResponse(t *testing.T) {
+	m := provider.Message{Role: "assistant", Content: `<｜DSML｜tool_calls><｜DSML｜invoke name="read">x</｜DSML｜invoke></｜DSML｜tool_calls>`}
+	if !serializedToolCallResponse(m) {
+		t.Fatal("serialized DSML tool call accepted as final")
+	}
+	if serializedToolCallResponse(provider.Message{Role: "assistant", Content: `{"answer":"done"}`}) {
+		t.Fatal("ordinary final rejected")
+	}
+}

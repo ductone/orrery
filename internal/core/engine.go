@@ -167,6 +167,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		reg := e.toolRegistry(sid, parentJob, req, emit)
 		forceSynthesis := req.Workspace.Isolation == "shared-ro" && s.Turn >= 6
 		forceAdvance := parentJob == "" && s.Phase == string(router.Explore) && progress.phaseTurns >= 8
+		forcePlanSynthesis := parentJob == "" && s.Phase == string(router.Plan) && progress.delegated
 		build := func(m model.ModelSpec, d router.Decision) (provider.Request, error) {
 			history, err := e.providerMessages(ctx, sid)
 			if err != nil {
@@ -181,7 +182,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				system += " Exploration is now complete. No more tools are available. Synthesize the strongest existing evidence into the required result now."
 				definitions = nil
 			}
-			if forceAdvance {
+			if forceAdvance || forcePlanSynthesis {
 				system += " The exploration turn limit has been reached. Existing evidence is sufficient. Read/search tools are unavailable for this turn; update the todo and plan, make the smallest justified edit, or run verification."
 				definitions = reg.DefinitionsOnly("todo", "edit", "job_result")
 			}
@@ -235,6 +236,15 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				}
 				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Content: "Your last response was empty and cannot complete the task. Continue working, or provide a non-empty final result only after the task is actually complete."})
 				stall.HumanInterrupt = true
+				continue
+			}
+			if serializedToolCallResponse(resp.Message) {
+				progress.completionRejections++
+				e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "serialized tool call returned as final text", "attempt": progress.completionRejections}, emit)
+				if progress.completionRejections >= 3 {
+					return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "model returned serialized tool calls instead of a final result three times"}, emit)
+				}
+				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Content: "Your last response serialized a tool call as text, so it cannot complete the task. Do not emit tool markup. Synthesize the evidence already in context and return the required final result now."})
 				continue
 			}
 			if progress.edited && !progress.verified {
