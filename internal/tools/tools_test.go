@@ -45,6 +45,28 @@ func TestGlobMatchSupportsBraceAlternatives(t *testing.T) {
 	}
 }
 
+func TestSearchPrunesDependencyTrees(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{"frontend/view.tsx", "vendor/ignored.tsx", "node_modules/ignored.tsx"} {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("marker\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := New(root)
+	v, err := r.Call(context.Background(), "search", map[string]any{"pattern": "marker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := v.([]map[string]any)
+	if len(results) != 1 || results[0]["path"] != filepath.Join("frontend", "view.tsx") {
+		t.Fatalf("results=%v", results)
+	}
+}
+
 func TestCommandSummaryMarksOmittedLines(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "log")
 	lines := make([]string, 30)

@@ -123,7 +123,7 @@ func (r *Registry) read(ctx context.Context, a map[string]any) (any, error) {
 	hi := min(len(lines), lo+limit)
 	return lines[lo:hi], nil
 }
-func (r *Registry) search(_ context.Context, a map[string]any) (any, error) {
+func (r *Registry) search(ctx context.Context, a map[string]any) (any, error) {
 	re, err := regexp.Compile(asString(a["pattern"]))
 	if err != nil {
 		return nil, err
@@ -132,13 +132,19 @@ func (r *Registry) search(_ context.Context, a map[string]any) (any, error) {
 	maxResults := asInt(a["max_results"], 200)
 	out := []map[string]any{}
 	err = filepath.WalkDir(r.root, func(p string, d fs.DirEntry, e error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if e != nil {
 			return nil
 		}
 		if d.IsDir() {
-			if d.Name() == ".git" || d.Name() == ".orrery" {
+			if ignoredSearchDir(d.Name()) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		rel, _ := filepath.Rel(r.root, p)
@@ -163,6 +169,15 @@ func (r *Registry) search(_ context.Context, a map[string]any) (any, error) {
 		return nil
 	})
 	return out, err
+}
+
+func ignoredSearchDir(name string) bool {
+	switch name {
+	case ".git", ".orrery", ".task-worktrees", "node_modules", "vendor", "local_vendor", "bazel-bin", "bazel-out", "bazel-testlogs", ".cache":
+		return true
+	default:
+		return false
+	}
 }
 
 func globMatch(pattern, name string) bool {
