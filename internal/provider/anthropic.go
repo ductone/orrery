@@ -26,6 +26,7 @@ func newAnthropic(base string, keys []string) *anthropicClient {
 	}
 	return &anthropicClient{strings.TrimSuffix(base, "/"), p, httpClient(15 * time.Minute)}
 }
+func (c *anthropicClient) Available(now time.Time) bool { return c.pool.available(now) }
 func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Request) (Response, error) {
 	key, ok := c.pool.take(time.Now())
 	if !ok {
@@ -44,6 +45,17 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 		content := []any{}
 		if x.Content != "" {
 			content = append(content, map[string]any{"type": "text", "text": x.Content})
+		}
+		for _, image := range x.Images {
+			if image.Data != "" {
+				mediaType := image.MediaType
+				if mediaType == "" {
+					mediaType = "image/png"
+				}
+				content = append(content, map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": mediaType, "data": image.Data}})
+			} else if image.URL != "" {
+				content = append(content, map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": image.URL}})
+			}
 		}
 		for _, tc := range x.ToolCalls {
 			name := tc.Name

@@ -5,6 +5,7 @@ import (
 	"github.com/ductone/orrey/internal/config"
 	"github.com/ductone/orrey/internal/model"
 	"github.com/ductone/orrey/internal/store"
+	"strings"
 	"testing"
 )
 
@@ -12,6 +13,14 @@ type ledger struct{ records []store.RoutingRecord }
 
 func (l *ledger) Cache(context.Context, string, string) (store.CacheEntry, error) {
 	return store.CacheEntry{}, nil
+}
+
+func TestEmptyAvailableSetRejectsCooledProviders(t *testing.T) {
+	p := NewV1(config.RouterConfig{LambdaCost: .35}, &ledger{})
+	_, _, err := p.Decide(context.Background(), RoutingState{SessionID: "s", Phase: Plan, InputTokens: 1000, AvailableModels: []string{}})
+	if err == nil || !strings.Contains(err.Error(), "no compatible models") {
+		t.Fatalf("error=%v", err)
+	}
 }
 func (l *ledger) WriteRouting(_ context.Context, r store.RoutingRecord) error {
 	l.records = append(l.records, r)

@@ -39,11 +39,15 @@ const (
 )
 
 type StallSignals struct {
-	FailedCommands int     `json:"failed_commands"`
-	RepeatedEdits  int     `json:"repeated_edits"`
-	TestFailStreak int     `json:"test_fail_streak"`
-	ToolErrorRate  float64 `json:"tool_error_rate"`
-	HumanInterrupt bool    `json:"human_interrupt"`
+	FailedCommands   int     `json:"failed_commands"`
+	RepeatedEdits    int     `json:"repeated_edits"`
+	TestFailStreak   int     `json:"test_fail_streak"`
+	ToolErrorRate    float64 `json:"tool_error_rate"`
+	HumanInterrupt   bool    `json:"human_interrupt"`
+	NoProgressTurns  int     `json:"no_progress_turns"`
+	PhaseTurns       int     `json:"phase_turns"`
+	RepeatedReads    int     `json:"repeated_reads"`
+	RepeatedSearches int     `json:"repeated_searches"`
 }
 type CacheEstimate struct {
 	WarmTokens      int     `json:"warm_tokens,omitempty"`
@@ -132,7 +136,7 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 			candidates = append(candidates, c)
 			continue
 		}
-		if len(s.AvailableModels) > 0 && !slices.Contains(s.AvailableModels, m.ID) {
+		if s.AvailableModels != nil && !slices.Contains(s.AvailableModels, m.ID) {
 			c.Rejected = "provider not configured"
 			candidates = append(candidates, c)
 			continue
@@ -249,7 +253,7 @@ func quality(t model.Tier, p Phase, stall StallSignals) float64 {
 	if slices.Contains([]Phase{Explore, Implement, WrapUp}, p) && t == model.Efficient {
 		q += .20
 	}
-	if stall.FailedCommands >= 2 || stall.TestFailStreak >= 2 || stall.RepeatedEdits >= 3 {
+	if stalled(stall) {
 		if t == model.Frontier {
 			q += .25
 		} else {
@@ -257,6 +261,10 @@ func quality(t model.Tier, p Phase, stall StallSignals) float64 {
 		}
 	}
 	return q
+}
+
+func stalled(s StallSignals) bool {
+	return s.FailedCommands >= 2 || s.TestFailStreak >= 2 || s.RepeatedEdits >= 3 || s.NoProgressTurns >= 4 || s.PhaseTurns >= 7
 }
 func effortFor(m model.ModelSpec, s RoutingState) model.Effort {
 	want := model.EffortMedium

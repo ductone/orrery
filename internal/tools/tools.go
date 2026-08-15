@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -39,7 +40,7 @@ func New(root string) *Registry {
 	r := &Registry{root: root, handlers: map[string]Handler{}, schemes: map[string]Handler{}, jobs: map[string]*commandJob{}}
 	r.add("read", "Read a file or directory. Files include hashline anchors.", schema(map[string]any{"path": str(), "start": num(), "limit": num()}, "path"), r.read)
 	r.add("search", "Regex search file contents with optional glob.", schema(map[string]any{"pattern": str(), "glob": str(), "max_results": num()}, "pattern"), r.search)
-	r.add("edit", "Apply content-anchored hashline hunks.", schema(map[string]any{"path": str(), "hunks": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"anchor": str(), "offset": num(), "delete": num(), "insert": map[string]any{"type": "array", "items": str()}}, "required": []string{"anchor", "delete", "insert"}, "additionalProperties": false}}}, "path", "hunks"), r.edit)
+	r.add("edit", "Apply content-anchored hashline hunks. Structural declaration deletion is rejected unless explicitly allowed.", schema(map[string]any{"path": str(), "hunks": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"anchor": str(), "offset": num(), "delete": num(), "insert": map[string]any{"type": "array", "items": str()}, "allow_structural_change": boolean()}, "required": []string{"anchor", "delete", "insert"}, "additionalProperties": false}}}, "path", "hunks"), r.edit)
 	r.add("exec", "Run a shell command in the workspace. Use background=true for long jobs.", schema(map[string]any{"command": str(), "background": boolean(), "timeout_seconds": num()}, "command"), r.run)
 	r.add("job", "Wait for, cancel, or read logs from a background exec job.", schema(map[string]any{"id": str(), "action": map[string]any{"type": "string", "enum": []string{"wait", "cancel", "logs"}}}, "id", "action"), r.job)
 	return r
@@ -142,7 +143,7 @@ func (r *Registry) search(_ context.Context, a map[string]any) (any, error) {
 		}
 		rel, _ := filepath.Rel(r.root, p)
 		if glob != "" {
-			ok, _ := filepath.Match(glob, filepath.Base(p))
+			ok := globMatch(glob, filepath.ToSlash(rel))
 			if !ok {
 				return nil
 			}
@@ -162,6 +163,39 @@ func (r *Registry) search(_ context.Context, a map[string]any) (any, error) {
 		return nil
 	})
 	return out, err
+}
+
+func globMatch(pattern, name string) bool {
+	pattern = filepath.ToSlash(pattern)
+	name = filepath.ToSlash(name)
+	if !strings.Contains(pattern, "/") {
+		ok, _ := path.Match(pattern, path.Base(name))
+		return ok
+	}
+	var b strings.Builder
+	b.WriteString("^")
+	for i := 0; i < len(pattern); i++ {
+		switch pattern[i] {
+		case '*':
+			if i+1 < len(pattern) && pattern[i+1] == '*' {
+				i++
+				if i+1 < len(pattern) && pattern[i+1] == '/' {
+					i++
+					b.WriteString("(?:.*/)?")
+				} else {
+					b.WriteString(".*")
+				}
+			} else {
+				b.WriteString("[^/]*")
+			}
+		case '?':
+			b.WriteString("[^/]")
+		default:
+			b.WriteString(regexp.QuoteMeta(string(pattern[i])))
+		}
+	}
+	b.WriteString("$")
+	return regexp.MustCompile(b.String()).MatchString(name)
 }
 func (r *Registry) edit(_ context.Context, a map[string]any) (any, error) {
 	b, _ := json.Marshal(a)

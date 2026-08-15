@@ -23,9 +23,15 @@ type ToolCall struct {
 	ID, Name  string
 	Arguments map[string]any
 }
+type Image struct {
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
+}
 type Message struct {
 	Role, Content, ToolCallID, Reasoning string
 	ToolCalls                            []ToolCall
+	Images                               []Image `json:"images,omitempty"`
 }
 type Request struct {
 	System, DurableSpec, Plan string
@@ -82,6 +88,21 @@ func (p *pool) backoff(key string, d time.Duration) {
 			p.creds[i].backoffUntil = time.Now().Add(d)
 		}
 	}
+}
+
+func (p *pool) available(now time.Time) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, cred := range p.creds {
+		if !now.Before(cred.backoffUntil) {
+			return true
+		}
+	}
+	return false
+}
+
+type availability interface {
+	Available(time.Time) bool
 }
 
 type Registry struct {
@@ -143,11 +164,17 @@ func wireModel(id string) string {
 	return id
 }
 func (r *Registry) Available(spec model.ModelSpec) bool {
-	_, ok := r.clients[providerName(spec.ID)]
-	return ok
+	c, ok := r.clients[providerName(spec.ID)]
+	if !ok {
+		return false
+	}
+	if a, ok := c.(availability); ok {
+		return a.Available(time.Now())
+	}
+	return true
 }
 func (r *Registry) AvailableIDs() []string {
-	var out []string
+	out := []string{}
 	for _, m := range model.Catalog {
 		if r.Available(m) {
 			out = append(out, m.ID)

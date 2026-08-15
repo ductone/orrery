@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ductone/orrey/internal/agentproto"
 	"github.com/ductone/orrey/internal/model"
@@ -45,7 +46,7 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		e.emit(ctx, sid, "todo.updated", ts, emit)
 		return ts, nil
 	})
-	r.Add("spawn", "Create an in-process worker with isolated session state and a hard budget slice.", obj(map[string]any{"spec": str(), "result_schema": map[string]any{"type": "object"}, "budget_fraction": map[string]any{"type": "number"}, "review": map[string]any{"type": "boolean"}, "isolation": map[string]any{"type": "string", "enum": []string{"worktree", "copy", "shared-ro"}}}, "spec"), func(ctx context.Context, a map[string]any) (any, error) {
+	r.Add("spawn", "Create an in-process worker with isolated session state and a hard budget slice.", obj(map[string]any{"spec": str(), "result_schema": map[string]any{"type": "object"}, "budget_fraction": map[string]any{"type": "number"}, "review": map[string]any{"type": "boolean"}, "phase": map[string]any{"type": "string", "enum": []string{"explore", "plan", "implement", "diagnose", "review", "wrap-up"}}, "isolation": map[string]any{"type": "string", "enum": []string{"worktree", "copy", "shared-ro"}}}, "spec"), func(ctx context.Context, a map[string]any) (any, error) {
 		if req.Depth == 0 {
 			return nil, errors.New("spawn forbidden at depth 0")
 		}
@@ -136,6 +137,9 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 	}
 	point := router.JobCreation
 	phase := router.Implement
+	if requested := router.Phase(fmt.Sprint(a["phase"])); requested != "" {
+		phase = requested
+	}
 	if review {
 		point = router.ReviewCreation
 		phase = router.Review
@@ -154,11 +158,7 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 	e.emit(ctx, sid, "job.started", map[string]any{"id": id, "spec": spec, "model": jobDecision.Model.ID, "explanation": jobWhy}, emit)
 	go func() {
 		childSID := uuid.NewString()
-		phase := "plan"
-		if review {
-			phase = "review"
-		}
-		_ = e.store.CreateSession(context.Background(), store.Session{ID: childSID, Spec: spec, Phase: phase, Model: jobDecision.Model.ID, BudgetUSD: child.Budget.MaxUSD})
+		_ = e.store.CreateSession(context.Background(), store.Session{ID: childSID, Spec: spec, Phase: string(phase), Model: jobDecision.Model.ID, BudgetUSD: child.Budget.MaxUSD})
 		result := e.run(context.Background(), childSID, id, child, nil)
 		_ = e.store.FinishJob(context.Background(), id, string(result.Status), result.Result, result.Outcome)
 		_ = e.store.AddSpend(context.Background(), sid, result.Outcome.CostUSD)
@@ -168,6 +168,51 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 		e.emit(context.Background(), sid, "job.terminal", map[string]any{"id": id, "result": result}, emit)
 	}()
 	return map[string]any{"id": id, "status": "running", "uri": "job://" + id + "/result"}, nil
+}
+
+func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req agentproto.TaskRequest, emit EmitFunc) (bool, string, error) {
+	diffCmd := exec.CommandContext(ctx, "git", "-C", req.Workspace.Path, "diff", "--no-ext-diff", "--unified=40")
+	diff, err := diffCmd.CombinedOutput()
+	if err != nil {
+		return false, "", fmt.Errorf("collect diff: %w: %s", err, diff)
+	}
+	if len(diff) == 0 {
+		return true, "no diff", nil
+	}
+	if len(diff) > 120_000 {
+		diff = diff[:120_000]
+	}
+	job, err := e.spawn(ctx, sid, parent, req, map[string]any{
+		"spec":            "Review this proposed workspace diff. Report only correctness bugs introduced by the patch. Return JSON with pass=true only if there are no correctness findings.\n\nDIFF\n" + string(diff),
+		"result_schema":   map[string]any{"type": "object", "properties": map[string]any{"pass": map[string]any{"type": "boolean"}, "findings": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "required": []string{"pass", "findings"}},
+		"budget_fraction": 0.10,
+		"isolation":       "shared-ro",
+		"review":          true,
+		"phase":           "review",
+	}, emit)
+	if err != nil {
+		return false, "", err
+	}
+	id := fmt.Sprint(job.(map[string]any)["id"])
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false, "", ctx.Err()
+		case <-ticker.C:
+			j, getErr := e.store.Job(ctx, id)
+			if getErr != nil || j.Status == "running" {
+				continue
+			}
+			var result map[string]any
+			if json.Unmarshal([]byte(j.ResultJSON), &result) != nil {
+				return false, j.ResultJSON, nil
+			}
+			passed, _ := result["pass"].(bool)
+			return passed, store.JSON(result), nil
+		}
+	}
 }
 
 func prepareWorkspace(ctx context.Context, src, jobDir, mode string) (string, string, error) {

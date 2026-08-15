@@ -23,8 +23,23 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 			input = append(input, map[string]any{"type": "function_call_output", "call_id": x.ToolCallID, "output": x.Content})
 			continue
 		}
-		if x.Content != "" {
-			input = append(input, map[string]any{"role": x.Role, "content": x.Content})
+		if x.Content != "" || len(x.Images) > 0 {
+			if len(x.Images) == 0 {
+				input = append(input, map[string]any{"role": x.Role, "content": x.Content})
+			} else {
+				content := []any{}
+				if x.Content != "" {
+					textType := "input_text"
+					if x.Role == "assistant" {
+						textType = "output_text"
+					}
+					content = append(content, map[string]any{"type": textType, "text": x.Content})
+				}
+				for _, image := range x.Images {
+					content = append(content, map[string]any{"type": "input_image", "image_url": imageURL(image)})
+				}
+				input = append(input, map[string]any{"role": x.Role, "content": content})
+			}
 		}
 		for _, tc := range x.ToolCalls {
 			b, _ := json.Marshal(tc.Arguments)

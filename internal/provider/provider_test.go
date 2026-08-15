@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestOpenAICompatAssembly(t *testing.T) {
@@ -34,6 +35,27 @@ func TestOpenAICompatAssembly(t *testing.T) {
 		t.Fatalf("usage %+v", resp.Usage)
 	}
 }
+
+func TestOpenAIChatCarriesImages(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = w.Write([]byte(`{"model":"grok-4.6","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{}}`))
+	}))
+	defer srv.Close()
+	m, _ := model.Get("xai/grok-4.6")
+	c := newOpenAI(srv.URL, []string{"key"}, false)
+	_, err := c.Complete(context.Background(), m, Request{MaxOutput: 10, Messages: []Message{{Role: "user", Content: "inspect", Images: []Image{{MediaType: "image/png", Data: "aGVsbG8="}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := got["messages"].([]any)
+	content := messages[len(messages)-1].(map[string]any)["content"].([]any)
+	url := content[1].(map[string]any)["image_url"].(map[string]any)["url"].(string)
+	if url != "data:image/png;base64,aGVsbG8=" {
+		t.Fatalf("url=%q", url)
+	}
+}
 func TestAnthropicCacheAndUsage(t *testing.T) {
 	var got map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +74,26 @@ func TestAnthropicCacheAndUsage(t *testing.T) {
 	}
 	if got["output_config"].(map[string]any)["effort"] != "high" {
 		t.Fatalf("body %+v", got)
+	}
+}
+
+func TestAnthropicCarriesImages(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = w.Write([]byte(`{"model":"claude-fable-5","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}],"usage":{}}`))
+	}))
+	defer srv.Close()
+	m, _ := model.Get("anthropic/claude-fable-5")
+	c := newAnthropic(srv.URL, []string{"key"})
+	_, err := c.Complete(context.Background(), m, Request{MaxOutput: 10, Messages: []Message{{Role: "user", Images: []Image{{MediaType: "image/jpeg", Data: "aGVsbG8="}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := got["messages"].([]any)[0].(map[string]any)
+	image := message["content"].([]any)[0].(map[string]any)
+	if image["type"] != "image" {
+		t.Fatalf("content=%+v", message["content"])
 	}
 }
 
@@ -104,5 +146,17 @@ func TestCredentialBackoffIsRetryable(t *testing.T) {
 	}
 	if !IsRetryable(errors.Join(errors.New("model failed"), ErrCredentialsBackoff)) {
 		t.Fatal("wrapped credential backoff should remain retryable")
+	}
+}
+
+func TestCredentialPoolAvailabilityHonorsCooldown(t *testing.T) {
+	now := time.Now()
+	p := &pool{creds: []credential{{key: "a", backoffUntil: now.Add(time.Minute)}, {key: "b", backoffUntil: now.Add(-time.Second)}}}
+	if !p.available(now) {
+		t.Fatal("one usable credential should keep provider available")
+	}
+	p.creds[1].backoffUntil = now.Add(time.Minute)
+	if p.available(now) {
+		t.Fatal("provider should be unavailable while all credentials cool down")
 	}
 }

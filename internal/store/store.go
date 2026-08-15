@@ -117,6 +117,14 @@ func (s *Store) UpdateLatestJobRoutingOutcome(ctx context.Context, sid string, v
 	_, err := s.db.ExecContext(ctx, `UPDATE routing_records SET job_outcome_json=? WHERE id=(SELECT id FROM routing_records WHERE session_id=? AND decision_point IN ('spawn','review') AND job_outcome_json IS NULL ORDER BY created_at DESC LIMIT 1)`, JSON(v), sid)
 	return err
 }
+func (s *Store) UpdateLatestTurnRoutingOutcome(ctx context.Context, sid string, turn int, v any) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE routing_records SET turn_outcome_json=? WHERE id=(SELECT id FROM routing_records WHERE session_id=? AND turn=? AND decision_point IN ('turn','escalation') ORDER BY created_at DESC LIMIT 1)`, JSON(v), sid, turn)
+	return err
+}
+func (s *Store) UpdateSessionRoutingOutcome(ctx context.Context, sid string, v any) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE routing_records SET session_outcome_json=? WHERE session_id=?`, JSON(v), sid)
+	return err
+}
 
 type Message struct {
 	Role, ContentJSON string

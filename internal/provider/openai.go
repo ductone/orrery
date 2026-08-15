@@ -28,6 +28,7 @@ func newOpenAI(base string, keys []string, responses bool) *openAIClient {
 	}
 	return &openAIClient{strings.TrimSuffix(base, "/"), p, httpClient(15 * time.Minute), responses}
 }
+func (c *openAIClient) Available(now time.Time) bool { return c.pool.available(now) }
 func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Request) (Response, error) {
 	if c.responses {
 		return c.completeResponses(ctx, m, r)
@@ -45,7 +46,16 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 	}
 	for _, x := range r.Messages {
 		msg := map[string]any{"role": x.Role}
-		if x.Content != "" || m.Compat.RequiresAssistantText {
+		if len(x.Images) > 0 && x.Role != "tool" {
+			parts := []any{}
+			if x.Content != "" {
+				parts = append(parts, map[string]any{"type": "text", "text": x.Content})
+			}
+			for _, image := range x.Images {
+				parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]any{"url": imageURL(image)}})
+			}
+			msg["content"] = parts
+		} else if x.Content != "" || m.Compat.RequiresAssistantText {
 			msg["content"] = x.Content
 		}
 		if x.ToolCallID != "" {
@@ -147,6 +157,17 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 		msg.ToolCalls = append(msg.ToolCalls, ToolCall{tc.ID, tc.Function.Name, args})
 	}
 	return Response{Message: msg, Usage: Usage{InputTokens: out.Usage.Prompt, OutputTokens: out.Usage.Completion, CacheReadTokens: out.Usage.Details.Cached, CacheWriteTokens: out.Usage.Details.CacheWrite}, StopReason: ch.Finish, Latency: time.Since(start), Model: out.Model}, nil
+}
+
+func imageURL(image Image) string {
+	if image.URL != "" {
+		return image.URL
+	}
+	mediaType := image.MediaType
+	if mediaType == "" {
+		mediaType = "image/png"
+	}
+	return "data:" + mediaType + ";base64," + image.Data
 }
 func strictifySchema(s map[string]any) map[string]any { return strictify(s, false).(map[string]any) }
 func strictify(v any, nullable bool) any {

@@ -36,12 +36,21 @@ type TaskRequest struct {
 	Depth        uint32         `json:"depth"`
 }
 type Outcome struct {
-	Tokens      int           `json:"tokens"`
-	CostUSD     float64       `json:"cost_usd"`
-	Latency     time.Duration `json:"latency"`
-	ToolCalls   int           `json:"tool_calls"`
-	ToolErrors  int           `json:"tool_errors"`
-	EditRetries int           `json:"edit_retries"`
+	Tokens                int           `json:"tokens"`
+	CostUSD               float64       `json:"cost_usd"`
+	Latency               time.Duration `json:"latency"`
+	ToolCalls             int           `json:"tool_calls"`
+	ToolErrors            int           `json:"tool_errors"`
+	EditRetries           int           `json:"edit_retries"`
+	NoProgressTurns       int           `json:"no_progress_turns,omitempty"`
+	DuplicateReads        int           `json:"duplicate_reads,omitempty"`
+	DuplicateSearches     int           `json:"duplicate_searches,omitempty"`
+	ProgressNudges        int           `json:"progress_nudges,omitempty"`
+	CompletionRejects     int           `json:"completion_rejections,omitempty"`
+	ExplorationWorker     bool          `json:"exploration_worker,omitempty"`
+	Verified              bool          `json:"verified,omitempty"`
+	IndependentlyReviewed bool          `json:"independently_reviewed,omitempty"`
+	BudgetReason          string        `json:"budget_reason,omitempty"`
 }
 type ArtifactRef struct{ Path, Description string }
 type TaskResult struct {
