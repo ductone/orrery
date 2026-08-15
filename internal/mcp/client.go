@@ -28,7 +28,7 @@ type rpcRequest struct {
 	Params  any    `json:"params,omitempty"`
 }
 type rpcResponse struct {
-	ID     int64           `json:"id"`
+	ID     *int64          `json:"id,omitempty"`
 	Result json.RawMessage `json:"result"`
 	Error  *struct {
 		Code    int    `json:"code"`
@@ -37,6 +37,7 @@ type rpcResponse struct {
 }
 type Client interface {
 	Call(context.Context, string, any) (json.RawMessage, error)
+	Notify(context.Context, string, any) error
 	Close() error
 }
 type Server struct {
@@ -89,7 +90,9 @@ func (s *Server) initialize(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	_, _ = s.client.Call(ctx, "notifications/initialized", nil)
+	if err = s.client.Notify(ctx, "notifications/initialized", nil); err != nil {
+		return err
+	}
 	return s.refresh(ctx)
 }
 func (s *Server) refresh(ctx context.Context) error {
@@ -177,13 +180,42 @@ type httpClient struct {
 	headers   map[string]string
 	http      *http.Client
 	id        atomic.Int64
+	mu        sync.RWMutex
+	sessionID string
 }
 
 func (c *httpClient) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
-	b, _ := json.Marshal(rpcRequest{"2.0", c.id.Add(1), method, params})
+	id := c.id.Add(1)
+	b, _ := json.Marshal(rpcRequest{"2.0", id, method, params})
+	resp, raw, err := c.post(ctx, b)
+	if err != nil {
+		return nil, err
+	}
+	if method == "initialize" {
+		c.mu.Lock()
+		c.sessionID = resp.Header.Get("Mcp-Session-Id")
+		c.mu.Unlock()
+	}
+	return decodeHTTPResponse(raw, resp.Header.Get("Content-Type"), id)
+}
+
+func (c *httpClient) Notify(ctx context.Context, method string, params any) error {
+	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
+	_, _, err := c.post(ctx, b)
+	return err
+}
+
+func (c *httpClient) post(ctx context.Context, b []byte) (*http.Response, []byte, error) {
 	req, _ := http.NewRequestWithContext(ctx, "POST", c.url, bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("MCP-Protocol-Version", "2025-03-26")
+	c.mu.RLock()
+	sessionID := c.sessionID
+	c.mu.RUnlock()
+	if sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", sessionID)
+	}
 	if c.auth != "" {
 		req.Header.Set("Authorization", c.auth)
 	}
@@ -192,31 +224,59 @@ func (c *httpClient) Call(ctx context.Context, method string, params any) (json.
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, raw)
+		return nil, nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, raw)
 	}
-	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+	return resp, raw, nil
+}
+
+func decodeHTTPResponse(raw []byte, contentType string, id int64) (json.RawMessage, error) {
+	if strings.HasPrefix(contentType, "text/event-stream") {
 		for _, line := range strings.Split(string(raw), "\n") {
 			if strings.HasPrefix(line, "data:") {
-				raw = []byte(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-				break
+				candidate := []byte(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+				var envelope rpcResponse
+				if json.Unmarshal(candidate, &envelope) == nil && envelope.ID != nil && *envelope.ID == id {
+					raw = candidate
+					break
+				}
 			}
 		}
 	}
 	var out rpcResponse
-	if err = json.Unmarshal(raw, &out); err != nil {
+	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, err
 	}
 	if out.Error != nil {
 		return nil, fmt.Errorf("rpc %d: %s", out.Error.Code, out.Error.Message)
 	}
+	if out.ID == nil || *out.ID != id {
+		return nil, fmt.Errorf("MCP response ID mismatch")
+	}
 	return out.Result, nil
 }
-func (c *httpClient) Close() error { return nil }
+func (c *httpClient) Close() error {
+	c.mu.RLock()
+	sessionID := c.sessionID
+	c.mu.RUnlock()
+	if sessionID == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "DELETE", c.url, nil)
+	req.Header.Set("Mcp-Session-Id", sessionID)
+	req.Header.Set("MCP-Protocol-Version", "2025-03-26")
+	resp, err := c.http.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+	return err
+}
 
 type stdioClient struct {
 	cmd *exec.Cmd
@@ -296,6 +356,13 @@ func (c *stdioClient) Call(ctx context.Context, method string, params any) (json
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+func (c *stdioClient) Notify(_ context.Context, method string, params any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
+	_, err := c.in.Write(append(b, '\n'))
+	return err
 }
 func (c *stdioClient) Close() error {
 	_ = c.in.Close()

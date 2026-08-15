@@ -53,6 +53,31 @@ func TestAnthropicCacheAndUsage(t *testing.T) {
 		t.Fatalf("body %+v", got)
 	}
 }
+
+func TestAnthropicMapsNamespacedToolNames(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		tools := got["tools"].([]any)
+		name := tools[0].(map[string]any)["name"].(string)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model": "claude-fable-5", "stop_reason": "tool_use",
+			"content": []any{map[string]any{"type": "tool_use", "id": "call_1", "name": name, "input": map[string]any{}}},
+			"usage":   map[string]any{"input_tokens": 10, "output_tokens": 2},
+		})
+	}))
+	defer srv.Close()
+	m, _ := model.Get("anthropic/claude-fable-5")
+	c := newAnthropic(srv.URL, []string{"key"})
+	resp, err := c.Complete(context.Background(), m, Request{MaxOutput: 10, Tools: []Tool{{Name: "gateway.identity", InputSchema: map[string]any{"type": "object"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := got["tools"].([]any)[0].(map[string]any)["name"].(string)
+	if wire == "gateway.identity" || resp.Message.ToolCalls[0].Name != "gateway.identity" {
+		t.Fatalf("wire=%q response=%+v", wire, resp.Message.ToolCalls)
+	}
+}
 func TestOpenAIResponsesToolCall(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/responses" {

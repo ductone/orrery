@@ -3,6 +3,7 @@ package provider
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"github.com/ductone/orrey/internal/model"
@@ -31,6 +32,13 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 		return Response{}, fmt.Errorf("all credentials in backoff")
 	}
 	system := []any{map[string]any{"type": "text", "text": r.System + "\n\n" + r.DurableSpec + "\n\n" + r.Plan, "cache_control": map[string]any{"type": "ephemeral"}}}
+	toWire := map[string]string{}
+	fromWire := map[string]string{}
+	for _, t := range r.Tools {
+		wire := anthropicToolName(t.Name)
+		toWire[t.Name] = wire
+		fromWire[wire] = t.Name
+	}
 	msgs := []any{}
 	for _, x := range r.Messages {
 		content := []any{}
@@ -38,7 +46,11 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 			content = append(content, map[string]any{"type": "text", "text": x.Content})
 		}
 		for _, tc := range x.ToolCalls {
-			content = append(content, map[string]any{"type": "tool_use", "id": tc.ID, "name": tc.Name, "input": tc.Arguments})
+			name := tc.Name
+			if wire := toWire[name]; wire != "" {
+				name = wire
+			}
+			content = append(content, map[string]any{"type": "tool_use", "id": tc.ID, "name": name, "input": tc.Arguments})
 		}
 		if x.Role == "tool" {
 			content = []any{map[string]any{"type": "tool_result", "tool_use_id": x.ToolCallID, "content": x.Content}}
@@ -52,7 +64,7 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 	if len(r.Tools) > 0 {
 		var ts []any
 		for _, t := range r.Tools {
-			ts = append(ts, map[string]any{"name": t.Name, "description": t.Description, "input_schema": t.InputSchema})
+			ts = append(ts, map[string]any{"name": toWire[t.Name], "description": t.Description, "input_schema": t.InputSchema})
 		}
 		body["tools"] = ts
 	}
@@ -100,11 +112,29 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 			msg.Content += b.Text
 		}
 		if b.Type == "tool_use" {
-			msg.ToolCalls = append(msg.ToolCalls, ToolCall{b.ID, b.Name, b.Input})
+			name := b.Name
+			if internal := fromWire[name]; internal != "" {
+				name = internal
+			}
+			msg.ToolCalls = append(msg.ToolCalls, ToolCall{b.ID, name, b.Input})
 		}
 	}
 	return Response{Message: msg, Usage: Usage{wire.Usage.Input + wire.Usage.CacheRead + wire.Usage.CacheWrite, wire.Usage.Output, wire.Usage.CacheRead, wire.Usage.CacheWrite}, StopReason: wire.StopReason, Latency: time.Since(start), Model: wire.Model}, nil
 }
+
+func anthropicToolName(name string) string {
+	valid := len(name) > 0 && len(name) <= 128
+	for i := 0; valid && i < len(name); i++ {
+		c := name[i]
+		valid = c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-'
+	}
+	if valid {
+		return name
+	}
+	sum := sha256.Sum256([]byte(name))
+	return fmt.Sprintf("orrery_%x", sum[:12])
+}
+
 func mapRole(r string) string {
 	if r == "assistant" {
 		return r

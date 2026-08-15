@@ -15,8 +15,27 @@ import (
 func TestHTTPLifecycleAndBoundaryRefresh(t *testing.T) {
 	var lists atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			if r.Header.Get("Mcp-Session-Id") != "test-session" {
+				t.Error("missing session on delete")
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		var in rpcRequest
 		_ = json.NewDecoder(r.Body).Decode(&in)
+		if in.Method == "initialize" {
+			w.Header().Set("Mcp-Session-Id", "test-session")
+		} else if r.Header.Get("Mcp-Session-Id") != "test-session" {
+			t.Errorf("missing session for %s", in.Method)
+		}
+		if r.Header.Get("MCP-Protocol-Version") != "2025-03-26" {
+			t.Error("missing protocol version")
+		}
+		if in.Method == "notifications/initialized" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
 		var result any = map[string]any{}
 		switch in.Method {
 		case "tools/list":
@@ -24,6 +43,13 @@ func TestHTTPLifecycleAndBoundaryRefresh(t *testing.T) {
 			result = map[string]any{"tools": []any{map[string]any{"name": "ping", "description": "p", "inputSchema": map[string]any{"type": "object"}}}}
 		case "tools/call":
 			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "pong"}}}
+		}
+		if in.Method == "tools/list" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n"))
+			b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": in.ID, "result": result})
+			_, _ = w.Write([]byte("data: " + string(b) + "\n\n"))
+			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": in.ID, "result": result})
 	}))
@@ -85,6 +111,9 @@ func TestStdioHelperProcess(t *testing.T) {
 		var in rpcRequest
 		if json.Unmarshal(s.Bytes(), &in) != nil {
 			os.Exit(2)
+		}
+		if in.Method == "notifications/initialized" {
+			continue
 		}
 		result := any(map[string]any{})
 		switch in.Method {
