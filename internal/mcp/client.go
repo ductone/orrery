@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -123,6 +124,7 @@ func (m *Manager) Definitions() []provider.Tool {
 		out = append(out, s.tools...)
 		s.mu.RUnlock()
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 func (m *Manager) Call(ctx context.Context, name string, args map[string]any) (any, error) {

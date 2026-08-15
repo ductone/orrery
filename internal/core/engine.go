@@ -129,8 +129,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			return e.finish(sid, agentproto.TaskResult{Status: agentproto.BudgetExhausted, Outcome: outcome, Error: "budget exhausted"}, emit)
 		}
 		stored, _ := e.store.Messages(ctx, sid)
-		todos, _ := e.store.Todos(ctx, sid)
-		inputTokens := estimate(s.Spec + s.DurableSummary + messagesText(stored) + store.JSON(todos))
+		inputTokens := estimate(s.Spec + s.DurableSummary + messagesText(stored))
 		point := router.TurnStart
 		if stall.FailedCommands >= 2 || stall.TestFailStreak >= 2 || stall.RepeatedEdits >= 3 {
 			point = router.Escalation
@@ -152,8 +151,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			if err != nil {
 				return provider.Request{}, err
 			}
-			td, _ := e.store.Todos(ctx, sid)
-			return provider.Request{System: systemPrompt(d, req.Depth), DurableSpec: "TASK\n" + s.Spec + "\n\nDURABLE SUMMARY\n" + s.DurableSummary, Plan: "TODO\n" + store.JSON(td), CacheKey: sid + ":" + m.ID, Messages: history, Tools: reg.Definitions(), MaxOutput: min(8000, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
+			return provider.Request{System: systemPrompt(d, req.Depth), DurableSpec: "TASK\n" + s.Spec + "\n\nDURABLE SUMMARY\n" + s.DurableSummary, Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the durable summary.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: reg.Definitions(), MaxOutput: min(8000, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
 		}
 		var resp provider.Response
 		failed := []string{}
@@ -230,7 +228,8 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			_ = e.store.AddMessage(ctx, sid, "tool", toolMsg)
 			e.emit(ctx, sid, "tool.finished", map[string]any{"call": call, "result": value}, emit)
 		}
-		if inputTokens > decision.Model.ContextWindow*3/4 {
+		current, _ := e.store.Session(ctx, sid)
+		if current.Phase != s.Phase || inputTokens > decision.Model.ContextWindow*3/4 {
 			e.compact(ctx, sid, emit)
 		}
 	}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"net/http"
 	"sync"
 	"time"
@@ -151,6 +153,9 @@ func (r *Registry) AvailableIDs() []string {
 	return out
 }
 func (r *Registry) CompleteOne(ctx context.Context, d router.Decision, build RequestBuilder) (Response, error) {
+	ctx, span := otel.Tracer("orrery/provider").Start(ctx, "provider.request")
+	defer span.End()
+	span.SetAttributes(attribute.String("model", d.Model.ID))
 	c, ok := r.clients[providerName(d.Model.ID)]
 	if !ok {
 		return Response{}, fmt.Errorf("provider for %s not configured", d.Model.ID)

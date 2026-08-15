@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -21,13 +22,29 @@ type Client struct {
 
 func New(key string) *Client {
 	c := &Client{key: key}
-	c.http = &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	c.http = &http.Client{Transport: &http.Transport{DialContext: safeDial}, Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) > 5 {
 			return errors.New("too many redirects")
 		}
 		return validateURL(req.Context(), req.URL)
 	}}
 	return c
+}
+func safeDial(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return nil, err
+	}
+	for _, ip := range ips {
+		if publicIP(ip) {
+			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		}
+	}
+	return nil, fmt.Errorf("address %s has no public IP", host)
 }
 func (c *Client) Search(ctx context.Context, query string, count int) (any, error) {
 	if c.key == "" {
@@ -100,11 +117,30 @@ func validateURL(ctx context.Context, u *url.URL) error {
 		return err
 	}
 	for _, ip := range ips {
-		if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+		if !publicIP(ip) {
 			return fmt.Errorf("address %s is not public", ip)
 		}
 	}
 	return nil
+}
+
+var nonPublicPrefixes = []netip.Prefix{netip.MustParsePrefix("0.0.0.0/8"), netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("172.16.0.0/12"), netip.MustParsePrefix("192.0.0.0/24"), netip.MustParsePrefix("192.0.2.0/24"), netip.MustParsePrefix("192.168.0.0/16"), netip.MustParsePrefix("198.18.0.0/15"), netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("224.0.0.0/4"), netip.MustParsePrefix("240.0.0.0/4"), netip.MustParsePrefix("::/128"), netip.MustParsePrefix("::1/128"), netip.MustParsePrefix("fc00::/7"), netip.MustParsePrefix("fe80::/10"), netip.MustParsePrefix("ff00::/8"), netip.MustParsePrefix("2001:db8::/32")}
+
+func publicIP(ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	addr = addr.Unmap()
+	if !addr.IsGlobalUnicast() {
+		return false
+	}
+	for _, p := range nonPublicPrefixes {
+		if p.Contains(addr) {
+			return false
+		}
+	}
+	return true
 }
 func truncate(b []byte, n int) string {
 	if len(b) > n {

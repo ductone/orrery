@@ -39,3 +39,25 @@ func TestReviewUsesDifferentFamily(t *testing.T) {
 		t.Fatalf("same-family reviewer: %s", d.Model.ID)
 	}
 }
+func TestFrontierFloor(t *testing.T) {
+	l := &ledger{}
+	p := NewV1(config.RouterConfig{LambdaCost: .35, FrontierFloorPhases: []string{"plan"}}, l)
+	d, _, err := p.Decide(context.Background(), RoutingState{SessionID: "s", Point: TurnStart, Phase: Plan, InputTokens: 1000, AvailableModels: []string{"openai/gpt-5.6-sol", "together/deepseek-ai/DeepSeek-V4-Flash-0731"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Model.Tier != model.Frontier {
+		t.Fatalf("floor chose %s", d.Model.ID)
+	}
+}
+func TestImplementRoutesEfficientAtDefaultWeight(t *testing.T) {
+	l := &ledger{}
+	p := NewV1(config.RouterConfig{LambdaCost: .35}, l)
+	d, _, err := p.Decide(context.Background(), RoutingState{SessionID: "s", Point: JobCreation, Phase: Implement, InputTokens: 1000, EstimatedOutput: 4000, AvailableModels: []string{"openai/gpt-5.6-sol", "together/deepseek-ai/DeepSeek-V4-Flash-0731"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Model.Tier != model.Efficient {
+		t.Fatalf("implement chose %s", d.Model.ID)
+	}
+}

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"math"
 	"slices"
 	"strings"
@@ -108,6 +110,9 @@ func NewV1(cfg config.RouterConfig, l Ledger) *V1 {
 }
 
 func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation, error) {
+	ctx, span := otel.Tracer("orrery/router").Start(ctx, "routing.decision")
+	defer span.End()
+	span.SetAttributes(attribute.String("decision.point", string(s.Point)), attribute.String("phase", string(s.Phase)))
 	if s.InputTokens <= 0 {
 		s.InputTokens = 4000
 	}
@@ -117,6 +122,16 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 	var candidates []Candidate
 	for _, m := range p.catalog {
 		c := Candidate{Model: m.ID}
+		if s.TierPin == "" && slices.Contains(p.cfg.FrontierFloorPhases, string(s.Phase)) && m.Tier != model.Frontier {
+			c.Rejected = "phase has frontier floor"
+			candidates = append(candidates, c)
+			continue
+		}
+		if p.cfg.DisableSwitch && p.cfg.DefaultModel != "" && m.ID != p.cfg.DefaultModel {
+			c.Rejected = "default model pinned"
+			candidates = append(candidates, c)
+			continue
+		}
 		if len(s.AvailableModels) > 0 && !slices.Contains(s.AvailableModels, m.ID) {
 			c.Rejected = "provider not configured"
 			candidates = append(candidates, c)
@@ -204,6 +219,7 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 		return strings.Compare(a.Model, b.Model)
 	})
 	chosen := valid[0]
+	span.SetAttributes(attribute.String("model", chosen.Model), attribute.Float64("estimated_cost_usd", chosen.CostUSD))
 	spec, _ := model.Get(chosen.Model)
 	d := Decision{Model: spec, Effort: chosen.Effort, EditDialect: spec.EditDialect, ToolsetVariant: toolset(spec), WasSwitch: s.CurrentModel != "" && s.CurrentModel != spec.ID, Candidates: candidates}
 	why := explain(s, chosen, d.WasSwitch)
@@ -223,7 +239,7 @@ func quality(t model.Tier, p Phase, stall StallSignals) float64 {
 		}
 	}
 	if slices.Contains([]Phase{Explore, Implement, WrapUp}, p) && t == model.Efficient {
-		q += .12
+		q += .20
 	}
 	if stall.FailedCommands >= 2 || stall.TestFailStreak >= 2 || stall.RepeatedEdits >= 3 {
 		if t == model.Frontier {

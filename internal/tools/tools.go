@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"github.com/ductone/orrey/internal/hashline"
 	"github.com/ductone/orrey/internal/provider"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -50,6 +52,9 @@ func (r *Registry) Add(n, d string, s map[string]any, h Handler) { r.add(n, d, s
 func (r *Registry) AddScheme(name string, h Handler)             { r.schemes[name] = h }
 func (r *Registry) Definitions() []provider.Tool                 { return append([]provider.Tool(nil), r.defs...) }
 func (r *Registry) Call(ctx context.Context, name string, args map[string]any) (any, error) {
+	ctx, span := otel.Tracer("orrery/tools").Start(ctx, "tool.call")
+	defer span.End()
+	span.SetAttributes(attribute.String("tool", name))
 	h, ok := r.handlers[name]
 	if !ok {
 		return nil, fmt.Errorf("unknown tool %q", name)

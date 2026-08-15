@@ -108,10 +108,11 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 		Model   string `json:"model"`
 		Choices []struct {
 			Message struct {
-				Role      string `json:"role"`
-				Content   string `json:"content"`
-				Reasoning string `json:"reasoning_content"`
-				ToolCalls []struct {
+				Role               string `json:"role"`
+				Content            string `json:"content"`
+				Reasoning          string `json:"reasoning_content"`
+				ReasoningAlternate string `json:"reasoning"`
+				ToolCalls          []struct {
 					ID       string
 					Function struct{ Name, Arguments string }
 				} `json:"tool_calls"`
@@ -134,6 +135,9 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 		return Response{}, fmt.Errorf("provider returned no choices")
 	}
 	ch := out.Choices[0]
+	if ch.Message.Reasoning == "" {
+		ch.Message.Reasoning = ch.Message.ReasoningAlternate
+	}
 	msg := Message{Role: "assistant", Content: ch.Message.Content, Reasoning: ch.Message.Reasoning}
 	for _, tc := range ch.Message.ToolCalls {
 		args := map[string]any{}

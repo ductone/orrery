@@ -22,6 +22,10 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Orrery is a single process. One shared SQLite connection gives parent and
+	// worker goroutines deterministic transaction ordering without SQLITE_BUSY.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	s := &Store{db}
 	if err = s.migrate(); err != nil {
 		db.Close()
@@ -32,7 +36,7 @@ func Open(path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) DB() *sql.DB  { return s.db }
 func (s *Store) migrate() error {
-	_, err := s.db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
+	_, err := s.db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, spec TEXT NOT NULL, durable_summary TEXT NOT NULL DEFAULT '', phase TEXT NOT NULL DEFAULT 'plan', model TEXT NOT NULL DEFAULT '', turn INTEGER NOT NULL DEFAULT 0, spent_usd REAL NOT NULL DEFAULT 0, budget_usd REAL NOT NULL, status TEXT NOT NULL DEFAULT 'running', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), seq INTEGER NOT NULL, type TEXT NOT NULL, data_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(session_id,seq));
 CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), role TEXT NOT NULL, content_json TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -75,20 +79,26 @@ func (s *Store) Sessions(ctx context.Context) ([]Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []Session
+	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	var out []Session
+	for _, id := range ids {
 		x, err := s.Session(ctx, id)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, x)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 func (s *Store) UpdateSession(ctx context.Context, x Session) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET durable_summary=?,phase=?,model=?,turn=?,status=?,updated_at=? WHERE id=?`, x.DurableSummary, x.Phase, x.Model, x.Turn, x.Status, time.Now().UTC().Format(time.RFC3339Nano), x.ID)
@@ -216,20 +226,26 @@ func (s *Store) Jobs(ctx context.Context, sid string) ([]Job, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []Job
+	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	var out []Job
+	for _, id := range ids {
 		j, err := s.Job(ctx, id)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, j)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 func nilIfEmpty(s string) any {
 	if s == "" {

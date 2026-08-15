@@ -4,7 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/ductone/orrey/internal/store"
 )
 
 func TestResultSchemaValidation(t *testing.T) {
@@ -32,5 +35,22 @@ func TestPrepareWorkspaceCopy(t *testing.T) {
 	}
 	if b, err := os.ReadFile(filepath.Join(path, "a.txt")); err != nil || string(b) != "a" {
 		t.Fatalf("%q %v", b, err)
+	}
+}
+func TestPlanSnapshotReplaced(t *testing.T) {
+	one := setPlanSnapshot("summary", "one")
+	two := setPlanSnapshot(one, "two")
+	if strings.Contains(two, "one") || !strings.Contains(two, "two") || strings.Count(two, "[TODO SNAPSHOT]") != 1 {
+		t.Fatal(two)
+	}
+}
+func TestCompactionKeepsWholeAssistantTurn(t *testing.T) {
+	msgs := []store.Message{{Role: "assistant"}, {Role: "tool"}, {Role: "assistant"}, {Role: "tool"}, {Role: "tool"}, {Role: "assistant"}, {Role: "tool"}, {Role: "assistant"}, {Role: "tool"}, {Role: "tool"}}
+	at := compactionKeepIndex(msgs, 3)
+	if at != 2 {
+		t.Fatalf("cut at %d", at)
+	}
+	if msgs[at].Role != "assistant" {
+		t.Fatal("orphaned tool result")
 	}
 }

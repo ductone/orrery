@@ -1,0 +1,37 @@
+name: ci
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test
+        run: go test -race ./...
+      - name: Formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          version: '1.57.0'
+      - name: Proto lint
+        run: buf lint
+      - name: Proto breaking changes
+        if: github.event_name == 'pull_request'
+        run: buf breaking --against '.git#branch=origin/main'
+      - name: Generated proto is current
+        run: |
+          buf generate
+          git diff --exit-code
+      - name: Build
+        run: go build ./cmd/orrery

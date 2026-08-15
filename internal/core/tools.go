@@ -38,9 +38,9 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		phase := phaseFrom(ts)
 		if phase != old.Phase {
 			old.Phase = phase
+			old.DurableSummary = setPlanSnapshot(old.DurableSummary, store.JSON(ts))
 			_ = e.store.UpdateSession(ctx, old)
 			_ = e.mcpBoundary(ctx)
-			e.compact(ctx, sid, emit)
 		}
 		e.emit(ctx, sid, "todo.updated", ts, emit)
 		return ts, nil
