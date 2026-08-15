@@ -131,6 +131,7 @@ func run(ctx context.Context, rt *runtime, args []string) int {
 	prompt := fs.String("p", "", "task prompt")
 	workspace := fs.String("workspace", rt.cfg.WorkspaceRoot, "workspace path")
 	budget := fs.Float64("budget", rt.cfg.Budget.SessionUSD, "maximum USD")
+	maxTokens := fs.Int("max-tokens", 1_000_000, "maximum total input and output tokens")
 	tier := fs.String("tier", "", "optional tier pin")
 	if fs.Parse(args) != nil {
 		return 2
@@ -139,7 +140,7 @@ func run(ctx context.Context, rt *runtime, args []string) int {
 		b, _ := os.ReadFile("/dev/stdin")
 		*prompt = strings.TrimSpace(string(b))
 	}
-	req := agentproto.TaskRequest{Spec: *prompt, Budget: agentproto.Budget{MaxUSD: *budget, MaxTokens: 1_000_000, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: *workspace, Isolation: "shared"}, Hints: agentproto.RoutingHints{TierPin: *tier}, Depth: 4}
+	req := agentproto.TaskRequest{Spec: *prompt, Budget: agentproto.Budget{MaxUSD: *budget, MaxTokens: *maxTokens, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: *workspace, Isolation: "shared"}, Hints: agentproto.RoutingHints{TierPin: *tier}, Depth: 4}
 	result, err := rt.engine.Run(ctx, req, func(ev agentproto.AgentEvent) {
 		if ev.Type == "routing.decision" || ev.Type == "tool.started" {
 			b, _ := json.Marshal(ev)
