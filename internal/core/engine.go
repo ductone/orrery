@@ -166,6 +166,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		e.emit(ctx, sid, "routing.decision", map[string]any{"decision": decision, "explanation": why}, emit)
 		reg := e.toolRegistry(sid, parentJob, req, emit)
 		forceSynthesis := req.Workspace.Isolation == "shared-ro" && s.Turn >= 6
+		forceAdvance := parentJob == "" && s.Phase == string(router.Explore) && progress.phaseTurns >= 8
 		build := func(m model.ModelSpec, d router.Decision) (provider.Request, error) {
 			history, err := e.providerMessages(ctx, sid)
 			if err != nil {
@@ -179,6 +180,10 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			if forceSynthesis {
 				system += " Exploration is now complete. No more tools are available. Synthesize the strongest existing evidence into the required result now."
 				definitions = nil
+			}
+			if forceAdvance {
+				system += " The exploration turn limit has been reached. Existing evidence is sufficient. Read/search tools are unavailable for this turn; update the todo and plan, make the smallest justified edit, or run verification."
+				definitions = reg.DefinitionsExcept("read", "search", "web_search", "fetch")
 			}
 			return provider.Request{System: system, DurableSpec: "TASK\n" + s.Spec + "\n\nDURABLE SUMMARY\n" + s.DurableSummary, Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the durable summary.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: definitions, MaxOutput: min(8000, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
 		}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/ductone/orrey/internal/agentproto"
 	"github.com/ductone/orrey/internal/model"
+	"github.com/ductone/orrey/internal/provider"
 	"github.com/ductone/orrey/internal/router"
 	"github.com/ductone/orrey/internal/store"
 	builtin "github.com/ductone/orrey/internal/tools"
@@ -174,6 +175,7 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 		_ = e.store.UpdateLatestJobRoutingOutcome(context.Background(), sid, result)
 		_ = os.WriteFile(filepath.Join(jobDir, "result.json"), []byte(store.JSON(result)), 0600)
 		_ = os.WriteFile(filepath.Join(jobDir, "status"), []byte(string(result.Status)+"\n"), 0600)
+		_ = e.store.AddMessage(context.Background(), sid, "user", provider.Message{Role: "user", Content: "Worker job " + id + " completed. Treat this durable result as the exploration handoff, do not repeat its discovery, and advance the todo: " + store.JSON(result)})
 		e.emit(context.Background(), sid, "job.terminal", map[string]any{"id": id, "result": result}, emit)
 		cleanupWorkspace(parentReq.Workspace.Path, workspacePath, actualIsolation)
 	}()

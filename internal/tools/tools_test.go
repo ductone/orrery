@@ -26,6 +26,14 @@ func TestReadOnlyRegistryOmitsMutationAndShellTools(t *testing.T) {
 		t.Fatalf("tools=%v", names)
 	}
 }
+func TestDefinitionsExcept(t *testing.T) {
+	r := New(t.TempDir())
+	for _, d := range r.DefinitionsExcept("read", "search") {
+		if d.Name == "read" || d.Name == "search" {
+			t.Fatalf("definition %q not excluded", d.Name)
+		}
+	}
+}
 
 func TestSearchGlobMatchesWorkspaceRelativePathRecursively(t *testing.T) {
 	root := t.TempDir()
