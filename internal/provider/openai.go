@@ -34,7 +34,7 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 	}
 	key, ok := c.pool.take(time.Now())
 	if !ok {
-		return Response{}, fmt.Errorf("all credentials in backoff")
+		return Response{}, ErrCredentialsBackoff
 	}
 	msgs := []map[string]any{}
 	system := strings.TrimSpace(strings.Join([]string{r.System, r.DurableSpec, r.Plan}, "\n\n"))

@@ -47,6 +47,9 @@ type Response struct {
 type Client interface {
 	Complete(context.Context, model.ModelSpec, Request) (Response, error)
 }
+
+var ErrCredentialsBackoff = errors.New("all credentials in backoff")
+
 type RequestBuilder func(model.ModelSpec, router.Decision) (Request, error)
 
 type credential struct {
@@ -206,6 +209,9 @@ type HTTPError struct {
 
 func (e *HTTPError) Error() string { return fmt.Sprintf("provider HTTP %d: %s", e.Status, e.Body) }
 func retryable(err error) bool {
+	if errors.Is(err, ErrCredentialsBackoff) {
+		return true
+	}
 	var h *HTTPError
 	return errors.As(err, &h) && (h.Status == 429 || h.Status >= 500)
 }

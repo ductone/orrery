@@ -14,7 +14,7 @@ import (
 func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec, r Request) (Response, error) {
 	key, ok := c.pool.take(time.Now())
 	if !ok {
-		return Response{}, fmt.Errorf("all credentials in backoff")
+		return Response{}, ErrCredentialsBackoff
 	}
 	instructions := r.System + "\n\n" + r.DurableSpec + "\n\n" + r.Plan
 	input := []any{}

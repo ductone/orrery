@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/ductone/orrey/internal/model"
 	"net/http"
 	"net/http/httptest"
@@ -94,5 +95,14 @@ func TestOpenAIResponsesToolCall(t *testing.T) {
 	}
 	if len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].ID != "call_1" || resp.Usage.InputTokens != 10 {
 		t.Fatalf("response %+v", resp)
+	}
+}
+
+func TestCredentialBackoffIsRetryable(t *testing.T) {
+	if !IsRetryable(ErrCredentialsBackoff) {
+		t.Fatal("credential backoff should reroute instead of terminating the session")
+	}
+	if !IsRetryable(errors.Join(errors.New("model failed"), ErrCredentialsBackoff)) {
+		t.Fatal("wrapped credential backoff should remain retryable")
 	}
 }

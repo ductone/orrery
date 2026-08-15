@@ -29,7 +29,7 @@ func newAnthropic(base string, keys []string) *anthropicClient {
 func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Request) (Response, error) {
 	key, ok := c.pool.take(time.Now())
 	if !ok {
-		return Response{}, fmt.Errorf("all credentials in backoff")
+		return Response{}, ErrCredentialsBackoff
 	}
 	system := []any{map[string]any{"type": "text", "text": r.System + "\n\n" + r.DurableSpec + "\n\n" + r.Plan, "cache_control": map[string]any{"type": "ephemeral"}}}
 	toWire := map[string]string{}
