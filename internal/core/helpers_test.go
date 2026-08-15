@@ -7,8 +7,21 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ductone/orrey/internal/provider"
 	"github.com/ductone/orrey/internal/store"
 )
+
+func TestEmptyFinalResponse(t *testing.T) {
+	if !emptyFinalResponse(provider.Message{Reasoning: "internal reasoning only"}) {
+		t.Fatal("reasoning-only response must not complete a task")
+	}
+	if emptyFinalResponse(provider.Message{Content: "done"}) {
+		t.Fatal("non-empty response was rejected")
+	}
+	if emptyFinalResponse(provider.Message{ToolCalls: []provider.ToolCall{{Name: "read"}}}) {
+		t.Fatal("tool call response was rejected")
+	}
+}
 
 func TestResultSchemaValidation(t *testing.T) {
 	s := map[string]any{"type": "object", "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "required": []any{"ok"}, "additionalProperties": false}

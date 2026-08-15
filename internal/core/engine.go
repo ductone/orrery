@@ -115,6 +115,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 	started := time.Now()
 	outcome := agentproto.Outcome{}
 	stall := router.StallSignals{}
+	emptyCompletions := 0
 	e.emit(ctx, sid, "session.started", map[string]any{"spec": req.Spec}, emit)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -190,6 +191,16 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		_ = e.store.AddMessage(ctx, sid, "assistant", resp.Message)
 		e.emit(ctx, sid, "assistant.message", map[string]any{"message": resp.Message, "usage": resp.Usage, "cost_usd": cost, "model": decision.Model.ID}, emit)
 		if len(resp.Message.ToolCalls) == 0 {
+			if emptyFinalResponse(resp.Message) {
+				emptyCompletions++
+				e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "empty assistant response", "attempt": emptyCompletions}, emit)
+				if emptyCompletions >= 3 {
+					return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "model returned three empty final responses"}, emit)
+				}
+				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Content: "Your last response was empty and cannot complete the task. Continue working, or provide a non-empty final result only after the task is actually complete."})
+				stall.HumanInterrupt = true
+				continue
+			}
 			result := parseResult(resp.Message.Content)
 			if err := validateSchema(req.ResultSchema, result); err != nil {
 				return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "result schema: " + err.Error()}, emit)
@@ -197,6 +208,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			outcome.Latency = time.Since(started)
 			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Pass, Result: result, Outcome: outcome}, emit)
 		}
+		emptyCompletions = 0
 		for _, call := range resp.Message.ToolCalls {
 			outcome.ToolCalls++
 			e.emit(ctx, sid, "tool.started", call, emit)

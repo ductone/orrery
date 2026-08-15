@@ -9,9 +9,14 @@ import (
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 
+	"github.com/ductone/orrey/internal/provider"
 	"github.com/ductone/orrey/internal/router"
 	"github.com/ductone/orrey/internal/store"
 )
+
+func emptyFinalResponse(m provider.Message) bool {
+	return len(m.ToolCalls) == 0 && strings.TrimSpace(m.Content) == ""
+}
 
 func (e *Engine) compact(ctx context.Context, sid string, emit EmitFunc) {
 	msgs, _ := e.store.Messages(ctx, sid)
