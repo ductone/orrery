@@ -1,0 +1,110 @@
+package provider
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"github.com/ductone/orrey/internal/model"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+)
+
+type anthropicClient struct {
+	base string
+	pool *pool
+	http *http.Client
+}
+
+func newAnthropic(base string, keys []string) *anthropicClient {
+	p := &pool{}
+	for _, k := range keys {
+		p.creds = append(p.creds, credential{key: k})
+	}
+	return &anthropicClient{strings.TrimSuffix(base, "/"), p, httpClient(15 * time.Minute)}
+}
+func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Request) (Response, error) {
+	key, ok := c.pool.take(time.Now())
+	if !ok {
+		return Response{}, fmt.Errorf("all credentials in backoff")
+	}
+	system := []any{map[string]any{"type": "text", "text": r.System + "\n\n" + r.DurableSpec + "\n\n" + r.Plan, "cache_control": map[string]any{"type": "ephemeral"}}}
+	msgs := []any{}
+	for _, x := range r.Messages {
+		content := []any{}
+		if x.Content != "" {
+			content = append(content, map[string]any{"type": "text", "text": x.Content})
+		}
+		for _, tc := range x.ToolCalls {
+			content = append(content, map[string]any{"type": "tool_use", "id": tc.ID, "name": tc.Name, "input": tc.Arguments})
+		}
+		if x.Role == "tool" {
+			content = []any{map[string]any{"type": "tool_result", "tool_use_id": x.ToolCallID, "content": x.Content}}
+		}
+		msgs = append(msgs, map[string]any{"role": mapRole(x.Role), "content": content})
+	}
+	body := map[string]any{"model": wireModel(m.ID), "max_tokens": min(r.MaxOutput, m.MaxOutput), "system": system, "messages": msgs}
+	if len(r.Tools) > 0 {
+		var ts []any
+		for _, t := range r.Tools {
+			ts = append(ts, map[string]any{"name": t.Name, "description": t.Description, "input_schema": t.InputSchema})
+		}
+		body["tools"] = ts
+	}
+	b, _ := json.Marshal(body)
+	start := time.Now()
+	req, _ := http.NewRequestWithContext(ctx, "POST", c.base+"/v1/messages", bytes.NewReader(b))
+	req.Header.Set("x-api-key", key)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("content-type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return Response{}, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode/100 != 2 {
+		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+			c.pool.backoff(key, 30*time.Second)
+		}
+		return Response{}, &HTTPError{resp.StatusCode, string(raw)}
+	}
+	var wire struct {
+		Model      string `json:"model"`
+		StopReason string `json:"stop_reason"`
+		Content    []struct {
+			Type  string         `json:"type"`
+			Text  string         `json:"text"`
+			ID    string         `json:"id"`
+			Name  string         `json:"name"`
+			Input map[string]any `json:"input"`
+		} `json:"content"`
+		Usage struct {
+			Input      int `json:"input_tokens"`
+			Output     int `json:"output_tokens"`
+			CacheRead  int `json:"cache_read_input_tokens"`
+			CacheWrite int `json:"cache_creation_input_tokens"`
+		} `json:"usage"`
+	}
+	if err = json.Unmarshal(raw, &wire); err != nil {
+		return Response{}, err
+	}
+	msg := Message{Role: "assistant"}
+	for _, b := range wire.Content {
+		if b.Type == "text" {
+			msg.Content += b.Text
+		}
+		if b.Type == "tool_use" {
+			msg.ToolCalls = append(msg.ToolCalls, ToolCall{b.ID, b.Name, b.Input})
+		}
+	}
+	return Response{Message: msg, Usage: Usage{wire.Usage.Input, wire.Usage.Output, wire.Usage.CacheRead, wire.Usage.CacheWrite}, StopReason: wire.StopReason, Latency: time.Since(start), Model: wire.Model}, nil
+}
+func mapRole(r string) string {
+	if r == "assistant" {
+		return r
+	}
+	return "user"
+}

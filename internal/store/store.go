@@ -143,3 +143,53 @@ func (s *Store) ExportRouting(ctx context.Context, since time.Time, emit func([]
 	return rows.Err()
 }
 func (s *Store) String() string { return fmt.Sprintf("sqlite(%p)", s.db) }
+
+type CacheEntry struct {
+	SessionID, Model string
+	WarmPrefixTokens int
+	LastHit          time.Time
+	TTL              time.Duration
+}
+
+func (e CacheEntry) Valid(now time.Time) bool {
+	return e.WarmPrefixTokens > 0 && !e.LastHit.IsZero() && now.Before(e.LastHit.Add(e.TTL))
+}
+func (s *Store) Cache(ctx context.Context, sid, model string) (CacheEntry, error) {
+	var e CacheEntry
+	var hit sql.NullString
+	var ttl int
+	err := s.db.QueryRowContext(ctx, `SELECT session_id,model,warm_prefix_tokens,last_hit,ttl_seconds FROM cache_ledger WHERE session_id=? AND model=?`, sid, model).Scan(&e.SessionID, &e.Model, &e.WarmPrefixTokens, &hit, &ttl)
+	if err == sql.ErrNoRows {
+		return CacheEntry{SessionID: sid, Model: model}, nil
+	}
+	if hit.Valid {
+		e.LastHit, _ = time.Parse(time.RFC3339Nano, hit.String)
+	}
+	e.TTL = time.Duration(ttl) * time.Second
+	return e, err
+}
+func (s *Store) WarmCache(ctx context.Context, sid, model string, tokens int, ttl time.Duration) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO cache_ledger(session_id,model,warm_prefix_tokens,last_hit,ttl_seconds)VALUES(?,?,?,?,?) ON CONFLICT(session_id,model) DO UPDATE SET warm_prefix_tokens=excluded.warm_prefix_tokens,last_hit=excluded.last_hit,ttl_seconds=excluded.ttl_seconds`, sid, model, tokens, time.Now().UTC().Format(time.RFC3339Nano), int(ttl.Seconds()))
+	return err
+}
+
+type RoutingRecord struct {
+	ID, SessionID                                                       string
+	Turn                                                                int
+	DecisionPoint, StateJSON, CandidatesJSON, ChosenModel, ChosenEffort string
+	WasSwitch                                                           bool
+	CacheEstJSON, Explanation                                           string
+}
+
+func (s *Store) WriteRouting(ctx context.Context, r RoutingRecord) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO routing_records(id,session_id,turn,decision_point,state_json,candidates_json,chosen_model,chosen_effort,was_switch,cache_est_json,explanation,created_at)VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, r.ID, r.SessionID, r.Turn, r.DecisionPoint, r.StateJSON, r.CandidatesJSON, r.ChosenModel, r.ChosenEffort, r.WasSwitch, r.CacheEstJSON, r.Explanation, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+func (s *Store) UpdateRoutingOutcome(ctx context.Context, id, field string, v any) error {
+	allowed := map[string]bool{"turn_outcome_json": true, "job_outcome_json": true, "session_outcome_json": true}
+	if !allowed[field] {
+		return fmt.Errorf("invalid outcome field %q", field)
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE routing_records SET `+field+`=? WHERE id=?`, JSON(v), id)
+	return err
+}
