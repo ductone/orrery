@@ -34,6 +34,13 @@ func TestDefinitionsExcept(t *testing.T) {
 		}
 	}
 }
+func TestDefinitionsOnly(t *testing.T) {
+	r := New(t.TempDir())
+	definitions := r.DefinitionsOnly("edit")
+	if len(definitions) != 1 || definitions[0].Name != "edit" {
+		t.Fatalf("definitions=%v", definitions)
+	}
+}
 
 func TestSearchGlobMatchesWorkspaceRelativePathRecursively(t *testing.T) {
 	root := t.TempDir()

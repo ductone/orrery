@@ -183,7 +183,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			}
 			if forceAdvance {
 				system += " The exploration turn limit has been reached. Existing evidence is sufficient. Read/search tools are unavailable for this turn; update the todo and plan, make the smallest justified edit, or run verification."
-				definitions = reg.DefinitionsExcept("read", "search", "web_search", "fetch")
+				definitions = reg.DefinitionsOnly("todo", "edit", "job_result")
 			}
 			return provider.Request{System: system, DurableSpec: "TASK\n" + s.Spec + "\n\nDURABLE SUMMARY\n" + s.DurableSummary, Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the durable summary.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: definitions, MaxOutput: min(8000, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
 		}

@@ -70,6 +70,19 @@ func (r *Registry) DefinitionsExcept(names ...string) []provider.Tool {
 	}
 	return out
 }
+func (r *Registry) DefinitionsOnly(names ...string) []provider.Tool {
+	included := map[string]bool{}
+	for _, name := range names {
+		included[name] = true
+	}
+	out := []provider.Tool{}
+	for _, definition := range r.defs {
+		if included[definition.Name] {
+			out = append(out, definition)
+		}
+	}
+	return out
+}
 func (r *Registry) Call(ctx context.Context, name string, args map[string]any) (any, error) {
 	ctx, span := otel.Tracer("orrery/tools").Start(ctx, "tool.call")
 	defer span.End()
