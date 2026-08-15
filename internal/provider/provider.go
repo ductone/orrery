@@ -27,6 +27,7 @@ type Message struct {
 }
 type Request struct {
 	System, DurableSpec, Plan string
+	CacheKey                  string
 	Messages                  []Message
 	Tools                     []Tool
 	MaxOutput                 int
@@ -104,17 +105,17 @@ func New(cfg config.Config) *Registry {
 			if base == "" {
 				base = "https://api.openai.com"
 			}
-			r.clients[name] = newOpenAI(base, keys)
+			r.clients[name] = newOpenAI(base, keys, true)
 		case "xai":
 			if base == "" {
 				base = "https://api.x.ai"
 			}
-			r.clients[name] = newOpenAI(base, keys)
+			r.clients[name] = newOpenAI(base, keys, false)
 		case "together":
 			if base == "" {
 				base = "https://api.together.xyz"
 			}
-			r.clients[name] = newOpenAI(base, keys)
+			r.clients[name] = newOpenAI(base, keys, false)
 		}
 		r.configured[name] = true
 	}

@@ -91,7 +91,20 @@ func (s *Store) Sessions(ctx context.Context) ([]Session, error) {
 	return out, rows.Err()
 }
 func (s *Store) UpdateSession(ctx context.Context, x Session) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET durable_summary=?,phase=?,model=?,turn=?,spent_usd=?,status=?,updated_at=? WHERE id=?`, x.DurableSummary, x.Phase, x.Model, x.Turn, x.SpentUSD, x.Status, time.Now().UTC().Format(time.RFC3339Nano), x.ID)
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET durable_summary=?,phase=?,model=?,turn=?,status=?,updated_at=? WHERE id=?`, x.DurableSummary, x.Phase, x.Model, x.Turn, x.Status, time.Now().UTC().Format(time.RFC3339Nano), x.ID)
+	return err
+}
+func (s *Store) AddSpend(ctx context.Context, id string, usd float64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET spent_usd=spent_usd+?,updated_at=? WHERE id=?`, usd, time.Now().UTC().Format(time.RFC3339Nano), id)
+	return err
+}
+func (s *Store) ReservedJobUSD(ctx context.Context, sid string) (float64, error) {
+	var n float64
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(CAST(json_extract(budget_json,'$.max_usd') AS REAL)),0) FROM jobs WHERE session_id=? AND status='running'`, sid).Scan(&n)
+	return n, err
+}
+func (s *Store) UpdateLatestJobRoutingOutcome(ctx context.Context, sid string, v any) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE routing_records SET job_outcome_json=? WHERE id=(SELECT id FROM routing_records WHERE session_id=? AND decision_point IN ('spawn','review') AND job_outcome_json IS NULL ORDER BY created_at DESC LIMIT 1)`, JSON(v), sid)
 	return err
 }
 
@@ -132,8 +145,10 @@ func (s *Store) InvalidateCaches(ctx context.Context, sid string) error {
 }
 
 type Todo struct {
-	Position            int    `json:"position"`
-	Text, Phase, Status string `json:"text"`
+	Position int    `json:"position"`
+	Text     string `json:"text"`
+	Phase    string `json:"phase"`
+	Status   string `json:"status"`
 }
 
 func (s *Store) SetTodos(ctx context.Context, sid string, todos []Todo) error {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/ductone/orrey/internal/provider"
 	"github.com/ductone/orrey/internal/router"
 	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrey/internal/webtools"
 )
 
 type EmitFunc func(agentproto.AgentEvent)
@@ -28,12 +31,13 @@ type Engine struct {
 	providers *provider.Registry
 	policy    router.Policy
 	mcp       *mcp.Manager
+	web       *webtools.Client
 	mu        sync.Mutex
 	cancels   map[string]context.CancelFunc
 }
 
 func New(cfg config.Config, s *store.Store, p *provider.Registry, mc *mcp.Manager) *Engine {
-	return &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, cancels: map[string]context.CancelFunc{}}
+	return &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), cancels: map[string]context.CancelFunc{}}
 }
 func (e *Engine) Store() *store.Store { return e.store }
 
@@ -120,7 +124,8 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		if err != nil {
 			return agentproto.TaskResult{Status: agentproto.Fail, Error: err.Error()}
 		}
-		if s.SpentUSD >= s.BudgetUSD || outcome.Tokens >= req.Budget.MaxTokens {
+		reserved, _ := e.store.ReservedJobUSD(ctx, sid)
+		if s.SpentUSD+reserved >= s.BudgetUSD || outcome.Tokens >= req.Budget.MaxTokens {
 			return e.finish(sid, agentproto.TaskResult{Status: agentproto.BudgetExhausted, Outcome: outcome, Error: "budget exhausted"}, emit)
 		}
 		stored, _ := e.store.Messages(ctx, sid)
@@ -130,7 +135,11 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		if stall.FailedCommands >= 2 || stall.TestFailStreak >= 2 || stall.RepeatedEdits >= 3 {
 			point = router.Escalation
 		}
-		state := router.RoutingState{SessionID: sid, Turn: s.Turn + 1, Point: point, Phase: router.Phase(s.Phase), CurrentModel: s.Model, InputTokens: inputTokens, EstimatedOutput: 4000, ToolContinuation: len(stored) > 0 && stored[len(stored)-1].Role == "tool", Stall: stall, AvailableModels: e.providers.AvailableIDs()}
+		newInstruction := len(stored) > 0 && stored[len(stored)-1].Role == "user"
+		state := router.RoutingState{SessionID: sid, Turn: s.Turn + 1, Point: point, Phase: router.Phase(s.Phase), CurrentModel: s.Model, InputTokens: inputTokens, EstimatedOutput: 4000, ToolContinuation: len(stored) > 0 && stored[len(stored)-1].Role == "tool", NewInstruction: newInstruction, Stall: stall, AvailableModels: e.providers.AvailableIDs()}
+		if newInstruction {
+			state.Phase = router.Plan
+		}
 		applyHints(&state, req.Hints)
 		decision, why, err := e.policy.Decide(ctx, state)
 		if err != nil {
@@ -144,7 +153,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				return provider.Request{}, err
 			}
 			td, _ := e.store.Todos(ctx, sid)
-			return provider.Request{System: systemPrompt(d, req.Depth), DurableSpec: "TASK\n" + s.Spec + "\n\nDURABLE SUMMARY\n" + s.DurableSummary, Plan: "TODO\n" + store.JSON(td), Messages: history, Tools: reg.Definitions(), MaxOutput: min(8000, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
+			return provider.Request{System: systemPrompt(d, req.Depth), DurableSpec: "TASK\n" + s.Spec + "\n\nDURABLE SUMMARY\n" + s.DurableSummary, Plan: "TODO\n" + store.JSON(td), CacheKey: sid + ":" + m.ID, Messages: history, Tools: reg.Definitions(), MaxOutput: min(8000, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
 		}
 		var resp provider.Response
 		failed := []string{}
@@ -166,7 +175,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			}
 			e.emit(ctx, sid, "routing.fallback", map[string]any{"decision": decision, "explanation": why}, emit)
 		}
-		cost := decision.Model.Pricing.Estimate(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CacheReadTokens)
+		cost := decision.Model.Pricing.EstimateDetailed(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CacheReadTokens, resp.Usage.CacheWriteTokens)
 		outcome.Tokens += resp.Usage.InputTokens + resp.Usage.OutputTokens
 		outcome.CostUSD += cost
 		outcome.Latency += resp.Latency
@@ -174,6 +183,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		s.Model = decision.Model.ID
 		s.SpentUSD += cost
 		_ = e.store.UpdateSession(ctx, s)
+		_ = e.store.AddSpend(ctx, sid, cost)
 		ttl := 5 * time.Minute
 		if decision.Model.Family == model.Anthropic {
 			ttl = time.Hour
@@ -198,6 +208,9 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				stall.ToolErrorRate = float64(outcome.ToolErrors) / float64(outcome.ToolCalls)
 				if call.Name == "exec" {
 					stall.FailedCommands++
+					if strings.Contains(strings.ToLower(fmt.Sprint(call.Arguments["command"])), "test") {
+						stall.TestFailStreak++
+					}
 				}
 				if call.Name == "edit" {
 					stall.RepeatedEdits++
@@ -207,6 +220,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			} else {
 				if call.Name == "exec" {
 					stall.FailedCommands = 0
+					stall.TestFailStreak = 0
 				}
 				if call.Name == "edit" {
 					stall.RepeatedEdits = 0
@@ -224,6 +238,9 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 
 func (e *Engine) finish(sid string, result agentproto.TaskResult, emit EmitFunc) agentproto.TaskResult {
 	if s, err := e.store.Session(context.Background(), sid); err == nil {
+		if s.SpentUSD > result.Outcome.CostUSD {
+			result.Outcome.CostUSD = s.SpentUSD
+		}
 		s.Status = string(result.Status)
 		_ = e.store.UpdateSession(context.Background(), s)
 	}

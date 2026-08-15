@@ -11,13 +11,15 @@ import (
 )
 
 type Line struct {
-	Number     int    `json:"number"`
-	Hash, Text string `json:"hash"`
+	Number int    `json:"number"`
+	Hash   string `json:"hash"`
+	Text   string `json:"text"`
 }
 type Hunk struct {
-	Anchor         string   `json:"anchor"`
-	Offset, Delete int      `json:"offset"`
-	Insert         []string `json:"insert"`
+	Anchor string   `json:"anchor"`
+	Offset int      `json:"offset"`
+	Delete int      `json:"delete"`
+	Insert []string `json:"insert"`
 }
 type Patch struct {
 	Path  string `json:"path"`

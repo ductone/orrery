@@ -23,6 +23,7 @@ type Registry struct {
 	root     string
 	defs     []provider.Tool
 	handlers map[string]Handler
+	schemes  map[string]Handler
 	mu       sync.Mutex
 	jobs     map[string]*commandJob
 }
@@ -33,7 +34,7 @@ type commandJob struct {
 }
 
 func New(root string) *Registry {
-	r := &Registry{root: root, handlers: map[string]Handler{}, jobs: map[string]*commandJob{}}
+	r := &Registry{root: root, handlers: map[string]Handler{}, schemes: map[string]Handler{}, jobs: map[string]*commandJob{}}
 	r.add("read", "Read a file or directory. Files include hashline anchors.", schema(map[string]any{"path": str(), "start": num(), "limit": num()}, "path"), r.read)
 	r.add("search", "Regex search file contents with optional glob.", schema(map[string]any{"pattern": str(), "glob": str(), "max_results": num()}, "pattern"), r.search)
 	r.add("edit", "Apply content-anchored hashline hunks.", schema(map[string]any{"path": str(), "hunks": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"anchor": str(), "offset": num(), "delete": num(), "insert": map[string]any{"type": "array", "items": str()}}, "required": []string{"anchor", "delete", "insert"}, "additionalProperties": false}}}, "path", "hunks"), r.edit)
@@ -46,6 +47,7 @@ func (r *Registry) add(n, d string, s map[string]any, h Handler) {
 	r.handlers[n] = h
 }
 func (r *Registry) Add(n, d string, s map[string]any, h Handler) { r.add(n, d, s, h) }
+func (r *Registry) AddScheme(name string, h Handler)             { r.schemes[name] = h }
 func (r *Registry) Definitions() []provider.Tool                 { return append([]provider.Tool(nil), r.defs...) }
 func (r *Registry) Call(ctx context.Context, name string, args map[string]any) (any, error) {
 	h, ok := r.handlers[name]
@@ -68,8 +70,15 @@ func (r *Registry) safe(path string) (string, error) {
 	}
 	return path, nil
 }
-func (r *Registry) read(_ context.Context, a map[string]any) (any, error) {
-	p, err := r.safe(asString(a["path"]))
+func (r *Registry) read(ctx context.Context, a map[string]any) (any, error) {
+	rawPath := asString(a["path"])
+	if parts := strings.SplitN(rawPath, "://", 2); len(parts) == 2 {
+		if h := r.schemes[parts[0]]; h != nil {
+			return h(ctx, map[string]any{"path": parts[1]})
+		}
+		return nil, fmt.Errorf("unknown internal scheme %q", parts[0])
+	}
+	p, err := r.safe(rawPath)
 	if err != nil {
 		return nil, err
 	}
@@ -241,6 +250,7 @@ func commandSummary(path string, runErr error) (any, error) {
 	out := map[string]any{"ok": runErr == nil, "summary": strings.Join(summary, "\n"), "log": path}
 	if runErr != nil {
 		out["error"] = runErr.Error()
+		return out, fmt.Errorf("command failed: %v; summary: %s; log: %s", runErr, strings.Join(summary, "\n"), path)
 	}
 	return out, nil
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,19 +15,23 @@ import (
 )
 
 type openAIClient struct {
-	base string
-	pool *pool
-	http *http.Client
+	base      string
+	pool      *pool
+	http      *http.Client
+	responses bool
 }
 
-func newOpenAI(base string, keys []string) *openAIClient {
+func newOpenAI(base string, keys []string, responses bool) *openAIClient {
 	p := &pool{}
 	for _, k := range keys {
 		p.creds = append(p.creds, credential{key: k})
 	}
-	return &openAIClient{strings.TrimSuffix(base, "/"), p, httpClient(15 * time.Minute)}
+	return &openAIClient{strings.TrimSuffix(base, "/"), p, httpClient(15 * time.Minute), responses}
 }
 func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Request) (Response, error) {
+	if c.responses {
+		return c.completeResponses(ctx, m, r)
+	}
 	key, ok := c.pool.take(time.Now())
 	if !ok {
 		return Response{}, fmt.Errorf("all credentials in backoff")
@@ -60,6 +65,9 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 		msgs = append(msgs, msg)
 	}
 	body := map[string]any{"model": wireModel(m.ID), "messages": msgs, "stream": false}
+	if r.CacheKey != "" && m.Compat.CacheControl {
+		body["prompt_cache_key"] = r.CacheKey
+	}
 	body[m.Compat.MaxTokensField] = min(r.MaxOutput, m.MaxOutput)
 	if m.Compat.SupportsReasoningEffort && r.Effort != model.EffortNone {
 		body["reasoning_effort"] = m.Compat.EffortWireMap[r.Effort]
@@ -67,7 +75,11 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 	if len(r.Tools) > 0 {
 		var ts []any
 		for _, t := range r.Tools {
-			fn := map[string]any{"name": t.Name, "description": t.Description, "parameters": t.InputSchema}
+			schema := t.InputSchema
+			if r.Strict && m.Compat.SupportsStrictTools {
+				schema = strictifySchema(schema)
+			}
+			fn := map[string]any{"name": t.Name, "description": t.Description, "parameters": schema}
 			if r.Strict && m.Compat.SupportsStrictTools {
 				fn["strict"] = true
 			}
@@ -96,8 +108,10 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 		Model   string `json:"model"`
 		Choices []struct {
 			Message struct {
-				Role, Content, Reasoning string
-				ToolCalls                []struct {
+				Role      string `json:"role"`
+				Content   string `json:"content"`
+				Reasoning string `json:"reasoning_content"`
+				ToolCalls []struct {
 					ID       string
 					Function struct{ Name, Arguments string }
 				} `json:"tool_calls"`
@@ -105,9 +119,11 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 			Finish string `json:"finish_reason"`
 		} `json:"choices"`
 		Usage struct {
-			Prompt, Completion int
-			Details            struct {
-				Cached int `json:"cached_tokens"`
+			Prompt     int `json:"prompt_tokens"`
+			Completion int `json:"completion_tokens"`
+			Details    struct {
+				Cached     int `json:"cached_tokens"`
+				CacheWrite int `json:"cache_write_tokens"`
 			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
 	}
@@ -126,5 +142,47 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 		}
 		msg.ToolCalls = append(msg.ToolCalls, ToolCall{tc.ID, tc.Function.Name, args})
 	}
-	return Response{Message: msg, Usage: Usage{InputTokens: out.Usage.Prompt, OutputTokens: out.Usage.Completion, CacheReadTokens: out.Usage.Details.Cached}, StopReason: ch.Finish, Latency: time.Since(start), Model: out.Model}, nil
+	return Response{Message: msg, Usage: Usage{InputTokens: out.Usage.Prompt, OutputTokens: out.Usage.Completion, CacheReadTokens: out.Usage.Details.Cached, CacheWriteTokens: out.Usage.Details.CacheWrite}, StopReason: ch.Finish, Latency: time.Since(start), Model: out.Model}, nil
+}
+func strictifySchema(s map[string]any) map[string]any { return strictify(s, false).(map[string]any) }
+func strictify(v any, nullable bool) any {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return v
+	}
+	out := map[string]any{}
+	for k, x := range m {
+		out[k] = x
+	}
+	switch m["type"] {
+	case "object":
+		props, _ := m["properties"].(map[string]any)
+		original := map[string]bool{}
+		switch xs := m["required"].(type) {
+		case []string:
+			for _, x := range xs {
+				original[x] = true
+			}
+		case []any:
+			for _, x := range xs {
+				original[fmt.Sprint(x)] = true
+			}
+		}
+		next := map[string]any{}
+		keys := make([]string, 0, len(props))
+		for k, x := range props {
+			keys = append(keys, k)
+			next[k] = strictify(x, !original[k])
+		}
+		sort.Strings(keys)
+		out["properties"] = next
+		out["required"] = keys
+		out["additionalProperties"] = false
+	case "array":
+		out["items"] = strictify(m["items"], false)
+	}
+	if nullable {
+		return map[string]any{"anyOf": []any{out, map[string]any{"type": "null"}}}
+	}
+	return out
 }

@@ -44,32 +44,40 @@ type StallSignals struct {
 	HumanInterrupt bool    `json:"human_interrupt"`
 }
 type CacheEstimate struct {
-	WarmTokens, FreshTokens, EstimatedOutput int     `json:"warm_tokens,omitempty"`
-	Warm                                     bool    `json:"warm"`
-	CostUSD                                  float64 `json:"cost_usd"`
-	TokensToCliff                            int     `json:"tokens_to_cliff,omitempty"`
+	WarmTokens      int     `json:"warm_tokens,omitempty"`
+	FreshTokens     int     `json:"fresh_tokens,omitempty"`
+	EstimatedOutput int     `json:"estimated_output,omitempty"`
+	Warm            bool    `json:"warm"`
+	CostUSD         float64 `json:"cost_usd"`
+	TokensToCliff   int     `json:"tokens_to_cliff,omitempty"`
 }
 type RoutingState struct {
-	SessionID                                  string         `json:"session_id"`
-	Turn                                       int            `json:"turn"`
-	Point                                      DecisionPoint  `json:"decision_point"`
-	Phase                                      Phase          `json:"phase"`
-	CurrentModel                               string         `json:"current_model,omitempty"`
-	InputTokens, EstimatedOutput               int            `json:"input_tokens"`
-	HasImage, ToolContinuation, NewInstruction bool           `json:"has_image,omitempty"`
-	Stall                                      StallSignals   `json:"stall"`
-	ExcludeFamilies                            []model.Family `json:"exclude_families,omitempty"`
-	ExcludeModels                              []string       `json:"exclude_models,omitempty"`
-	AvailableModels                            []string       `json:"available_models,omitempty"`
-	TierPin                                    model.Tier     `json:"tier_pin,omitempty"`
-	ImplementerFamily                          model.Family   `json:"implementer_family,omitempty"`
+	SessionID         string         `json:"session_id"`
+	Turn              int            `json:"turn"`
+	Point             DecisionPoint  `json:"decision_point"`
+	Phase             Phase          `json:"phase"`
+	CurrentModel      string         `json:"current_model,omitempty"`
+	InputTokens       int            `json:"input_tokens"`
+	EstimatedOutput   int            `json:"estimated_output"`
+	HasImage          bool           `json:"has_image,omitempty"`
+	ToolContinuation  bool           `json:"tool_continuation,omitempty"`
+	NewInstruction    bool           `json:"new_instruction,omitempty"`
+	Stall             StallSignals   `json:"stall"`
+	ExcludeFamilies   []model.Family `json:"exclude_families,omitempty"`
+	ExcludeModels     []string       `json:"exclude_models,omitempty"`
+	AvailableModels   []string       `json:"available_models,omitempty"`
+	TierPin           model.Tier     `json:"tier_pin,omitempty"`
+	ImplementerFamily model.Family   `json:"implementer_family,omitempty"`
 }
 type Candidate struct {
-	Model                                  string        `json:"model"`
-	Effort                                 model.Effort  `json:"effort"`
-	Quality, CostUSD, SwitchPenalty, Score float64       `json:"quality"`
-	Cache                                  CacheEstimate `json:"cache"`
-	Rejected                               string        `json:"rejected,omitempty"`
+	Model         string        `json:"model"`
+	Effort        model.Effort  `json:"effort"`
+	Quality       float64       `json:"quality"`
+	CostUSD       float64       `json:"cost_usd"`
+	SwitchPenalty float64       `json:"switch_penalty"`
+	Score         float64       `json:"score"`
+	Cache         CacheEstimate `json:"cache"`
+	Rejected      string        `json:"rejected,omitempty"`
 }
 type Decision struct {
 	Model          model.ModelSpec   `json:"model"`

@@ -184,8 +184,19 @@ func evaluate(ctx context.Context, rt *runtime, args []string) int {
 	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
 	set := fs.String("set", "", "replay set JSONL")
 	policy := fs.String("policy", "v1", "frontier-pinned, v1, or candidate")
+	buildSession := fs.String("build-session", "", "build one replay JSONL row from a completed session")
+	acceptance := fs.String("acceptance", "", "acceptance command for --build-session")
 	if fs.Parse(args) != nil {
 		return 2
+	}
+	if *buildSession != "" {
+		c, err := orreval.BuildCase(ctx, rt.store, *buildSession, *acceptance)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(c)
+		return 0
 	}
 	if *set == "" {
 		fmt.Fprintln(os.Stderr, "--set is required")

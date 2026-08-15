@@ -1,10 +1,13 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 
 	"github.com/ductone/orrey/internal/router"
 	"github.com/ductone/orrey/internal/store"
@@ -60,19 +63,17 @@ func validateSchema(schema, result map[string]any) error {
 	if len(schema) == 0 {
 		return nil
 	}
-	switch req := schema["required"].(type) {
-	case []any:
-		for _, k := range req {
-			if _, ok := result[fmt.Sprint(k)]; !ok {
-				return fmt.Errorf("missing required field %s", k)
-			}
-		}
-	case []string:
-		for _, k := range req {
-			if _, ok := result[k]; !ok {
-				return fmt.Errorf("missing required field %s", k)
-			}
-		}
+	b, err := json.Marshal(schema)
+	if err != nil {
+		return err
 	}
-	return nil
+	c := jsonschema.NewCompiler()
+	if err = c.AddResource("result.json", bytes.NewReader(b)); err != nil {
+		return err
+	}
+	compiled, err := c.Compile("result.json")
+	if err != nil {
+		return err
+	}
+	return compiled.Validate(result)
 }

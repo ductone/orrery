@@ -46,6 +46,9 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 		msgs = append(msgs, map[string]any{"role": mapRole(x.Role), "content": content})
 	}
 	body := map[string]any{"model": wireModel(m.ID), "max_tokens": min(r.MaxOutput, m.MaxOutput), "system": system, "messages": msgs}
+	if m.Compat.SupportsReasoningEffort && r.Effort != model.EffortNone {
+		body["output_config"] = map[string]any{"effort": m.Compat.EffortWireMap[r.Effort]}
+	}
 	if len(r.Tools) > 0 {
 		var ts []any
 		for _, t := range r.Tools {
@@ -100,7 +103,7 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 			msg.ToolCalls = append(msg.ToolCalls, ToolCall{b.ID, b.Name, b.Input})
 		}
 	}
-	return Response{Message: msg, Usage: Usage{wire.Usage.Input, wire.Usage.Output, wire.Usage.CacheRead, wire.Usage.CacheWrite}, StopReason: wire.StopReason, Latency: time.Since(start), Model: wire.Model}, nil
+	return Response{Message: msg, Usage: Usage{wire.Usage.Input + wire.Usage.CacheRead + wire.Usage.CacheWrite, wire.Usage.Output, wire.Usage.CacheRead, wire.Usage.CacheWrite}, StopReason: wire.StopReason, Latency: time.Since(start), Model: wire.Model}, nil
 }
 func mapRole(r string) string {
 	if r == "assistant" {

@@ -164,12 +164,9 @@ func (m *Manager) MarkChanged(server string) {
 func (m *Manager) PhaseBoundary(ctx context.Context) error {
 	var es []error
 	for _, s := range m.servers {
-		s.mu.RLock()
-		pending := s.pending
-		s.mu.RUnlock()
-		if pending {
-			es = append(es, s.refresh(ctx))
-		}
+		// Tool definitions are cache-relevant. Refresh only here, never mid-phase;
+		// an unchanged list preserves the exact mounted prefix.
+		es = append(es, s.refresh(ctx))
 	}
 	return errors.Join(es...)
 }

@@ -36,10 +36,12 @@ type TaskRequest struct {
 	Depth        uint32         `json:"depth"`
 }
 type Outcome struct {
-	Tokens                             int           `json:"tokens"`
-	CostUSD                            float64       `json:"cost_usd"`
-	Latency                            time.Duration `json:"latency"`
-	ToolCalls, ToolErrors, EditRetries int           `json:"tool_calls"`
+	Tokens      int           `json:"tokens"`
+	CostUSD     float64       `json:"cost_usd"`
+	Latency     time.Duration `json:"latency"`
+	ToolCalls   int           `json:"tool_calls"`
+	ToolErrors  int           `json:"tool_errors"`
+	EditRetries int           `json:"edit_retries"`
 }
 type ArtifactRef struct{ Path, Description string }
 type TaskResult struct {

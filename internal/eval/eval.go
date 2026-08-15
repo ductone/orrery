@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/ductone/orrey/internal/agentproto"
 	"github.com/ductone/orrey/internal/core"
+	"github.com/ductone/orrey/internal/store"
 	"os"
 	"os/exec"
 	"sort"
@@ -14,9 +15,21 @@ import (
 )
 
 type Case struct {
-	Name, Spec, Workspace, Acceptance string         `json:"name"`
-	ResultSchema                      map[string]any `json:"result_schema,omitempty"`
+	Name         string         `json:"name"`
+	Spec         string         `json:"spec"`
+	Workspace    string         `json:"workspace"`
+	Acceptance   string         `json:"acceptance"`
+	ResultSchema map[string]any `json:"result_schema,omitempty"`
 }
+
+func BuildCase(ctx context.Context, s *store.Store, sessionID, acceptance string) (Case, error) {
+	session, err := s.Session(ctx, sessionID)
+	if err != nil {
+		return Case{}, err
+	}
+	return Case{Name: "session-" + sessionID, Spec: session.Spec, Acceptance: acceptance}, nil
+}
+
 type Result struct {
 	Name         string            `json:"name"`
 	Passed       bool              `json:"passed"`
@@ -27,9 +40,11 @@ type Result struct {
 	Error        string            `json:"error,omitempty"`
 }
 type Report struct {
-	Policy                                    string   `json:"policy"`
-	Results                                   []Result `json:"results"`
-	PassRate, TotalCost, MedianLatencySeconds float64  `json:"pass_rate"`
+	Policy               string   `json:"policy"`
+	Results              []Result `json:"results"`
+	PassRate             float64  `json:"pass_rate"`
+	TotalCost            float64  `json:"total_cost"`
+	MedianLatencySeconds float64  `json:"median_latency_seconds"`
 }
 
 func Load(path string) ([]Case, error) {

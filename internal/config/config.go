@@ -23,6 +23,7 @@ type Config struct {
 	Router        RouterConfig              `yaml:"router"`
 	Budget        BudgetConfig              `yaml:"budget"`
 	Telemetry     TelemetryConfig           `yaml:"telemetry"`
+	WebSearch     WebSearchConfig           `yaml:"web_search"`
 }
 
 type ProviderConfig struct {
@@ -53,6 +54,10 @@ type BudgetConfig struct {
 
 type TelemetryConfig struct {
 	OTLPEndpoint string `yaml:"otlp_endpoint"`
+}
+type WebSearchConfig struct {
+	Provider string `yaml:"provider"`
+	APIKey   string `yaml:"api_key"`
 }
 
 func Default() Config {
@@ -140,6 +145,9 @@ func resolveSecrets(cfg *Config) error {
 			m.Headers[k] = v
 		}
 		cfg.MCP[name] = m
+	}
+	if err := resolve(&cfg.WebSearch.APIKey); err != nil {
+		return fmt.Errorf("web_search: %w", err)
 	}
 	return nil
 }
