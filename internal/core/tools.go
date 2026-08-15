@@ -166,6 +166,7 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 		_ = os.WriteFile(filepath.Join(jobDir, "result.json"), []byte(store.JSON(result)), 0600)
 		_ = os.WriteFile(filepath.Join(jobDir, "status"), []byte(string(result.Status)+"\n"), 0600)
 		e.emit(context.Background(), sid, "job.terminal", map[string]any{"id": id, "result": result}, emit)
+		cleanupWorkspace(parentReq.Workspace.Path, workspacePath, actualIsolation)
 	}()
 	return map[string]any{"id": id, "status": "running", "uri": "job://" + id + "/result"}, nil
 }
@@ -218,34 +219,34 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 func prepareWorkspace(ctx context.Context, src, jobDir, mode string) (string, string, error) {
 	dst := filepath.Join(jobDir, "workspace")
 	switch mode {
-	case "worktree":
+	case "worktree", "shared-ro":
 		cmd := exec.CommandContext(ctx, "git", "-C", src, "worktree", "add", "--detach", dst, "HEAD")
 		if out, err := cmd.CombinedOutput(); err == nil {
-			return dst, "worktree", nil
+			return dst, mode, nil
 		} else if !strings.Contains(string(out), "not a git repository") {
 			return "", "", fmt.Errorf("create worktree: %v: %s", err, out)
 		}
 		mode = "copy"
-	case "copy", "shared-ro":
+	case "copy":
 	default:
 		return "", "", fmt.Errorf("unknown isolation %q", mode)
 	}
 	if err := copyTree(src, dst); err != nil {
 		return "", "", err
 	}
-	if mode == "shared-ro" {
-		_ = filepath.WalkDir(dst, func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if d.IsDir() {
-				return os.Chmod(path, 0555)
-			}
-			return os.Chmod(path, 0444)
-		})
-	}
 	return dst, mode, nil
 }
+
+func cleanupWorkspace(parent, workspace, isolation string) {
+	if isolation == "worktree" || isolation == "shared-ro" {
+		cmd := exec.Command("git", "-C", parent, "worktree", "remove", "--force", workspace)
+		if cmd.Run() == nil {
+			return
+		}
+	}
+	_ = os.RemoveAll(workspace)
+}
+
 func copyTree(src, dst string) error {
 	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -260,6 +261,12 @@ func copyTree(src, dst string) error {
 				return filepath.SkipDir
 			}
 			return nil
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case "node_modules", "vendor", "local_vendor", "bazel-bin", "bazel-out", "bazel-testlogs", ".cache":
+				return filepath.SkipDir
+			}
 		}
 		target := filepath.Join(dst, rel)
 		if d.IsDir() {
