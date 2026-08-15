@@ -1,0 +1,1 @@
+{"name":"smoke","spec":"Create hello.txt containing hello and report success as JSON.","workspace":"/tmp/orrery-smoke","acceptance":"test \"$(cat hello.txt)\" = hello","result_schema":{"type":"object"}}

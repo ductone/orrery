@@ -82,6 +82,8 @@ func Load(path string) (Config, error) {
 	if cfg.Listen == "" || cfg.Database == "" {
 		return cfg, errors.New("config: listen and database must not be empty")
 	}
+	cfg.WorkspaceRoot = expandHome(cfg.WorkspaceRoot)
+	cfg.Database = expandHome(cfg.Database)
 	if cfg.Router.LambdaCost < 0 {
 		return cfg, errors.New("config: router.lambda_cost must be non-negative")
 	}
@@ -92,6 +94,14 @@ func Load(path string) (Config, error) {
 		return cfg, err
 	}
 	return cfg, nil
+}
+func expandHome(path string) string {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, strings.TrimPrefix(path, "~/"))
+		}
+	}
+	return path
 }
 
 func resolveSecrets(cfg *Config) error {

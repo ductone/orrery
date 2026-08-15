@@ -140,6 +140,27 @@ func (r *Registry) Available(spec model.ModelSpec) bool {
 	_, ok := r.clients[providerName(spec.ID)]
 	return ok
 }
+func (r *Registry) AvailableIDs() []string {
+	var out []string
+	for _, m := range model.Catalog {
+		if r.Available(m) {
+			out = append(out, m.ID)
+		}
+	}
+	return out
+}
+func (r *Registry) CompleteOne(ctx context.Context, d router.Decision, build RequestBuilder) (Response, error) {
+	c, ok := r.clients[providerName(d.Model.ID)]
+	if !ok {
+		return Response{}, fmt.Errorf("provider for %s not configured", d.Model.ID)
+	}
+	req, err := build(d.Model, d)
+	if err != nil {
+		return Response{}, err
+	}
+	return c.Complete(ctx, d.Model, req)
+}
+func IsRetryable(err error) bool { return retryable(err) }
 func (r *Registry) Complete(ctx context.Context, d router.Decision, build RequestBuilder) (Response, model.ModelSpec, error) {
 	chain := []model.ModelSpec{d.Model}
 	for _, m := range model.Catalog {

@@ -59,6 +59,8 @@ type RoutingState struct {
 	HasImage, ToolContinuation, NewInstruction bool           `json:"has_image,omitempty"`
 	Stall                                      StallSignals   `json:"stall"`
 	ExcludeFamilies                            []model.Family `json:"exclude_families,omitempty"`
+	ExcludeModels                              []string       `json:"exclude_models,omitempty"`
+	AvailableModels                            []string       `json:"available_models,omitempty"`
 	TierPin                                    model.Tier     `json:"tier_pin,omitempty"`
 	ImplementerFamily                          model.Family   `json:"implementer_family,omitempty"`
 }
@@ -107,6 +109,16 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 	var candidates []Candidate
 	for _, m := range p.catalog {
 		c := Candidate{Model: m.ID}
+		if len(s.AvailableModels) > 0 && !slices.Contains(s.AvailableModels, m.ID) {
+			c.Rejected = "provider not configured"
+			candidates = append(candidates, c)
+			continue
+		}
+		if slices.Contains(s.ExcludeModels, m.ID) {
+			c.Rejected = "model excluded after provider failure"
+			candidates = append(candidates, c)
+			continue
+		}
 		if s.HasImage && !model.Supports(m, model.Image) {
 			c.Rejected = "image unsupported"
 			candidates = append(candidates, c)

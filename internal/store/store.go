@@ -70,9 +70,157 @@ func (s *Store) Session(ctx context.Context, id string) (Session, error) {
 	x.UpdatedAt, _ = time.Parse(time.RFC3339Nano, ua)
 	return x, err
 }
+func (s *Store) Sessions(ctx context.Context) ([]Session, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM sessions ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Session
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		x, err := s.Session(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
 func (s *Store) UpdateSession(ctx context.Context, x Session) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET durable_summary=?,phase=?,model=?,turn=?,spent_usd=?,status=?,updated_at=? WHERE id=?`, x.DurableSummary, x.Phase, x.Model, x.Turn, x.SpentUSD, x.Status, time.Now().UTC().Format(time.RFC3339Nano), x.ID)
 	return err
+}
+
+type Message struct {
+	Role, ContentJSON string
+	CreatedAt         time.Time
+}
+
+func (s *Store) AddMessage(ctx context.Context, sid, role string, content any) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO messages(session_id,role,content_json,created_at)VALUES(?,?,?,?)`, sid, role, JSON(content), time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+func (s *Store) Messages(ctx context.Context, sid string) ([]Message, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT role,content_json,created_at FROM messages WHERE session_id=? ORDER BY id`, sid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Message
+	for rows.Next() {
+		var m Message
+		var ts string
+		if err := rows.Scan(&m.Role, &m.ContentJSON, &ts); err != nil {
+			return nil, err
+		}
+		m.CreatedAt, _ = time.Parse(time.RFC3339Nano, ts)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+func (s *Store) CompactMessages(ctx context.Context, sid string, keep int) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM messages WHERE session_id=? AND id NOT IN (SELECT id FROM messages WHERE session_id=? ORDER BY id DESC LIMIT ?)`, sid, sid, keep)
+	return err
+}
+func (s *Store) InvalidateCaches(ctx context.Context, sid string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE cache_ledger SET warm_prefix_tokens=0,last_hit=NULL WHERE session_id=?`, sid)
+	return err
+}
+
+type Todo struct {
+	Position            int    `json:"position"`
+	Text, Phase, Status string `json:"text"`
+}
+
+func (s *Store) SetTodos(ctx context.Context, sid string, todos []Todo) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM todos WHERE session_id=?`, sid); err != nil {
+		return err
+	}
+	for i, t := range todos {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO todos(session_id,position,text,phase,status)VALUES(?,?,?,?,?)`, sid, i, t.Text, t.Phase, t.Status); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+func (s *Store) Todos(ctx context.Context, sid string) ([]Todo, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT position,text,phase,status FROM todos WHERE session_id=? ORDER BY position`, sid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Todo
+	for rows.Next() {
+		var t Todo
+		if err := rows.Scan(&t.Position, &t.Text, &t.Phase, &t.Status); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+type Job struct {
+	ID, SessionID, ParentJobID, Spec, ResultSchemaJSON, BudgetJSON, WorkspaceJSON, HintsJSON, Model, Status, ResultJSON, OutcomeJSON string
+	Depth                                                                                                                            int
+	CreatedAt, UpdatedAt                                                                                                             time.Time
+}
+
+func (s *Store) CreateJob(ctx context.Context, j Job) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO jobs(id,session_id,parent_job_id,spec,result_schema_json,budget_json,workspace_json,hints_json,depth,model,status,created_at,updated_at)VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, j.ID, j.SessionID, nilIfEmpty(j.ParentJobID), j.Spec, j.ResultSchemaJSON, j.BudgetJSON, j.WorkspaceJSON, j.HintsJSON, j.Depth, j.Model, j.Status, now, now)
+	return err
+}
+func (s *Store) FinishJob(ctx context.Context, id, status string, result, outcome any) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET status=?,result_json=?,outcome_json=?,updated_at=? WHERE id=?`, status, JSON(result), JSON(outcome), time.Now().UTC().Format(time.RFC3339Nano), id)
+	return err
+}
+func (s *Store) Job(ctx context.Context, id string) (Job, error) {
+	var j Job
+	var parent, result, outcome sql.NullString
+	var ca, ua string
+	err := s.db.QueryRowContext(ctx, `SELECT id,session_id,parent_job_id,spec,result_schema_json,budget_json,workspace_json,hints_json,depth,model,status,result_json,outcome_json,created_at,updated_at FROM jobs WHERE id=?`, id).Scan(&j.ID, &j.SessionID, &parent, &j.Spec, &j.ResultSchemaJSON, &j.BudgetJSON, &j.WorkspaceJSON, &j.HintsJSON, &j.Depth, &j.Model, &j.Status, &result, &outcome, &ca, &ua)
+	j.ParentJobID = parent.String
+	j.ResultJSON = result.String
+	j.OutcomeJSON = outcome.String
+	j.CreatedAt, _ = time.Parse(time.RFC3339Nano, ca)
+	j.UpdatedAt, _ = time.Parse(time.RFC3339Nano, ua)
+	return j, err
+}
+func (s *Store) Jobs(ctx context.Context, sid string) ([]Job, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM jobs WHERE session_id=? ORDER BY created_at`, sid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Job
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		j, err := s.Job(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+func nilIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 type Event struct {
