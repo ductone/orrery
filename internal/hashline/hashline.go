@@ -54,7 +54,8 @@ func Read(path string) ([]Line, error) {
 }
 func Apply(p Patch) error {
 	lines, err := Read(p.Path)
-	if err != nil {
+	newFile := errors.Is(err, os.ErrNotExist)
+	if err != nil && !newFile {
 		return err
 	}
 	raw := make([]string, len(lines))
@@ -69,6 +70,9 @@ func Apply(p Patch) error {
 	loc := make([]located, 0, len(p.Hunks))
 	for _, h := range p.Hunks {
 		at := -1
+		if len(lines) == 0 && h.Anchor == hash("") && h.Offset == 0 && h.Delete == 0 {
+			at = 0
+		}
 		for i, l := range lines {
 			if strings.HasPrefix(l.Hash, h.Anchor) {
 				if at != -1 {
@@ -106,11 +110,15 @@ func Apply(p Patch) error {
 	if slices.Equal(raw, original) {
 		return ErrNoChanges
 	}
-	info, err := os.Stat(p.Path)
-	if err != nil {
-		return err
+	mode := os.FileMode(0o644)
+	if !newFile {
+		info, statErr := os.Stat(p.Path)
+		if statErr != nil {
+			return statErr
+		}
+		mode = info.Mode()
 	}
-	return os.WriteFile(p.Path, []byte(strings.Join(raw, "\n")+"\n"), info.Mode())
+	return os.WriteFile(p.Path, []byte(strings.Join(raw, "\n")+"\n"), mode)
 }
 
 func declarationKey(line string) string {

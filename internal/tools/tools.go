@@ -41,7 +41,7 @@ type commandJob struct {
 func New(root string) *Registry {
 	r := NewReadOnly(root)
 	anchor := map[string]any{"type": "string", "pattern": "^[0-9a-f]{8}$", "description": "Exact 8-character hash copied from the latest read result. Never use line text, a line number, or a placeholder."}
-	r.add("edit", "Apply content-anchored hashline hunks. You MUST read the exact target window immediately before editing and copy its latest 8-character hash into anchor. Re-read after compaction or a stale error. Structural declaration deletion is rejected unless explicitly allowed.", schema(map[string]any{"path": str(), "hunks": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"anchor": anchor, "offset": num(), "delete": num(), "insert": map[string]any{"type": "array", "items": str()}, "allow_structural_change": boolean()}, "required": []string{"anchor", "delete", "insert"}, "additionalProperties": false}}}, "path", "hunks"), r.edit)
+	r.add("edit", "Apply content-anchored hashline hunks. You MUST read the exact target window immediately before editing and copy its latest 8-character hash into anchor. To create a new file, use anchor e3b0c442 with delete=0. Re-read after compaction or a stale error. Structural declaration deletion is rejected unless explicitly allowed.", schema(map[string]any{"path": str(), "hunks": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"anchor": anchor, "offset": num(), "delete": num(), "insert": map[string]any{"type": "array", "items": str()}, "allow_structural_change": boolean()}, "required": []string{"anchor", "delete", "insert"}, "additionalProperties": false}}}, "path", "hunks"), r.edit)
 	r.add("exec", "Run a shell command in the workspace. Use background=true for long jobs.", schema(map[string]any{"command": str(), "background": boolean(), "timeout_seconds": num()}, "command"), r.run)
 	r.add("job", "Wait for, cancel, or read logs from a background exec job.", schema(map[string]any{"id": str(), "action": map[string]any{"type": "string", "enum": []string{"wait", "cancel", "logs"}}}, "id", "action"), r.job)
 	return r
@@ -320,6 +320,9 @@ func (r *Registry) run(ctx context.Context, a map[string]any) (any, error) {
 	if cmdText == "" {
 		return nil, errors.New("command required")
 	}
+	if execMutatesSource(cmdText) {
+		return nil, errors.New("exec source mutation rejected; use the edit tool so changes are anchored, reviewable, and measured")
+	}
 	cmd := exec.CommandContext(ctx, "sh", "-lc", cmdText)
 	cmd.Dir = r.root
 	logDir := filepath.Join(r.root, ".orrery", "logs")
@@ -356,6 +359,29 @@ func (r *Registry) run(ctx context.Context, a map[string]any) (any, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+func execMutatesSource(command string) bool {
+	s := strings.ToLower(command)
+	patterns := []string{
+		".write_text(", "os.writefile(", "ioutil.writefile(", "os.create(",
+		"sed -i", "sed --in-place", "perl -pi", "gofmt -w", "go fmt ",
+	}
+	for _, pattern := range patterns {
+		if strings.Contains(s, pattern) {
+			return true
+		}
+	}
+	for _, re := range []*regexp.Regexp{
+		regexp.MustCompile(`(^|[;&|]\s*)touch\s+`),
+		regexp.MustCompile(`(^|[;&|]\s*)(cat|printf|echo)\b[^\n]*>{1,2}\s*[^&]`),
+		regexp.MustCompile(`(^|[;&|]\s*)tee\s+`),
+	} {
+		if re.MatchString(s) {
+			return true
+		}
+	}
+	return false
 }
 func (r *Registry) job(ctx context.Context, a map[string]any) (any, error) {
 	id := asString(a["id"])

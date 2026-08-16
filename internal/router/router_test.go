@@ -48,6 +48,16 @@ func TestReviewUsesDifferentFamily(t *testing.T) {
 		t.Fatalf("same-family reviewer: %s", d.Model.ID)
 	}
 }
+func TestReviewFallsBackToImplementerFamilyWhenOnlyProvider(t *testing.T) {
+	p := NewV1(config.RouterConfig{LambdaCost: .35}, &ledger{})
+	d, _, err := p.Decide(context.Background(), RoutingState{SessionID: "s", Point: ReviewCreation, Phase: Review, InputTokens: 1000, ImplementerFamily: model.XAI, AvailableModels: []string{"xai/grok-4.6"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Model.ID != "xai/grok-4.6" {
+		t.Fatalf("reviewer=%s", d.Model.ID)
+	}
+}
 func TestReviewCrossFamilyOverridesFrontierFloor(t *testing.T) {
 	p := NewV1(config.RouterConfig{LambdaCost: .35, FrontierFloorPhases: []string{"review"}}, &ledger{})
 	d, _, err := p.Decide(context.Background(), RoutingState{SessionID: "s", Point: ReviewCreation, Phase: Review, InputTokens: 1000, ImplementerFamily: model.XAI, AvailableModels: []string{"xai/grok-4.6", "together/deepseek-ai/DeepSeek-V4-Flash-0731"}})

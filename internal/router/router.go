@@ -123,6 +123,7 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 	if s.EstimatedOutput <= 0 {
 		s.EstimatedOutput = 2000
 	}
+	reviewHasAlternate := p.reviewHasAlternateFamily(s)
 	var candidates []Candidate
 	for _, m := range p.catalog {
 		c := Candidate{Model: m.ID}
@@ -161,7 +162,7 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 			candidates = append(candidates, c)
 			continue
 		}
-		if s.Point == ReviewCreation && s.ImplementerFamily != "" && m.Family == s.ImplementerFamily {
+		if reviewHasAlternate && m.Family == s.ImplementerFamily {
 			c.Rejected = "reviewer must use another family"
 			candidates = append(candidates, c)
 			continue
@@ -240,6 +241,30 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 		return Decision{}, "", fmt.Errorf("routing record: %w", err)
 	}
 	return d, why, nil
+}
+
+// reviewHasAlternateFamily keeps cross-family review as the default without
+// making review impossible in a single-provider deployment. It mirrors the
+// hard compatibility filters used by Decide; scoring still chooses the final
+// reviewer once an alternative is known to exist.
+func (p *V1) reviewHasAlternateFamily(s RoutingState) bool {
+	if s.Point != ReviewCreation || s.ImplementerFamily == "" {
+		return false
+	}
+	for _, m := range p.catalog {
+		if m.Family == s.ImplementerFamily ||
+			(s.AvailableModels != nil && !slices.Contains(s.AvailableModels, m.ID)) ||
+			slices.Contains(s.ExcludeModels, m.ID) ||
+			slices.Contains(s.ExcludeFamilies, m.Family) ||
+			(s.HasImage && !model.Supports(m, model.Image)) ||
+			s.InputTokens+s.EstimatedOutput > m.ContextWindow ||
+			(s.TierPin != "" && m.Tier != s.TierPin) ||
+			(p.cfg.DisableSwitch && p.cfg.DefaultModel != "" && m.ID != p.cfg.DefaultModel) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 func quality(t model.Tier, p Phase, stall StallSignals) float64 {
 	q := map[model.Tier]float64{model.Frontier: .96, model.Efficient: .78, model.Tiny: .42}[t]

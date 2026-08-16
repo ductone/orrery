@@ -60,6 +60,18 @@ func TestApplyRejectsNoOpPatch(t *testing.T) {
 	}
 }
 
+func TestApplyCreatesNewFileFromEmptyAnchor(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "new.go")
+	err := Apply(Patch{Path: p, Hunks: []Hunk{{Anchor: hash(""), Insert: []string{"package sample", "", "const value = 1"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil || string(b) != "package sample\n\nconst value = 1\n" {
+		t.Fatalf("content=%q error=%v", b, err)
+	}
+}
+
 func TestAmbiguousAnchorRejected(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "x")
 	_ = os.WriteFile(p, []byte("same\nsame\n"), 0600)

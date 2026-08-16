@@ -16,6 +16,22 @@ func TestExecFailureIsAnError(t *testing.T) {
 		t.Fatalf("value=%v error=%v", v, err)
 	}
 }
+func TestExecRejectsSourceMutationFallbacks(t *testing.T) {
+	r := New(t.TempDir())
+	for _, command := range []string{
+		`touch pkg/new.go`,
+		`python3 -c 'from pathlib import Path; Path("pkg/new.go").write_text("package x")'`,
+		`gofmt -w pkg/file.go`,
+		`printf 'package x' > pkg/new.go`,
+	} {
+		if _, err := r.Call(context.Background(), "exec", map[string]any{"command": command}); err == nil || !strings.Contains(err.Error(), "edit tool") {
+			t.Fatalf("command %q error=%v", command, err)
+		}
+	}
+	if _, err := r.Call(context.Background(), "exec", map[string]any{"command": `true 2>/dev/null`}); err != nil {
+		t.Fatalf("read-only command rejected: %v", err)
+	}
+}
 func TestReadOnlyRegistryOmitsMutationAndShellTools(t *testing.T) {
 	r := NewReadOnly(t.TempDir())
 	names := map[string]bool{}
