@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestHTTPLifecycleAndBoundaryRefresh(t *testing.T) {
@@ -70,6 +72,20 @@ func TestHTTPLifecycleAndBoundaryRefresh(t *testing.T) {
 	}
 	if lists.Load() != 2 {
 		t.Fatalf("list count %d", lists.Load())
+	}
+}
+
+func TestCompactToolDescriptionKeepsToolSpecificTail(t *testing.T) {
+	description := strings.Repeat("shared gateway policy ", 200) + "tool-specific contract"
+	got := compactToolDescription(description)
+	if utf8.RuneCountInString(got) > 1700 {
+		t.Fatalf("description was not compacted: %d runes", utf8.RuneCountInString(got))
+	}
+	if !strings.Contains(got, "shared MCP description elided") || !strings.HasSuffix(got, "tool-specific contract") {
+		t.Fatalf("unexpected compact description: %q", got)
+	}
+	if got = compactToolDescription(" concise tool "); got != "concise tool" {
+		t.Fatalf("short description changed: %q", got)
 	}
 }
 

@@ -111,13 +111,30 @@ func (s *Server) refresh(ctx context.Context) error {
 	}
 	defs := make([]provider.Tool, 0, len(x.Tools))
 	for _, t := range x.Tools {
-		defs = append(defs, provider.Tool{Name: s.Name + "." + t.Name, Description: t.Description, InputSchema: t.InputSchema})
+		defs = append(defs, provider.Tool{Name: s.Name + "." + t.Name, Description: compactToolDescription(t.Description), InputSchema: t.InputSchema})
 	}
 	s.mu.Lock()
 	s.tools = defs
 	s.pending = false
 	s.mu.Unlock()
 	return nil
+}
+
+// compactToolDescription prevents gateway-wide policy boilerplate from being
+// replayed for every exposed tool. Keep both ends because MCP gateways commonly
+// put shared operating instructions first and the tool-specific contract last.
+// The server remains authoritative for validation through InputSchema.
+func compactToolDescription(description string) string {
+	const (
+		maxRunes  = 1600
+		headRunes = 400
+	)
+	runes := []rune(strings.TrimSpace(description))
+	if len(runes) <= maxRunes {
+		return string(runes)
+	}
+	tailRunes := maxRunes - headRunes
+	return string(runes[:headRunes]) + "\n\n[shared MCP description elided by Orrery]\n\n" + string(runes[len(runes)-tailRunes:])
 }
 func (m *Manager) Definitions() []provider.Tool {
 	var out []provider.Tool
