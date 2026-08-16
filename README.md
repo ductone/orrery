@@ -4,6 +4,8 @@ Orrery is an opinionated Go agent harness that chooses models inside the agent l
 
 Its contract is one binary, one strict YAML config, a checked-in model catalog, durable SQLite state, built-in coding tools, isolated in-process worker jobs, MCP clients, a local SSE web UI, and routing telemetry suitable for training a later learned policy.
 
+The project's goals, invariants, and intentional boundaries are recorded in the [design charter](docs/design.md). Architectural details are in [architecture](docs/architecture.md).
+
 ## Build
 
 ```sh
