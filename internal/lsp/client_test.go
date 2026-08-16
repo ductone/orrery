@@ -31,6 +31,17 @@ func TestManagerDefinition(t *testing.T) {
 	if !strings.Contains(string(b), "main.go") || !strings.Contains(string(b), `"line":2`) {
 		t.Fatalf("result=%s", b)
 	}
+	if err = os.WriteFile(path, []byte("package main\n\nvar changed = true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err = m.Call(context.Background(), root, Request{Operation: "definition", Path: "main.go", Line: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ = json.Marshal(result)
+	if !strings.Contains(string(b), `"line":3`) {
+		t.Fatalf("server did not receive didChange: %s", b)
+	}
 }
 
 func TestWorkspaceBoundary(t *testing.T) {
@@ -42,11 +53,33 @@ func TestWorkspaceBoundary(t *testing.T) {
 	}
 }
 
+func TestGoplsIntegration(t *testing.T) {
+	command := os.Getenv("ORRERY_TEST_GOPLS")
+	if command == "" {
+		t.Skip("set ORRERY_TEST_GOPLS to exercise a real gopls")
+	}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(map[string]config.LSPConfig{"gopls": {Command: []string{command}, Extensions: []string{".go"}, LanguageID: "go"}})
+	defer m.Close()
+	result, err := m.Call(context.Background(), root, Request{Operation: "document_symbols", Path: "internal/lsp/client.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(result)
+	if !strings.Contains(string(b), "Manager") || !strings.Contains(string(b), "client") {
+		t.Fatalf("unexpected symbols: %.1000s", b)
+	}
+}
+
 func TestLSPHelper(t *testing.T) {
 	if len(os.Args) == 0 || os.Args[len(os.Args)-1] != "lsp-helper" {
 		return
 	}
 	r := bufio.NewReader(os.Stdin)
+	changed := false
 	for {
 		body, err := readTestFrame(r)
 		if err != nil {
@@ -61,13 +94,21 @@ func TestLSPHelper(t *testing.T) {
 		if method == "exit" {
 			os.Exit(0)
 		}
+		if method == "textDocument/didChange" {
+			changed = true
+			continue
+		}
 		id, hasID := req["id"]
 		if !hasID {
 			continue
 		}
 		var result any = map[string]any{}
 		if method == "textDocument/definition" {
-			result = []map[string]any{{"uri": "file:///workspace/main.go", "range": map[string]any{"start": map[string]any{"line": 2, "character": 1}, "end": map[string]any{"line": 2, "character": 4}}}}
+			line := 2
+			if changed {
+				line = 3
+			}
+			result = []map[string]any{{"uri": "file:///workspace/main.go", "range": map[string]any{"start": map[string]any{"line": line, "character": 1}, "end": map[string]any{"line": line, "character": 4}}}}
 		}
 		writeTestFrame(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
 	}

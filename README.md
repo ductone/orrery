@@ -23,6 +23,10 @@ Provider keys may be literal strings or `!cmd <command>` values. Secret commands
 # CI-friendly headless task; TaskResult is JSON and status controls the exit code
 ./orrery --config orrery.yaml run -p "Fix the failing tests" --workspace "$PWD"
 
+# Embedding transports: newline-delimited JSON-RPC 2.0 or ACP v1 over stdio
+./orrery --config orrery.yaml rpc
+./orrery --config orrery.yaml acp
+
 # Canonical learning dataset, with source content excluded
 ./orrery --config orrery.yaml export --since 24h > routing.jsonl
 
@@ -42,7 +46,27 @@ Benchmark cases run in disposable fixture copies. Reports include pass rate, cos
 
 Root and worker agents share the typed contract in [`proto/agent.proto`](proto/agent.proto). Workers default to detached Git worktrees and fall back to a copied workspace outside Git repositories. Their specs, status, and schema-validated results remain under `.orrery/jobs/` as well as in SQLite.
 
-The built-in tool set is `read`, `search`, hashline `edit`, `exec`, background `job`, `todo`, `spawn`, `skill`, `web_search`, and `fetch`. MCP tools are namespaced by server. Public fetches reject private, loopback, link-local, credential-bearing, and non-HTTP URLs.
+The built-in tool set is `read`, `search`, hashline `edit`, `exec`, background `job`, `todo`, `spawn`, `ask`, `skill`, `web_search`, and `fetch`. Configuring a language server adds the read-only `lsp` tool for definitions, references, hover, symbols, and diagnostics. MCP tools are namespaced by server. Public fetches reject private, loopback, link-local, credential-bearing, and non-HTTP URLs.
+
+The `ask` tool transitions only the current turn to `input_required`; the session remains resumable through the next message. The typed state is available through HTTP/SSE, native JSON-RPC, ACP `_meta`, and the web composer. The web UI also supports explicit checkpoints, semantic compaction, conversational forks, and restore. Restore never rewrites workspace files.
+
+## Language servers
+
+Language servers are configured explicitly and started lazily per workspace:
+
+```yaml
+lsp:
+  gopls:
+    command: ["gopls"]
+    extensions: [".go"]
+    language_id: "go"
+```
+
+Orrery implements LSP framing and lifecycle directly. Its initial surface is deliberately read-only so semantic navigation cannot bypass hashline staleness checks or edit metrics.
+
+## Context recovery
+
+Automatic compaction runs at phase changes and at 75% of the selected model's context window. Orrery creates a restorable checkpoint before trimming, asks the active model for a structured durable state, retains four complete assistant turns, and invalidates cache warmth. The durable state preserves requirements, decisions, completed work, files, verification, open work, blockers, instructions, and worker results. If semantic summarization fails, a structured deterministic digest is used instead of risking the original history.
 
 ## Workspace instructions and skills
 

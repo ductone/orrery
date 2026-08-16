@@ -17,6 +17,7 @@ import (
 
 	"github.com/ductone/orrey/internal/agentproto"
 	"github.com/ductone/orrey/internal/core"
+	"github.com/ductone/orrey/internal/provider"
 )
 
 type Mode string
@@ -249,7 +250,10 @@ func (s *Server) event(sessionID string, ev agentproto.AgentEvent) {
 	update := map[string]any{"sessionUpdate": "orrery_event", "_meta": map[string]any{"type": ev.Type, "data": ev.Data}}
 	if ev.Type == "assistant.message" {
 		if m, ok := ev.Data.(map[string]any); ok {
-			update = map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": fmt.Sprint(m["message"])}}
+			b, _ := json.Marshal(m["message"])
+			var message provider.Message
+			_ = json.Unmarshal(b, &message)
+			update = map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": message.Content}}
 		}
 	}
 	if ev.Type == "input.required" {

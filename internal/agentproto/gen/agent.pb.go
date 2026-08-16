@@ -497,6 +497,66 @@ func (x *InputRequest) GetAllowFreeform() bool {
 	return false
 }
 
+type ContinueRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Content       string                 `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
+	InputId       string                 `protobuf:"bytes,3,opt,name=input_id,json=inputId,proto3" json:"input_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContinueRequest) Reset() {
+	*x = ContinueRequest{}
+	mi := &file_agent_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContinueRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContinueRequest) ProtoMessage() {}
+
+func (x *ContinueRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContinueRequest.ProtoReflect.Descriptor instead.
+func (*ContinueRequest) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ContinueRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *ContinueRequest) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+func (x *ContinueRequest) GetInputId() string {
+	if x != nil {
+		return x.InputId
+	}
+	return ""
+}
+
 type Outcome struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Tokens        uint64                 `protobuf:"varint,1,opt,name=tokens,proto3" json:"tokens,omitempty"`
@@ -512,7 +572,7 @@ type Outcome struct {
 
 func (x *Outcome) Reset() {
 	*x = Outcome{}
-	mi := &file_agent_proto_msgTypes[6]
+	mi := &file_agent_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -524,7 +584,7 @@ func (x *Outcome) String() string {
 func (*Outcome) ProtoMessage() {}
 
 func (x *Outcome) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[6]
+	mi := &file_agent_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -537,7 +597,7 @@ func (x *Outcome) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Outcome.ProtoReflect.Descriptor instead.
 func (*Outcome) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{6}
+	return file_agent_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *Outcome) GetTokens() uint64 {
@@ -599,7 +659,7 @@ type ArtifactRef struct {
 
 func (x *ArtifactRef) Reset() {
 	*x = ArtifactRef{}
-	mi := &file_agent_proto_msgTypes[7]
+	mi := &file_agent_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -611,7 +671,7 @@ func (x *ArtifactRef) String() string {
 func (*ArtifactRef) ProtoMessage() {}
 
 func (x *ArtifactRef) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[7]
+	mi := &file_agent_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -624,7 +684,7 @@ func (x *ArtifactRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArtifactRef.ProtoReflect.Descriptor instead.
 func (*ArtifactRef) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{7}
+	return file_agent_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ArtifactRef) GetPath() string {
@@ -654,7 +714,7 @@ type TaskResult struct {
 
 func (x *TaskResult) Reset() {
 	*x = TaskResult{}
-	mi := &file_agent_proto_msgTypes[8]
+	mi := &file_agent_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -666,7 +726,7 @@ func (x *TaskResult) String() string {
 func (*TaskResult) ProtoMessage() {}
 
 func (x *TaskResult) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[8]
+	mi := &file_agent_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -679,7 +739,7 @@ func (x *TaskResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskResult.ProtoReflect.Descriptor instead.
 func (*TaskResult) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{8}
+	return file_agent_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *TaskResult) GetStatus() Status {
@@ -729,7 +789,7 @@ type AgentEvent struct {
 
 func (x *AgentEvent) Reset() {
 	*x = AgentEvent{}
-	mi := &file_agent_proto_msgTypes[9]
+	mi := &file_agent_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -741,7 +801,7 @@ func (x *AgentEvent) String() string {
 func (*AgentEvent) ProtoMessage() {}
 
 func (x *AgentEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[9]
+	mi := &file_agent_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -754,7 +814,7 @@ func (x *AgentEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentEvent.ProtoReflect.Descriptor instead.
 func (*AgentEvent) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{9}
+	return file_agent_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *AgentEvent) GetType() string {
@@ -794,7 +854,7 @@ type CancelRequest struct {
 
 func (x *CancelRequest) Reset() {
 	*x = CancelRequest{}
-	mi := &file_agent_proto_msgTypes[10]
+	mi := &file_agent_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -806,7 +866,7 @@ func (x *CancelRequest) String() string {
 func (*CancelRequest) ProtoMessage() {}
 
 func (x *CancelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[10]
+	mi := &file_agent_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -819,7 +879,7 @@ func (x *CancelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelRequest.ProtoReflect.Descriptor instead.
 func (*CancelRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{10}
+	return file_agent_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CancelRequest) GetJobId() string {
@@ -838,7 +898,7 @@ type CancelResponse struct {
 
 func (x *CancelResponse) Reset() {
 	*x = CancelResponse{}
-	mi := &file_agent_proto_msgTypes[11]
+	mi := &file_agent_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -850,7 +910,7 @@ func (x *CancelResponse) String() string {
 func (*CancelResponse) ProtoMessage() {}
 
 func (x *CancelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[11]
+	mi := &file_agent_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -863,7 +923,7 @@ func (x *CancelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelResponse.ProtoReflect.Descriptor instead.
 func (*CancelResponse) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{11}
+	return file_agent_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CancelResponse) GetCancelled() bool {
@@ -910,7 +970,12 @@ const file_agent_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bquestion\x18\x02 \x01(\tR\bquestion\x12\x18\n" +
 	"\achoices\x18\x03 \x03(\tR\achoices\x12%\n" +
-	"\x0eallow_freeform\x18\x04 \x01(\bR\rallowFreeform\"\xf9\x01\n" +
+	"\x0eallow_freeform\x18\x04 \x01(\bR\rallowFreeform\"e\n" +
+	"\x0fContinueRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x18\n" +
+	"\acontent\x18\x02 \x01(\tR\acontent\x12\x19\n" +
+	"\binput_id\x18\x03 \x01(\tR\ainputId\"\xf9\x01\n" +
 	"\aOutcome\x12\x16\n" +
 	"\x06tokens\x18\x01 \x01(\x04R\x06tokens\x12\x19\n" +
 	"\bcost_usd\x18\x02 \x01(\x01R\acostUsd\x123\n" +
@@ -947,9 +1012,10 @@ const file_agent_proto_rawDesc = "" +
 	"\x04FAIL\x10\x02\x12\x14\n" +
 	"\x10BUDGET_EXHAUSTED\x10\x03\x12\r\n" +
 	"\tCANCELLED\x10\x04\x12\x12\n" +
-	"\x0eINPUT_REQUIRED\x10\x052\x96\x01\n" +
+	"\x0eINPUT_REQUIRED\x10\x052\xe3\x01\n" +
 	"\x05Agent\x12B\n" +
-	"\x03Run\x12\x1c.orrery.agent.v1.TaskRequest\x1a\x1b.orrery.agent.v1.AgentEvent0\x01\x12I\n" +
+	"\x03Run\x12\x1c.orrery.agent.v1.TaskRequest\x1a\x1b.orrery.agent.v1.AgentEvent0\x01\x12K\n" +
+	"\bContinue\x12 .orrery.agent.v1.ContinueRequest\x1a\x1b.orrery.agent.v1.AgentEvent0\x01\x12I\n" +
 	"\x06Cancel\x12\x1e.orrery.agent.v1.CancelRequest\x1a\x1f.orrery.agent.v1.CancelResponseB:Z8github.com/ductone/orrey/internal/agentproto/gen;agentv1b\x06proto3"
 
 var (
@@ -965,7 +1031,7 @@ func file_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_agent_proto_goTypes = []any{
 	(Status)(0),                 // 0: orrery.agent.v1.Status
 	(*Budget)(nil),              // 1: orrery.agent.v1.Budget
@@ -974,36 +1040,39 @@ var file_agent_proto_goTypes = []any{
 	(*AttachmentRef)(nil),       // 4: orrery.agent.v1.AttachmentRef
 	(*TaskRequest)(nil),         // 5: orrery.agent.v1.TaskRequest
 	(*InputRequest)(nil),        // 6: orrery.agent.v1.InputRequest
-	(*Outcome)(nil),             // 7: orrery.agent.v1.Outcome
-	(*ArtifactRef)(nil),         // 8: orrery.agent.v1.ArtifactRef
-	(*TaskResult)(nil),          // 9: orrery.agent.v1.TaskResult
-	(*AgentEvent)(nil),          // 10: orrery.agent.v1.AgentEvent
-	(*CancelRequest)(nil),       // 11: orrery.agent.v1.CancelRequest
-	(*CancelResponse)(nil),      // 12: orrery.agent.v1.CancelResponse
-	(*durationpb.Duration)(nil), // 13: google.protobuf.Duration
-	(*structpb.Struct)(nil),     // 14: google.protobuf.Struct
+	(*ContinueRequest)(nil),     // 7: orrery.agent.v1.ContinueRequest
+	(*Outcome)(nil),             // 8: orrery.agent.v1.Outcome
+	(*ArtifactRef)(nil),         // 9: orrery.agent.v1.ArtifactRef
+	(*TaskResult)(nil),          // 10: orrery.agent.v1.TaskResult
+	(*AgentEvent)(nil),          // 11: orrery.agent.v1.AgentEvent
+	(*CancelRequest)(nil),       // 12: orrery.agent.v1.CancelRequest
+	(*CancelResponse)(nil),      // 13: orrery.agent.v1.CancelResponse
+	(*durationpb.Duration)(nil), // 14: google.protobuf.Duration
+	(*structpb.Struct)(nil),     // 15: google.protobuf.Struct
 }
 var file_agent_proto_depIdxs = []int32{
-	13, // 0: orrery.agent.v1.Budget.max_wallclock:type_name -> google.protobuf.Duration
-	14, // 1: orrery.agent.v1.TaskRequest.result_schema:type_name -> google.protobuf.Struct
+	14, // 0: orrery.agent.v1.Budget.max_wallclock:type_name -> google.protobuf.Duration
+	15, // 1: orrery.agent.v1.TaskRequest.result_schema:type_name -> google.protobuf.Struct
 	1,  // 2: orrery.agent.v1.TaskRequest.budget:type_name -> orrery.agent.v1.Budget
 	2,  // 3: orrery.agent.v1.TaskRequest.workspace:type_name -> orrery.agent.v1.Workspace
 	3,  // 4: orrery.agent.v1.TaskRequest.hints:type_name -> orrery.agent.v1.RoutingHints
 	4,  // 5: orrery.agent.v1.TaskRequest.attachments:type_name -> orrery.agent.v1.AttachmentRef
-	13, // 6: orrery.agent.v1.Outcome.latency:type_name -> google.protobuf.Duration
+	14, // 6: orrery.agent.v1.Outcome.latency:type_name -> google.protobuf.Duration
 	0,  // 7: orrery.agent.v1.TaskResult.status:type_name -> orrery.agent.v1.Status
-	14, // 8: orrery.agent.v1.TaskResult.result:type_name -> google.protobuf.Struct
-	7,  // 9: orrery.agent.v1.TaskResult.outcome:type_name -> orrery.agent.v1.Outcome
-	8,  // 10: orrery.agent.v1.TaskResult.artifacts:type_name -> orrery.agent.v1.ArtifactRef
-	14, // 11: orrery.agent.v1.AgentEvent.data:type_name -> google.protobuf.Struct
-	9,  // 12: orrery.agent.v1.AgentEvent.terminal:type_name -> orrery.agent.v1.TaskResult
+	15, // 8: orrery.agent.v1.TaskResult.result:type_name -> google.protobuf.Struct
+	8,  // 9: orrery.agent.v1.TaskResult.outcome:type_name -> orrery.agent.v1.Outcome
+	9,  // 10: orrery.agent.v1.TaskResult.artifacts:type_name -> orrery.agent.v1.ArtifactRef
+	15, // 11: orrery.agent.v1.AgentEvent.data:type_name -> google.protobuf.Struct
+	10, // 12: orrery.agent.v1.AgentEvent.terminal:type_name -> orrery.agent.v1.TaskResult
 	6,  // 13: orrery.agent.v1.AgentEvent.input_required:type_name -> orrery.agent.v1.InputRequest
 	5,  // 14: orrery.agent.v1.Agent.Run:input_type -> orrery.agent.v1.TaskRequest
-	11, // 15: orrery.agent.v1.Agent.Cancel:input_type -> orrery.agent.v1.CancelRequest
-	10, // 16: orrery.agent.v1.Agent.Run:output_type -> orrery.agent.v1.AgentEvent
-	12, // 17: orrery.agent.v1.Agent.Cancel:output_type -> orrery.agent.v1.CancelResponse
-	16, // [16:18] is the sub-list for method output_type
-	14, // [14:16] is the sub-list for method input_type
+	7,  // 15: orrery.agent.v1.Agent.Continue:input_type -> orrery.agent.v1.ContinueRequest
+	12, // 16: orrery.agent.v1.Agent.Cancel:input_type -> orrery.agent.v1.CancelRequest
+	11, // 17: orrery.agent.v1.Agent.Run:output_type -> orrery.agent.v1.AgentEvent
+	11, // 18: orrery.agent.v1.Agent.Continue:output_type -> orrery.agent.v1.AgentEvent
+	13, // 19: orrery.agent.v1.Agent.Cancel:output_type -> orrery.agent.v1.CancelResponse
+	17, // [17:20] is the sub-list for method output_type
+	14, // [14:17] is the sub-list for method input_type
 	14, // [14:14] is the sub-list for extension type_name
 	14, // [14:14] is the sub-list for extension extendee
 	0,  // [0:14] is the sub-list for field type_name
@@ -1020,7 +1089,7 @@ func file_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agent_proto_rawDesc), len(file_agent_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   12,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

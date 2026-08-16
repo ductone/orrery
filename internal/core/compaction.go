@@ -35,7 +35,7 @@ type DurableState struct {
 }
 
 func (d DurableState) valid() bool {
-	return strings.TrimSpace(d.Objective) != "" && (len(d.Completed) > 0 || len(d.OpenWork) > 0 || len(d.Decisions) > 0)
+	return strings.TrimSpace(d.Objective) != "" && (len(d.Requirements) > 0 || len(d.Completed) > 0 || len(d.OpenWork) > 0 || len(d.Decisions) > 0 || len(d.Verification) > 0 || len(d.Blockers) > 0)
 }
 
 // Compact creates a recovery checkpoint before replacing history. Failure to
@@ -96,6 +96,9 @@ func (e *Engine) compactState(ctx context.Context, sid, reason string, emit Emit
 	meta["kept_turns"] = 4
 	meta["checkpoint_id"] = cp.ID
 	meta["reason"] = reason
+	if meta["strategy"] == "semantic" {
+		e.emit(ctx, sid, "usage.reported", map[string]any{"model": meta["model"], "kind": "compaction", "input_tokens": meta["input_tokens"], "output_tokens": meta["output_tokens"], "cost_usd": meta["cost_usd"]}, emit)
+	}
 	e.emit(ctx, sid, "context.compacted", meta, emit)
 	return nil
 }
@@ -115,6 +118,10 @@ func (e *Engine) semanticSummary(ctx context.Context, s store.Session, old []sto
 	transcript := compactTranscript(old, 96_000)
 	system := `Summarize an autonomous coding session for lossless continuation. Return one JSON object only with these exact keys: objective, requirements, decisions, completed, files, verification, open_work, blockers, instructions, worker_results. objective is a string; every other field is an array of concise strings. Preserve concrete paths, symbols, commands, test outcomes, constraints, unresolved hypotheses, loaded instruction/skill names, and worker findings. Do not invent completion or evidence.`
 	prompt := "ORIGINAL TASK\n" + s.Spec + "\n\nPRIOR DURABLE STATE\n" + s.DurableSummary + "\n\nACTIVITY TO COMPACT\n" + transcript
+	estimatedCost := spec.Pricing.Estimate(estimate(prompt), 2200, 0)
+	if s.BudgetUSD > 0 && estimatedCost > s.BudgetUSD-s.SpentUSD {
+		return DurableState{}, nil, errors.New("insufficient remaining budget for semantic summary")
+	}
 	effort := model.EffortLow
 	if len(spec.Effort) > 0 {
 		effort = spec.Effort[0]

@@ -19,8 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Agent_Run_FullMethodName    = "/orrery.agent.v1.Agent/Run"
-	Agent_Cancel_FullMethodName = "/orrery.agent.v1.Agent/Cancel"
+	Agent_Run_FullMethodName      = "/orrery.agent.v1.Agent/Run"
+	Agent_Continue_FullMethodName = "/orrery.agent.v1.Agent/Continue"
+	Agent_Cancel_FullMethodName   = "/orrery.agent.v1.Agent/Cancel"
 )
 
 // AgentClient is the client API for Agent service.
@@ -28,6 +29,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type AgentClient interface {
 	Run(ctx context.Context, in *TaskRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[AgentEvent], error)
+	Continue(ctx context.Context, in *ContinueRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[AgentEvent], error)
 	Cancel(ctx context.Context, in *CancelRequest, opts ...grpc.CallOption) (*CancelResponse, error)
 }
 
@@ -58,6 +60,25 @@ func (c *agentClient) Run(ctx context.Context, in *TaskRequest, opts ...grpc.Cal
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Agent_RunClient = grpc.ServerStreamingClient[AgentEvent]
 
+func (c *agentClient) Continue(ctx context.Context, in *ContinueRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[AgentEvent], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Agent_ServiceDesc.Streams[1], Agent_Continue_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ContinueRequest, AgentEvent]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Agent_ContinueClient = grpc.ServerStreamingClient[AgentEvent]
+
 func (c *agentClient) Cancel(ctx context.Context, in *CancelRequest, opts ...grpc.CallOption) (*CancelResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CancelResponse)
@@ -73,6 +94,7 @@ func (c *agentClient) Cancel(ctx context.Context, in *CancelRequest, opts ...grp
 // for forward compatibility.
 type AgentServer interface {
 	Run(*TaskRequest, grpc.ServerStreamingServer[AgentEvent]) error
+	Continue(*ContinueRequest, grpc.ServerStreamingServer[AgentEvent]) error
 	Cancel(context.Context, *CancelRequest) (*CancelResponse, error)
 	mustEmbedUnimplementedAgentServer()
 }
@@ -86,6 +108,9 @@ type UnimplementedAgentServer struct{}
 
 func (UnimplementedAgentServer) Run(*TaskRequest, grpc.ServerStreamingServer[AgentEvent]) error {
 	return status.Error(codes.Unimplemented, "method Run not implemented")
+}
+func (UnimplementedAgentServer) Continue(*ContinueRequest, grpc.ServerStreamingServer[AgentEvent]) error {
+	return status.Error(codes.Unimplemented, "method Continue not implemented")
 }
 func (UnimplementedAgentServer) Cancel(context.Context, *CancelRequest) (*CancelResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Cancel not implemented")
@@ -122,6 +147,17 @@ func _Agent_Run_Handler(srv interface{}, stream grpc.ServerStream) error {
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Agent_RunServer = grpc.ServerStreamingServer[AgentEvent]
 
+func _Agent_Continue_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(ContinueRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(AgentServer).Continue(m, &grpc.GenericServerStream[ContinueRequest, AgentEvent]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Agent_ContinueServer = grpc.ServerStreamingServer[AgentEvent]
+
 func _Agent_Cancel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CancelRequest)
 	if err := dec(in); err != nil {
@@ -156,6 +192,11 @@ var Agent_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "Run",
 			Handler:       _Agent_Run_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "Continue",
+			Handler:       _Agent_Continue_Handler,
 			ServerStreams: true,
 		},
 	},

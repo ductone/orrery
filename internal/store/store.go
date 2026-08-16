@@ -435,6 +435,9 @@ func (s *Store) RestoreCheckpoint(ctx context.Context, sid, checkpointID string)
 	if _, err = tx.ExecContext(ctx, `DELETE FROM todos WHERE session_id=?`, sid); err != nil {
 		return err
 	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM pending_inputs WHERE session_id=?`, sid); err != nil {
+		return err
+	}
 	for i, todo := range todos {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO todos(session_id,position,text,phase,status) VALUES(?,?,?,?,?)`, sid, i, todo.Text, todo.Phase, todo.Status); err != nil {
 			return err

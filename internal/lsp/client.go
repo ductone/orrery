@@ -5,6 +5,7 @@ package lsp
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ductone/orrey/internal/config"
 )
@@ -181,8 +183,12 @@ type client struct {
 	out         *bufio.Reader
 	next        int
 	root        string
-	opened      map[string]bool
+	opened      map[string]openDocument
 	diagnostics map[string]json.RawMessage
+}
+type openDocument struct {
+	Hash    [32]byte
+	Version int
 }
 
 func start(ctx context.Context, root string, cfg config.LSPConfig) (*client, error) {
@@ -200,7 +206,7 @@ func start(ctx context.Context, root string, cfg config.LSPConfig) (*client, err
 	if err = cmd.Start(); err != nil {
 		return nil, err
 	}
-	c := &client{cmd: cmd, in: stdin, out: bufio.NewReader(stdout), root: root, opened: map[string]bool{}, diagnostics: map[string]json.RawMessage{}}
+	c := &client{cmd: cmd, in: stdin, out: bufio.NewReader(stdout), root: root, opened: map[string]openDocument{}, diagnostics: map[string]json.RawMessage{}}
 	_, err = c.request(ctx, "initialize", map[string]any{"processId": os.Getpid(), "rootUri": fileURI(root), "workspaceFolders": []map[string]any{{"uri": fileURI(root), "name": filepath.Base(root)}}, "capabilities": map[string]any{"textDocument": map[string]any{"definition": map[string]any{}, "references": map[string]any{}, "hover": map[string]any{}, "documentSymbol": map[string]any{}, "diagnostic": map[string]any{}}, "workspace": map[string]any{"symbol": map[string]any{}}}})
 	if err != nil {
 		_ = c.close()
@@ -214,9 +220,6 @@ func start(ctx context.Context, root string, cfg config.LSPConfig) (*client, err
 }
 func (c *client) open(ctx context.Context, path, language string) error {
 	uri := fileURI(path)
-	if c.opened[uri] {
-		return nil
-	}
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -224,10 +227,23 @@ func (c *client) open(ctx context.Context, path, language string) error {
 	if language == "" {
 		language = strings.TrimPrefix(filepath.Ext(path), ".")
 	}
+	hash := sha256.Sum256(content)
+	if previous, ok := c.opened[uri]; ok {
+		if previous.Hash == hash {
+			return nil
+		}
+		previous.Version++
+		if err = c.notify("textDocument/didChange", map[string]any{"textDocument": map[string]any{"uri": uri, "version": previous.Version}, "contentChanges": []map[string]any{{"text": string(content)}}}); err != nil {
+			return err
+		}
+		previous.Hash = hash
+		c.opened[uri] = previous
+		return nil
+	}
 	if err = c.notify("textDocument/didOpen", map[string]any{"textDocument": map[string]any{"uri": uri, "languageId": language, "version": 1, "text": string(content)}}); err != nil {
 		return err
 	}
-	c.opened[uri] = true
+	c.opened[uri] = openDocument{Hash: hash, Version: 1}
 	return nil
 }
 func (c *client) request(ctx context.Context, method string, params any) (any, error) {
@@ -328,6 +344,8 @@ func (c *client) read() (envelope, error) {
 	return msg, err
 }
 func (c *client) close() error {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.cmd == nil {
@@ -336,7 +354,15 @@ func (c *client) close() error {
 	_ = c.write(map[string]any{"jsonrpc": "2.0", "id": c.next + 1, "method": "shutdown", "params": nil})
 	_ = c.write(map[string]any{"jsonrpc": "2.0", "method": "exit"})
 	_ = c.in.Close()
-	err := c.cmd.Wait()
+	done := make(chan error, 1)
+	go func() { done <- c.cmd.Wait() }()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(2 * time.Second):
+		_ = c.cmd.Process.Kill()
+		err = <-done
+	}
 	c.cmd = nil
 	return err
 }

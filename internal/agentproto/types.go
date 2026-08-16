@@ -18,6 +18,7 @@ type InputRequest struct {
 	Choices       []string `json:"choices,omitempty"`
 	AllowFreeform bool     `json:"allow_freeform"`
 }
+type ContinueRequest struct{ SessionID, Content, InputID string }
 
 type Budget struct {
 	MaxTokens    int           `json:"max_tokens"`

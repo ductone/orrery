@@ -264,6 +264,8 @@ func run(ctx context.Context, rt *runtime, args []string) int {
 		return 3
 	case agentproto.Cancelled:
 		return 130
+	case agentproto.InputRequired:
+		return 4
 	default:
 		return 1
 	}
@@ -361,6 +363,8 @@ func usage() {
 commands:
   serve [--listen address]       run the web UI and HTTP/SSE transport
   run -p "task" [--workspace]    run one task; emit JSON TaskResult
+  rpc                            serve Orrery JSON-RPC 2.0 over stdio
+  acp                            serve ACP v1 over stdio
   export [--since 24h]           emit routing records as JSONL
   eval --set tasks.jsonl         run a replay set
   benchmark --set cases.jsonl    run isolated engineering cases and compare trends`)
