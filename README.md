@@ -2,7 +2,7 @@
 
 Orrery is an opinionated Go agent harness that chooses models inside the agent loop. Routing accounts for task phase, progress and failure signals, compatibility constraints, and the real cost of abandoning a warm prompt cache.
 
-Its contract is one binary, one strict YAML config, a checked-in model catalog, durable SQLite state, built-in coding tools, isolated in-process worker jobs, MCP clients, a local SSE web UI, and routing telemetry suitable for training a later learned policy.
+Its contract is one binary, one strict YAML config, a checked-in model catalog, durable SQLite state, built-in coding tools, context-isolated in-process worker jobs, MCP clients, a local SSE web UI, and routing telemetry suitable for training a later learned policy.
 
 The project's goals, invariants, and intentional boundaries are recorded in the [design charter](docs/design.md). Architectural details are in [architecture](docs/architecture.md).
 
@@ -46,7 +46,9 @@ Provider keys may be literal strings or `!cmd <command>` values. Secret commands
 
 Benchmark cases run in disposable fixture copies. Reports include pass rate, cost per successful case, tokens, latency percentiles, tool errors, first-attempt edit land rate, verification, and independent review. A baseline comparison enforces the 97% pass-rate guardrail before cost improvements count. Keep private replay sets and reports under `.orrery/`; only synthetic, public-safe fixtures belong in the repository.
 
-Root and worker agents share the typed contract in [`proto/agent.proto`](proto/agent.proto). Workers default to detached Git worktrees and fall back to a copied workspace outside Git repositories. Their specs, status, and schema-validated results remain under `.orrery/jobs/` as well as in SQLite.
+Root and worker agents share the typed contract in [`proto/agent.proto`](proto/agent.proto). A worker receives either `read` access to the existing checkout or synchronous `shared-write` access. Exploration, planning, and review default to `read`; implementation defaults to `shared-write`. Orrery does not create worker worktrees or pretend that a source snapshot isolates stateful development services. Worker specs, status, and schema-validated results remain under `.orrery/jobs/` as well as in SQLite.
+
+Only one root turn may hold write access to a workspace at a time. Read workers may run asynchronously, while shared-write workers block their parent until completion. The surrounding environment owns checkout selection, services, databases, ports, and stronger task-level isolation.
 
 The built-in tool set is `read`, `search`, hashline `edit`, `exec`, background `job`, `todo`, `spawn`, `ask`, `skill`, `web_search`, and `fetch`. Configuring a language server adds the read-only `lsp` tool for definitions, references, hover, symbols, and diagnostics. MCP tools are namespaced by server. Public fetches reject private, loopback, link-local, credential-bearing, and non-HTTP URLs.
 

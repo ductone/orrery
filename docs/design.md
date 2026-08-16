@@ -94,6 +94,20 @@ Worker specifications, completion conditions, logs, results, artifacts, and
 budgets are durable state. They do not exist only in a parent transcript.
 Budgets propagate downward and recursion depth is enforced.
 
+### Environment-native workspace sharing
+
+One root session represents one human-level task inside a workspace and its
+stateful development environment. Workers normally need the same checkout,
+services, databases, ports, and caches as their parent. Orrery therefore
+models workspace authority directly instead of equating a detached source tree
+with environment isolation.
+
+Read workers share the checkout with mutation tools removed and may run in the
+background. Shared-write workers run synchronously while the parent is paused.
+A per-workspace writer lease prevents simultaneous mutable root turns. Creating
+checkouts, snapshots, containers, or complete development environments remains
+the embedding system's responsibility.
+
 ### Progressive instruction discovery
 
 Workspace instructions and skill summaries enter the stable prefix when their
@@ -157,6 +171,12 @@ Orrery executes commands as an agent tool, but it does not aim to provide a
 general terminal emulator, PTY product, environment lifecycle manager, package
 installer, or remote workspace service. An embedding host may own those
 facilities.
+
+Orrery also does not create detached worktrees or repository copies for worker
+jobs. Source-only isolation is misleading when commands still share services,
+databases, ports, caches, and process-global configuration. A future isolated
+write mode would require an explicit, complete patch handoff contract and is
+not part of the current worker model.
 
 ### Not an approval system
 

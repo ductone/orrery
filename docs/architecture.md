@@ -14,4 +14,6 @@ Workspace instruction discovery preserves that cache layout. Root compatibility 
 
 Built-ins are compiled Go handlers. Worker specs and results are persisted in SQLite and mirrored under `.orrery/jobs/<id>/`. MCP tools are snapshotted at startup; change notifications can only refresh their stable-prefix definitions at a phase boundary.
 
+Workspace modes express authority rather than an isolation backend. `read` workers use the root checkout with mutation tools removed and may execute asynchronously. `shared-write` workers use that same checkout and execute synchronously, so their parent cannot mutate files concurrently. Root turns take a per-workspace writer lease, preventing two mutable sessions from running against one checkout at the same time. Orrery does not create worktrees or copy repositories for workers; the embedding environment owns stateful task isolation.
+
 SQLite routing records are the learning boundary. `orrery export` emits them without source snapshots, and `orrery eval` compares replay policies using pass rate, cost, latency, and edit-retry outcomes.
