@@ -597,11 +597,16 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		e.emit(ctx, sid, "routing.decision", map[string]any{"decision": decision, "explanation": why}, emit)
 		reg := e.toolRegistry(sid, parentJob, req, discovery, emit)
 		efficientWorker := e.hasEfficientWorker()
-		forceSynthesis := req.Workspace.Mode == "read" && s.Turn >= 6
+		// Read-only workers have a deliberately small budget. Reserve their last
+		// turns for synthesis instead of letting another broad read consume the
+		// budget before they can return their findings.
+		forceSynthesis := req.Workspace.Mode == "read" && shouldForceWorkerSynthesis(s.Turn)
 		forceAdvance := parentJob == "" && s.Phase == string(router.Explore) && progress.phaseTurns >= 8
 		forcePlanSynthesis := parentJob == "" && s.Phase == string(router.Plan) && (progress.delegated || progress.phaseTurns >= 4)
+		forcePlanExecution := parentJob == "" && s.Phase == string(router.Plan) && progress.shouldForcePlanExecution()
 		forceImplementation := parentJob == "" && s.Phase == string(router.Implement) && progress.noProgressTurns >= 3
 		forceResolution := parentJob == "" && ((s.Phase == string(router.Review) || s.Phase == string(router.Diagnose)) && progress.phaseTurns >= 6 || progress.reviewRemediation && progress.reviewRemediationTurns >= 4)
+		forceFinalResolution := parentJob == "" && shouldForceFinalResolution(s.Phase, progress.phaseTurns)
 		build := func(m model.ModelSpec, d router.Decision) (provider.Request, error) {
 			history, err := e.providerMessages(ctx, sid)
 			if err != nil {
@@ -628,6 +633,10 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				system += " The exploration turn limit has been reached. Existing evidence is sufficient. Read/search tools are unavailable for this turn; update the todo and plan, make the smallest justified edit, or run verification."
 				definitions = reg.DefinitionsOnly("todo", "edit", "job_result")
 			}
+			if forcePlanExecution {
+				system += " Planning is complete. The todo tool is unavailable because another plan update cannot advance the task. Use the evidence already gathered to make the smallest justified edit and verify it. If no change is needed or the task cannot be completed, return a concise final result now."
+				definitions = reg.DefinitionsOnly("read", "edit", "exec", "job_result")
+			}
 			if forceImplementation {
 				system += " Implementation is stalled after decisive evidence. Stop broad exploration. Read only an exact edit window if needed, finish the smallest justified edit, then run focused verification."
 				definitions = reg.DefinitionsOnly("todo", "read", "edit", "exec")
@@ -635,6 +644,10 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			if forceResolution {
 				system += " Review or diagnosis has reached its resolution limit. Existing issue, diff, test, and review evidence is sufficient. Do not rediscover or refetch the task. Make only the smallest correction required by current evidence, run one focused verification command, then return the final result."
 				definitions = reg.DefinitionsOnly("todo", "read", "edit", "exec")
+			}
+			if forceFinalResolution {
+				system += " The bounded resolution window is complete. No more tools are available. Return the final result now from the existing diff, verification, and review evidence."
+				definitions = nil
 			}
 			return provider.Request{System: system, DurableSpec: "TASK\n" + s.Spec + "\n\nDURABLE SUMMARY\n" + s.DurableSummary, Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the durable summary.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: definitions, MaxOutput: min(8000, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
 		}
@@ -696,6 +709,15 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 					return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "model returned serialized tool calls instead of a final result three times"}, emit)
 				}
 				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Content: "Your last response serialized a tool call as text, so it cannot complete the task. Do not emit tool markup. Synthesize the evidence already in context and return the required final result now."})
+				continue
+			}
+			if unfinishedFinalResponse(resp.Message) {
+				progress.completionRejections++
+				e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "work-in-progress reasoning returned as final text", "attempt": progress.completionRejections}, emit)
+				if progress.completionRejections >= 3 {
+					return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "model returned work-in-progress reasoning instead of a final result three times"}, emit)
+				}
+				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Content: "Completion rejected: your response was a work-in-progress reasoning stream, not an outcome. Do not narrate more intended searches. Return one concise final result stating what was completed and verified, or clearly state the concrete blocker and missing prerequisite."})
 				continue
 			}
 			if progress.edited && !progress.verified {
@@ -836,7 +858,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "terminal_stall", "reason": reason, "signals": progress.stall()}, emit)
 			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: reason}, emit)
 		}
-		if progress.shouldDelegate() && req.Depth > 0 && e.hasEfficientWorker() {
+		if parentJob == "" && progress.shouldDelegate() && req.Depth > 0 && e.hasEfficientWorker() {
 			job, spawnErr := e.spawn(ctx, sid, parentJob, req, map[string]any{
 				"spec":            "Explore the repository for the current task. Find the smallest relevant code path, collect decisive evidence, and return concise findings with exact file paths and recommended next action. Do not edit files.",
 				"result_schema":   map[string]any{"type": "object"},

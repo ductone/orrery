@@ -26,6 +26,22 @@ func serializedToolCallResponse(m provider.Message) bool {
 	return strings.Contains(content, "dsml") && strings.Contains(content, "tool_calls") || strings.Contains(content, "<tool_call")
 }
 
+// unfinishedFinalResponse catches a reasoning stream that a provider exposed as
+// assistant text instead of a terminal answer. Keep the threshold deliberately
+// high: a normal result can discuss follow-up work, but it should not contain
+// dozens of first-person promises to continue searching.
+func unfinishedFinalResponse(m provider.Message) bool {
+	if len(m.ToolCalls) > 0 || len(m.Content) < 1000 {
+		return false
+	}
+	content := strings.ToLower(m.Content)
+	markers := 0
+	for _, marker := range []string{"i still need", "i'll ", "i will ", "checking ", "searching "} {
+		markers += strings.Count(content, marker)
+	}
+	return markers >= 10
+}
+
 func compactionKeepIndex(msgs []store.Message, turnsToKeep int) int {
 	turns := 0
 	for i := len(msgs) - 1; i >= 0; i-- {

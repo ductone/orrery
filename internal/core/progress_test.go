@@ -1,6 +1,7 @@
 package core
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ductone/orrey/internal/provider"
@@ -74,6 +75,12 @@ func TestRepeatedUnchangedTodoTerminatesStall(t *testing.T) {
 }
 
 func TestRootReviewAndDiagnosisHaveTerminalBounds(t *testing.T) {
+	if got := terminalPhaseStallReason("", "plan", 10); got == "" {
+		t.Fatal("root plan phase was not bounded")
+	}
+	if got := terminalPhaseStallReason("child", "plan", 20); got != "" {
+		t.Fatalf("child plan phase was incorrectly bounded: %s", got)
+	}
 	for _, phase := range []string{"review", "diagnose"} {
 		if got := terminalPhaseStallReason("", phase, 12); got == "" {
 			t.Fatalf("phase %q was not bounded", phase)
@@ -84,6 +91,32 @@ func TestRootReviewAndDiagnosisHaveTerminalBounds(t *testing.T) {
 	}
 	if got := terminalPhaseStallReason("", "implement", 20); got != "" {
 		t.Fatalf("implementation incorrectly used review bound: %s", got)
+	}
+}
+
+func TestBoundedPhaseTransitions(t *testing.T) {
+	if shouldForceWorkerSynthesis(3) || !shouldForceWorkerSynthesis(4) {
+		t.Fatal("read-only worker synthesis boundary is not enforced")
+	}
+	p := newProgressTracker()
+	p.phaseTurns = 5
+	if p.shouldForcePlanExecution() {
+		t.Fatal("plan execution was forced too early")
+	}
+	p.phaseTurns = 6
+	if !p.shouldForcePlanExecution() {
+		t.Fatal("plan execution was not forced at the phase limit")
+	}
+	p.phaseTurns = 1
+	p.repeatedTodos = 2
+	if !p.shouldForcePlanExecution() {
+		t.Fatal("repeated todo updates did not force plan execution")
+	}
+	if shouldForceFinalResolution("review", 8) || !shouldForceFinalResolution("review", 9) {
+		t.Fatal("review final-resolution boundary is not enforced")
+	}
+	if shouldForceFinalResolution("implement", 12) {
+		t.Fatal("implementation phase must not force final resolution")
 	}
 }
 
@@ -142,6 +175,17 @@ func TestSerializedToolCallResponse(t *testing.T) {
 	}
 	if serializedToolCallResponse(provider.Message{Role: "assistant", Content: `{"answer":"done"}`}) {
 		t.Fatal("ordinary final rejected")
+	}
+}
+
+func TestUnfinishedFinalResponse(t *testing.T) {
+	unfinished := strings.Repeat("I still need the missing prerequisite. I'll search for it. Checking now. ", 20)
+	if !unfinishedFinalResponse(provider.Message{Role: "assistant", Content: unfinished}) {
+		t.Fatal("work-in-progress reasoning stream accepted as final")
+	}
+	finished := strings.Repeat("The implementation is complete and the focused tests pass. ", 30)
+	if unfinishedFinalResponse(provider.Message{Role: "assistant", Content: finished}) {
+		t.Fatal("ordinary long final was rejected")
 	}
 }
 

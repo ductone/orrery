@@ -116,6 +116,16 @@ func (p *progressTracker) shouldNudge() bool {
 	return p.nudges == 0 && (p.phase == "explore" || p.phase == "plan") && (p.noProgressTurns >= 4 || p.phaseTurns >= 7)
 }
 
+func shouldForceWorkerSynthesis(turn int) bool { return turn >= 4 }
+
+func (p *progressTracker) shouldForcePlanExecution() bool {
+	return p.repeatedTodos >= 2 || p.phaseTurns >= 6
+}
+
+func shouldForceFinalResolution(phase string, phaseTurns int) bool {
+	return (phase == "review" || phase == "diagnose") && phaseTurns >= 9
+}
+
 func (p *progressTracker) markNudged() { p.nudges++ }
 
 func (p *progressTracker) markReviewRejected() {
@@ -144,6 +154,9 @@ func (p *progressTracker) terminalStallReason() string {
 }
 
 func terminalPhaseStallReason(parentJob, phase string, phaseTurns int) string {
+	if parentJob == "" && phaseTurns >= 10 && phase == "plan" {
+		return "agent exceeded the bounded plan phase without beginning execution"
+	}
 	if parentJob == "" && phaseTurns >= 12 && (phase == "review" || phase == "diagnose") {
 		return "agent exceeded the bounded " + phase + " phase without reaching a terminal result"
 	}
