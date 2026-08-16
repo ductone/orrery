@@ -112,7 +112,7 @@ func serve(ctx context.Context, rt *runtime, args []string) int {
 	if fs.Parse(args) != nil {
 		return 2
 	}
-	srv := web.New(*listen, rt.engine)
+	srv := web.New(*listen, rt.engine, version)
 	go func() {
 		<-ctx.Done()
 		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)

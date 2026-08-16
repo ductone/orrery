@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,12 +35,30 @@ type Engine struct {
 	web       *webtools.Client
 	mu        sync.Mutex
 	cancels   map[string]context.CancelFunc
+	turnIDs   map[string]string
 }
 
 func New(cfg config.Config, s *store.Store, p *provider.Registry, mc *mcp.Manager) *Engine {
-	return &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), cancels: map[string]context.CancelFunc{}}
+	return &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}}
 }
 func (e *Engine) Store() *store.Store { return e.store }
+
+type SessionOptions struct {
+	Integration         string
+	ExternalID          string
+	ExternalIncarnation string
+	RequestID           string
+	WorkspaceOwnership  string
+	Context             map[string]any
+}
+
+type StartInfo struct {
+	SessionID string
+	TurnID    string
+	Accepted  bool
+	Duplicate bool
+	Result    <-chan agentproto.TaskResult
+}
 
 func (e *Engine) Start(ctx context.Context, req agentproto.TaskRequest, emit EmitFunc) (string, <-chan agentproto.TaskResult, error) {
 	if req.Spec == "" {
@@ -47,17 +66,49 @@ func (e *Engine) Start(ctx context.Context, req agentproto.TaskRequest, emit Emi
 	}
 	applyBudgetDefaults(&req, e.cfg)
 	id := uuid.NewString()
-	if err := e.store.CreateSession(ctx, store.Session{ID: id, Spec: req.Spec, Phase: "plan", BudgetUSD: req.Budget.MaxUSD}); err != nil {
+	turnID := uuid.NewString()
+	if err := e.store.CreateSession(ctx, store.Session{ID: id, Spec: req.Spec, Phase: "plan", BudgetUSD: req.Budget.MaxUSD, WorkspacePath: req.Workspace.Path, WorkspaceOwnership: req.Workspace.Ownership, RequestJSON: store.JSON(req)}); err != nil {
 		return "", nil, err
 	}
-	return id, e.startExisting(ctx, id, req, emit), nil
+	e.emit(withTurnID(ctx, turnID), id, "session.created", map[string]any{"workspace_ownership": req.Workspace.Ownership}, emit)
+	return id, e.startExisting(ctx, id, turnID, req, emit), nil
 }
 
-func (e *Engine) startExisting(parent context.Context, id string, req agentproto.TaskRequest, emit EmitFunc) <-chan agentproto.TaskResult {
+func (e *Engine) StartIntegrated(ctx context.Context, req agentproto.TaskRequest, opts SessionOptions, emit EmitFunc) (StartInfo, error) {
+	if req.Spec == "" {
+		return StartInfo{}, errors.New("task spec required")
+	}
+	if opts.RequestID == "" || opts.Integration == "" || opts.ExternalID == "" {
+		return StartInfo{}, errors.New("integration, external_id, and request_id are required")
+	}
+	applyBudgetDefaults(&req, e.cfg)
+	if opts.WorkspaceOwnership == "" {
+		opts.WorkspaceOwnership = "external"
+	}
+	req.Workspace.Ownership = opts.WorkspaceOwnership
+	id, turnID := uuid.NewString(), uuid.NewString()
+	payloadHash := hashPayload(map[string]any{"request": req, "options": opts})
+	x := store.Session{ID: id, Spec: req.Spec, Phase: "plan", BudgetUSD: req.Budget.MaxUSD, Integration: opts.Integration, ExternalID: opts.ExternalID, ExternalIncarnation: opts.ExternalIncarnation, WorkspacePath: req.Workspace.Path, WorkspaceOwnership: opts.WorkspaceOwnership, IntegrationContextJSON: store.JSON(opts.Context), RequestJSON: store.JSON(req)}
+	session, created, err := e.store.CreateSessionAccepted(ctx, x, opts.RequestID, turnID, payloadHash)
+	if err != nil {
+		return StartInfo{}, err
+	}
+	if !created {
+		receipt, receiptErr := e.store.RequestReceipt(ctx, session.ID, opts.RequestID)
+		if receiptErr == nil && receipt.PayloadHash != payloadHash {
+			return StartInfo{}, fmt.Errorf("request_id %q was already used with a different payload", opts.RequestID)
+		}
+		return StartInfo{SessionID: session.ID, TurnID: receipt.TurnID, Accepted: true, Duplicate: true}, nil
+	}
+	return StartInfo{SessionID: session.ID, TurnID: turnID, Accepted: true, Result: e.startExisting(ctx, session.ID, turnID, req, emit)}, nil
+}
+
+func (e *Engine) startExisting(parent context.Context, id, turnID string, req agentproto.TaskRequest, emit EmitFunc) <-chan agentproto.TaskResult {
 	out := make(chan agentproto.TaskResult, 1)
-	ctx, cancel := context.WithTimeout(parent, req.Budget.MaxWallClock)
+	ctx, cancel := context.WithTimeout(withTurnID(parent, turnID), req.Budget.MaxWallClock)
 	e.mu.Lock()
 	e.cancels[id] = cancel
+	e.turnIDs[id] = turnID
 	e.mu.Unlock()
 	go func() {
 		defer close(out)
@@ -65,6 +116,7 @@ func (e *Engine) startExisting(parent context.Context, id string, req agentproto
 		out <- e.run(ctx, id, "", req, emit)
 		e.mu.Lock()
 		delete(e.cancels, id)
+		delete(e.turnIDs, id)
 		e.mu.Unlock()
 	}()
 	return out
@@ -79,15 +131,60 @@ func (e *Engine) Run(ctx context.Context, req agentproto.TaskRequest, emit EmitF
 }
 
 func (e *Engine) Continue(ctx context.Context, id, instruction string, emit EmitFunc) (<-chan agentproto.TaskResult, error) {
+	info, err := e.ContinueIntegrated(ctx, id, instruction, uuid.NewString(), "standalone", emit)
+	return info.Result, err
+}
+
+func (e *Engine) ContinueIntegrated(ctx context.Context, id, instruction, requestID, source string, emit EmitFunc) (StartInfo, error) {
 	s, err := e.store.Session(ctx, id)
 	if err != nil {
-		return nil, err
+		return StartInfo{}, err
 	}
-	req := agentproto.TaskRequest{Spec: s.Spec, Budget: agentproto.Budget{MaxUSD: s.BudgetUSD - s.SpentUSD, MaxTokens: 1_000_000, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: e.cfg.WorkspaceRoot, Isolation: "shared"}, Depth: 4}
-	if err := e.store.AddMessage(ctx, id, "user", provider.Message{Role: "user", Content: instruction}); err != nil {
-		return nil, err
+	if strings.TrimSpace(instruction) == "" {
+		return StartInfo{}, errors.New("message content required")
 	}
-	return e.startExisting(ctx, id, req, emit), nil
+	payloadHash := hashPayload(map[string]any{"content": instruction, "source": source})
+	if existing, receiptErr := e.store.RequestReceipt(ctx, id, requestID); receiptErr == nil {
+		if existing.PayloadHash != payloadHash {
+			return StartInfo{}, fmt.Errorf("request_id %q was already used with a different payload", requestID)
+		}
+		return StartInfo{SessionID: id, TurnID: existing.TurnID, Accepted: true, Duplicate: true}, nil
+	}
+	e.mu.Lock()
+	if _, active := e.cancels[id]; active {
+		e.mu.Unlock()
+		return StartInfo{}, errors.New("session already has an active turn")
+	}
+	turnID := uuid.NewString()
+	receipt, err := e.store.AcceptMessage(ctx, id, requestID, turnID, source, payloadHash, provider.Message{Role: "user", Content: instruction})
+	if err != nil {
+		e.mu.Unlock()
+		return StartInfo{}, err
+	}
+	req := agentproto.TaskRequest{Spec: s.Spec, Budget: agentproto.Budget{MaxUSD: s.BudgetUSD - s.SpentUSD, MaxTokens: 1_000_000, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: s.WorkspacePath, Isolation: "shared", Ownership: s.WorkspaceOwnership}, Depth: 4}
+	if req.Workspace.Path == "" {
+		req.Workspace.Path = e.cfg.WorkspaceRoot
+	}
+	turnCtx, cancel := context.WithTimeout(withTurnID(ctx, receipt.TurnID), req.Budget.MaxWallClock)
+	e.cancels[id] = cancel
+	e.turnIDs[id] = receipt.TurnID
+	e.mu.Unlock()
+	out := e.launchExisting(turnCtx, cancel, id, req, emit)
+	return StartInfo{SessionID: id, TurnID: receipt.TurnID, Accepted: true, Duplicate: receipt.Duplicate, Result: out}, nil
+}
+
+func (e *Engine) launchExisting(ctx context.Context, cancel context.CancelFunc, id string, req agentproto.TaskRequest, emit EmitFunc) <-chan agentproto.TaskResult {
+	out := make(chan agentproto.TaskResult, 1)
+	go func() {
+		defer close(out)
+		defer cancel()
+		out <- e.run(ctx, id, "", req, emit)
+		e.mu.Lock()
+		delete(e.cancels, id)
+		delete(e.turnIDs, id)
+		e.mu.Unlock()
+	}()
+	return out
 }
 
 func (e *Engine) Cancel(id string) bool {
@@ -102,10 +199,30 @@ func (e *Engine) Cancel(id string) bool {
 }
 
 func (e *Engine) emit(ctx context.Context, sid, typ string, data any, emit EmitFunc) {
-	_, _ = e.store.AddEvent(ctx, sid, typ, data)
+	turnID := turnIDFromContext(ctx)
+	if turnID == "" {
+		e.mu.Lock()
+		turnID = e.turnIDs[sid]
+		e.mu.Unlock()
+	}
+	_, _ = e.store.AddEventForTurn(ctx, sid, turnID, typ, data)
 	if emit != nil {
 		emit(agentproto.AgentEvent{Type: typ, Data: data})
 	}
+}
+
+type turnIDKey struct{}
+
+func withTurnID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, turnIDKey{}, id)
+}
+func turnIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(turnIDKey{}).(string)
+	return id
+}
+func hashPayload(v any) string {
+	b, _ := json.Marshal(v)
+	return fmt.Sprintf("%x", sha256.Sum256(b))
 }
 
 func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.TaskRequest, emit EmitFunc) agentproto.TaskResult {
@@ -231,6 +348,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		_ = e.store.WarmCache(ctx, sid, decision.Model.ID, max(inputTokens, resp.Usage.CacheReadTokens+resp.Usage.CacheWriteTokens), ttl)
 		_ = e.store.AddMessage(ctx, sid, "assistant", resp.Message)
 		e.emit(ctx, sid, "assistant.message", map[string]any{"message": resp.Message, "usage": resp.Usage, "cost_usd": cost, "model": decision.Model.ID}, emit)
+		e.emit(ctx, sid, "usage.reported", map[string]any{"model": decision.Model.ID, "input_tokens": resp.Usage.InputTokens, "output_tokens": resp.Usage.OutputTokens, "cache_read_tokens": resp.Usage.CacheReadTokens, "cache_write_tokens": resp.Usage.CacheWriteTokens, "cost_usd": cost, "latency": resp.Latency}, emit)
 		turnOutcome := map[string]any{"tokens": resp.Usage.InputTokens + resp.Usage.OutputTokens, "input_tokens": resp.Usage.InputTokens, "output_tokens": resp.Usage.OutputTokens, "cache_read_tokens": resp.Usage.CacheReadTokens, "cache_write_tokens": resp.Usage.CacheWriteTokens, "latency": resp.Latency, "cost_usd": cost, "model": decision.Model.ID}
 		if len(resp.Message.ToolCalls) == 0 {
 			if emptyFinalResponse(resp.Message) {
@@ -407,6 +525,9 @@ func applyBudgetDefaults(req *agentproto.TaskRequest, cfg config.Config) {
 	}
 	if req.Workspace.Path == "" {
 		req.Workspace.Path = cfg.WorkspaceRoot
+	}
+	if req.Workspace.Ownership == "" {
+		req.Workspace.Ownership = "orrery"
 	}
 }
 func applyHints(s *router.RoutingState, h agentproto.RoutingHints) {

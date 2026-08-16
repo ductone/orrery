@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"sync"
 	"testing"
 	"time"
@@ -41,6 +42,73 @@ func TestSessionEventsCacheAndRouting(t *testing.T) {
 	n := 0
 	if err = s.ExportRouting(ctx, time.Unix(0, 0), func([]byte) error { n++; return nil }); err != nil || n != 1 {
 		t.Fatalf("export n=%d err=%v", n, err)
+	}
+}
+
+func TestIntegratedSessionAndMessageIdempotency(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(t.TempDir() + "/db.sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	x := Session{ID: "native", Spec: "task", BudgetUSD: 5, Integration: "squire", ExternalID: "task-1", ExternalIncarnation: "1", WorkspacePath: "/work", WorkspaceOwnership: "external"}
+	created, fresh, err := s.CreateSessionAccepted(ctx, x, "create-1", "turn-1", "hash-1")
+	if err != nil || !fresh || created.ID != "native" {
+		t.Fatalf("create session: fresh=%v session=%+v err=%v", fresh, created, err)
+	}
+	retried, fresh, err := s.CreateSessionAccepted(ctx, Session{ID: "other", Spec: "different", BudgetUSD: 1, Integration: "squire", ExternalID: "task-1", ExternalIncarnation: "1"}, "create-1", "turn-x", "hash-1")
+	if err != nil || fresh || retried.ID != "native" {
+		t.Fatalf("retry session: fresh=%v session=%+v err=%v", fresh, retried, err)
+	}
+	receipt, err := s.AcceptMessage(ctx, "native", "msg-1", "turn-2", "squire", "message-hash", map[string]string{"content": "continue"})
+	if err != nil || receipt.Duplicate {
+		t.Fatalf("accept message: %+v err=%v", receipt, err)
+	}
+	receipt, err = s.AcceptMessage(ctx, "native", "msg-1", "ignored", "squire", "message-hash", map[string]string{"content": "continue"})
+	if err != nil || !receipt.Duplicate || receipt.TurnID != "turn-2" {
+		t.Fatalf("retry message: %+v err=%v", receipt, err)
+	}
+	if _, err = s.AcceptMessage(ctx, "native", "msg-1", "turn-3", "squire", "different", map[string]string{"content": "changed"}); err == nil {
+		t.Fatal("expected request ID payload conflict")
+	}
+	events, err := s.EventsAfter(ctx, "native", 0)
+	if err != nil || len(events) != 4 {
+		t.Fatalf("events=%+v err=%v", events, err)
+	}
+	for i, event := range events {
+		if event.SchemaVersion != 1 || event.EventID == "" || event.SessionID != "native" || event.Seq != i+1 {
+			t.Fatalf("bad envelope at %d: %+v", i, event)
+		}
+	}
+	messages, err := s.Messages(ctx, "native")
+	if err != nil || len(messages) != 1 {
+		t.Fatalf("messages=%+v err=%v", messages, err)
+	}
+}
+
+func TestMigrationAddsIntegrationColumns(t *testing.T) {
+	path := t.TempDir() + "/db.sqlite"
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE sessions(id TEXT PRIMARY KEY, spec TEXT NOT NULL, durable_summary TEXT NOT NULL DEFAULT '', phase TEXT NOT NULL DEFAULT 'plan', model TEXT NOT NULL DEFAULT '', turn INTEGER NOT NULL DEFAULT 0, spent_usd REAL NOT NULL DEFAULT 0, budget_usd REAL NOT NULL, status TEXT NOT NULL DEFAULT 'running', created_at TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, seq INTEGER NOT NULL, type TEXT NOT NULL, data_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(session_id,seq));`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err = s.CreateSession(context.Background(), Session{ID: "s", Spec: "task", BudgetUSD: 1, Integration: "squire", ExternalID: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	x, err := s.Session(context.Background(), "s")
+	if err != nil || x.Integration != "squire" || x.ExternalID != "t" {
+		t.Fatalf("session=%+v err=%v", x, err)
 	}
 }
 func TestConcurrentWriters(t *testing.T) {

@@ -20,6 +20,7 @@ type Budget struct {
 type Workspace struct {
 	Path      string `json:"path"`
 	Isolation string `json:"isolation"`
+	Ownership string `json:"ownership,omitempty"`
 }
 type RoutingHints struct {
 	TierPin           string   `json:"tier_pin,omitempty"`
