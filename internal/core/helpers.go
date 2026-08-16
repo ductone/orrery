@@ -26,29 +26,6 @@ func serializedToolCallResponse(m provider.Message) bool {
 	return strings.Contains(content, "dsml") && strings.Contains(content, "tool_calls") || strings.Contains(content, "<tool_call")
 }
 
-func (e *Engine) compact(ctx context.Context, sid string, emit EmitFunc) {
-	msgs, _ := e.store.Messages(ctx, sid)
-	keepAt := compactionKeepIndex(msgs, 4)
-	if keepAt == len(msgs) || keepAt == 0 {
-		return
-	}
-	s, err := e.store.Session(ctx, sid)
-	if err != nil {
-		return
-	}
-	parts := []string{}
-	for _, m := range msgs[:keepAt] {
-		parts = append(parts, m.Role+":"+truncate(m.ContentJSON, 500))
-	}
-	s.DurableSummary = truncate(s.DurableSummary+"\nPrior activity:\n"+strings.Join(parts, "\n"), 12000)
-	_ = e.store.UpdateSession(ctx, s)
-	_ = e.store.CompactMessages(ctx, sid, len(msgs)-keepAt)
-	_ = e.store.InvalidateCaches(ctx, sid)
-	if err := e.mcpBoundary(ctx); err != nil {
-		e.emit(ctx, sid, "runtime_config.reload_failed", map[string]any{"error": err.Error()}, emit)
-	}
-	e.emit(ctx, sid, "context.compacted", map[string]any{"kept_messages": len(msgs) - keepAt, "kept_turns": 4}, emit)
-}
 func compactionKeepIndex(msgs []store.Message, turnsToKeep int) int {
 	turns := 0
 	for i := len(msgs) - 1; i >= 0; i-- {

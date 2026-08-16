@@ -79,3 +79,15 @@ func TestCompactionKeepsWholeAssistantTurn(t *testing.T) {
 		t.Fatal("orphaned tool result")
 	}
 }
+
+func TestFallbackCompactionProducesRecoveryContract(t *testing.T) {
+	s := store.Session{Spec: "Fix the retry race", DurableSummary: "previous constraints"}
+	state := fallbackDurableState(s, []store.Message{
+		{Role: "user", ContentJSON: `{"content":"Do not open a PR"}`},
+		{Role: "tool", ContentJSON: `{"command":"go test ./...","ok":true}`},
+		{Role: "assistant", ContentJSON: `{"content":"The race is in retry.go"}`},
+	})
+	if !state.valid() || state.Objective != s.Spec || len(state.Verification) == 0 || len(state.Decisions) == 0 || state.PriorSummary == "" {
+		t.Fatalf("state=%+v", state)
+	}
+}

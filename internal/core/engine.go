@@ -49,6 +49,49 @@ func New(cfg config.Config, s *store.Store, p *provider.Registry, mc *mcp.Manage
 }
 func (e *Engine) Store() *store.Store { return e.store }
 
+func (e *Engine) sessionIdle(id string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, active := e.cancels[id]
+	return !active
+}
+
+func (e *Engine) Checkpoint(ctx context.Context, id, label string) (store.Checkpoint, error) {
+	if !e.sessionIdle(id) {
+		return store.Checkpoint{}, errors.New("session has an active turn")
+	}
+	if strings.TrimSpace(label) == "" {
+		label = "Manual checkpoint"
+	}
+	return e.store.CreateCheckpoint(ctx, uuid.NewString(), id, label, "manual")
+}
+
+func (e *Engine) RestoreCheckpoint(ctx context.Context, id, checkpointID string, emit EmitFunc) error {
+	if !e.sessionIdle(id) {
+		return errors.New("session has an active turn")
+	}
+	// Preserve an undo point for the restore itself.
+	if _, err := e.store.CreateCheckpoint(ctx, uuid.NewString(), id, "Before restore", "restore"); err != nil {
+		return err
+	}
+	if err := e.store.RestoreCheckpoint(ctx, id, checkpointID); err != nil {
+		return err
+	}
+	e.emit(ctx, id, "session.restored", map[string]any{"checkpoint_id": checkpointID}, emit)
+	return nil
+}
+
+func (e *Engine) Fork(ctx context.Context, id string, emit EmitFunc) (store.Session, error) {
+	if !e.sessionIdle(id) {
+		return store.Session{}, errors.New("session has an active turn")
+	}
+	fork, err := e.store.ForkSession(ctx, id, uuid.NewString())
+	if err == nil {
+		e.emit(ctx, fork.ID, "session.forked", map[string]any{"source_session_id": id}, emit)
+	}
+	return fork, err
+}
+
 // SetBoundaryHook installs the deployment-owned phase-boundary callback. The
 // standalone binary uses it to atomically apply a queued runtime config reload.
 func (e *Engine) SetBoundaryHook(hook func(context.Context) error) { e.boundary = hook }

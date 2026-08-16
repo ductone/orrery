@@ -166,3 +166,41 @@ func TestConcurrentWriters(t *testing.T) {
 		t.Fatalf("events=%d err=%v", len(events), err)
 	}
 }
+
+func TestCheckpointRestoreAndFork(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(t.TempDir() + "/db.sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err = s.CreateSession(ctx, Session{ID: "s", Spec: "task", DurableSummary: "before", Phase: "implement", BudgetUSD: 5}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.AddMessage(ctx, "s", "user", map[string]string{"content": "original"})
+	_ = s.SetTodos(ctx, "s", []Todo{{Text: "first", Phase: "implement", Status: "in_progress"}})
+	cp, err := s.CreateCheckpoint(ctx, "cp", "s", "safe point", "manual")
+	if err != nil {
+		t.Fatal(err)
+	}
+	x, _ := s.Session(ctx, "s")
+	x.DurableSummary = "after"
+	_ = s.UpdateSession(ctx, x)
+	_ = s.AddMessage(ctx, "s", "assistant", map[string]string{"content": "later"})
+	if err = s.RestoreCheckpoint(ctx, "s", cp.ID); err != nil {
+		t.Fatal(err)
+	}
+	x, _ = s.Session(ctx, "s")
+	messages, _ := s.Messages(ctx, "s")
+	if x.DurableSummary != "before" || x.Status != "interrupted" || len(messages) != 1 {
+		t.Fatalf("restored=%+v messages=%+v", x, messages)
+	}
+	fork, err := s.ForkSession(ctx, "s", "fork")
+	if err != nil {
+		t.Fatal(err)
+	}
+	forkMessages, _ := s.Messages(ctx, "fork")
+	if fork.ID != "fork" || fork.SpentUSD != 0 || len(forkMessages) != 1 || fork.WorkspacePath != x.WorkspacePath {
+		t.Fatalf("fork=%+v messages=%+v", fork, forkMessages)
+	}
+}

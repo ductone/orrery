@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS todos(id INTEGER PRIMARY KEY AUTOINCREMENT, session_i
 CREATE TABLE IF NOT EXISTS cache_ledger(session_id TEXT NOT NULL, model TEXT NOT NULL, warm_prefix_tokens INTEGER NOT NULL DEFAULT 0, last_hit TEXT, ttl_seconds INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(session_id,model));
 CREATE TABLE IF NOT EXISTS routing_records(id TEXT PRIMARY KEY, session_id TEXT NOT NULL, turn INTEGER NOT NULL, decision_point TEXT NOT NULL, state_json TEXT NOT NULL, candidates_json TEXT NOT NULL, chosen_model TEXT NOT NULL, chosen_effort TEXT NOT NULL, was_switch INTEGER NOT NULL, cache_est_json TEXT NOT NULL, explanation TEXT NOT NULL, turn_outcome_json TEXT, job_outcome_json TEXT, session_outcome_json TEXT, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), parent_job_id TEXT, spec TEXT NOT NULL, result_schema_json TEXT NOT NULL, budget_json TEXT NOT NULL, workspace_json TEXT NOT NULL, hints_json TEXT NOT NULL, depth INTEGER NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL, result_json TEXT, outcome_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS checkpoints(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), label TEXT NOT NULL, reason TEXT NOT NULL, session_json TEXT NOT NULL, messages_json TEXT NOT NULL, todos_json TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id,seq); CREATE INDEX IF NOT EXISTS idx_routing_session_turn ON routing_records(session_id,turn); CREATE INDEX IF NOT EXISTS idx_jobs_session ON jobs(session_id);`)
 	if err != nil {
 		return err
@@ -253,7 +254,7 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"request_receipts", "events", "messages", "todos", "cache_ledger", "jobs", "routing_records"} {
+	for _, table := range []string{"request_receipts", "events", "messages", "todos", "cache_ledger", "jobs", "routing_records", "checkpoints"} {
 		if _, err = tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE session_id=?`, id); err != nil {
 			return err
 		}
@@ -292,6 +293,153 @@ func (s *Store) UpdateSessionRoutingOutcome(ctx context.Context, sid string, v a
 type Message struct {
 	Role, ContentJSON string
 	CreatedAt         time.Time
+}
+
+type Checkpoint struct {
+	ID, SessionID, Label, Reason         string
+	SessionJSON, MessagesJSON, TodosJSON string
+	CreatedAt                            time.Time
+}
+
+// CreateCheckpoint snapshots conversational state before a destructive context
+// transition. Workspace files are deliberately not mutated or copied: restoring
+// a checkpoint rewinds the agent's state, never a user's checkout.
+func (s *Store) CreateCheckpoint(ctx context.Context, id, sid, label, reason string) (Checkpoint, error) {
+	session, err := s.Session(ctx, sid)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	messages, err := s.Messages(ctx, sid)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	todos, err := s.Todos(ctx, sid)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	now := time.Now().UTC()
+	cp := Checkpoint{ID: id, SessionID: sid, Label: label, Reason: reason, SessionJSON: JSON(session), MessagesJSON: JSON(messages), TodosJSON: JSON(todos), CreatedAt: now}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO checkpoints(id,session_id,label,reason,session_json,messages_json,todos_json,created_at) VALUES(?,?,?,?,?,?,?,?)`, cp.ID, cp.SessionID, cp.Label, cp.Reason, cp.SessionJSON, cp.MessagesJSON, cp.TodosJSON, now.Format(time.RFC3339Nano))
+	return cp, err
+}
+
+func (s *Store) Checkpoints(ctx context.Context, sid string) ([]Checkpoint, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,session_id,label,reason,session_json,messages_json,todos_json,created_at FROM checkpoints WHERE session_id=? ORDER BY created_at DESC`, sid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Checkpoint
+	for rows.Next() {
+		var cp Checkpoint
+		var created string
+		if err := rows.Scan(&cp.ID, &cp.SessionID, &cp.Label, &cp.Reason, &cp.SessionJSON, &cp.MessagesJSON, &cp.TodosJSON, &created); err != nil {
+			return nil, err
+		}
+		cp.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		out = append(out, cp)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) Checkpoint(ctx context.Context, id string) (Checkpoint, error) {
+	var cp Checkpoint
+	var created string
+	err := s.db.QueryRowContext(ctx, `SELECT id,session_id,label,reason,session_json,messages_json,todos_json,created_at FROM checkpoints WHERE id=?`, id).Scan(&cp.ID, &cp.SessionID, &cp.Label, &cp.Reason, &cp.SessionJSON, &cp.MessagesJSON, &cp.TodosJSON, &created)
+	cp.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	return cp, err
+}
+
+func (s *Store) RestoreCheckpoint(ctx context.Context, sid, checkpointID string) error {
+	cp, err := s.Checkpoint(ctx, checkpointID)
+	if err != nil {
+		return err
+	}
+	if cp.SessionID != sid {
+		return errors.New("checkpoint does not belong to session")
+	}
+	var snap Session
+	var messages []Message
+	var todos []Todo
+	if json.Unmarshal([]byte(cp.SessionJSON), &snap) != nil || json.Unmarshal([]byte(cp.MessagesJSON), &messages) != nil || json.Unmarshal([]byte(cp.TodosJSON), &todos) != nil {
+		return errors.New("invalid checkpoint snapshot")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET durable_summary=?,phase=?,model=?,turn=?,status='interrupted',request_json=?,updated_at=? WHERE id=?`, snap.DurableSummary, snap.Phase, snap.Model, snap.Turn, snap.RequestJSON, now, sid); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM messages WHERE session_id=?`, sid); err != nil {
+		return err
+	}
+	for _, m := range messages {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO messages(session_id,role,content_json,created_at) VALUES(?,?,?,?)`, sid, m.Role, m.ContentJSON, m.CreatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM todos WHERE session_id=?`, sid); err != nil {
+		return err
+	}
+	for i, todo := range todos {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO todos(session_id,position,text,phase,status) VALUES(?,?,?,?,?)`, sid, i, todo.Text, todo.Phase, todo.Status); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE cache_ledger SET warm_prefix_tokens=0,last_hit=NULL WHERE session_id=?`, sid); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ForkSession creates an independent conversational branch that shares the
+// same workspace path. It copies durable context, live messages, and todos but
+// intentionally starts a new event/routing history and cost meter.
+func (s *Store) ForkSession(ctx context.Context, sourceID, newID string) (Session, error) {
+	source, err := s.Session(ctx, sourceID)
+	if err != nil {
+		return Session{}, err
+	}
+	messages, err := s.Messages(ctx, sourceID)
+	if err != nil {
+		return Session{}, err
+	}
+	todos, err := s.Todos(ctx, sourceID)
+	if err != nil {
+		return Session{}, err
+	}
+	now := time.Now().UTC()
+	fork := source
+	fork.ID, fork.Integration, fork.ExternalID, fork.ExternalIncarnation = newID, "", "", ""
+	fork.Status, fork.Turn, fork.SpentUSD = "interrupted", 0, 0
+	fork.CreatedAt, fork.UpdatedAt = now, now
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, err
+	}
+	defer tx.Rollback()
+	stamp := now.Format(time.RFC3339Nano)
+	if _, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,spec,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, fork.ID, fork.Spec, fork.DurableSummary, fork.Phase, fork.Model, fork.Turn, fork.SpentUSD, fork.BudgetUSD, fork.Status, fork.Integration, fork.ExternalID, fork.ExternalIncarnation, fork.WorkspacePath, fork.WorkspaceOwnership, fork.IntegrationContextJSON, fork.RequestJSON, stamp, stamp); err != nil {
+		return Session{}, err
+	}
+	for _, m := range messages {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO messages(session_id,role,content_json,created_at) VALUES(?,?,?,?)`, newID, m.Role, m.ContentJSON, m.CreatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+			return Session{}, err
+		}
+	}
+	for i, todo := range todos {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO todos(session_id,position,text,phase,status) VALUES(?,?,?,?,?)`, newID, i, todo.Text, todo.Phase, todo.Status); err != nil {
+			return Session{}, err
+		}
+	}
+	data := JSON(map[string]any{"source_session_id": sourceID})
+	if _, err = tx.ExecContext(ctx, `INSERT INTO events(session_id,seq,type,data_json,created_at) VALUES(?,1,'session.forked',?,?)`, newID, data, stamp); err != nil {
+		return Session{}, err
+	}
+	return fork, tx.Commit()
 }
 
 func (s *Store) AddMessage(ctx context.Context, sid, role string, content any) error {
