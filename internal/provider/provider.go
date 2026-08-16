@@ -16,8 +16,9 @@ import (
 )
 
 type Tool struct {
-	Name, Description string
-	InputSchema       map[string]any
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	InputSchema map[string]any `json:"input_schema"`
 }
 
 func toolNameMaps(tools []Tool) (map[string]string, map[string]string) {
@@ -43,8 +44,9 @@ func toolInputSchema(schema map[string]any) map[string]any {
 }
 
 type ToolCall struct {
-	ID, Name  string
-	Arguments map[string]any
+	ID        string         `json:"id"`
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments"`
 }
 type Image struct {
 	MediaType string `json:"media_type,omitempty"`
@@ -52,9 +54,12 @@ type Image struct {
 	URL       string `json:"url,omitempty"`
 }
 type Message struct {
-	Role, Content, ToolCallID, Reasoning string
-	ToolCalls                            []ToolCall
-	Images                               []Image `json:"images,omitempty"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Reasoning  string     `json:"reasoning,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	Images     []Image    `json:"images,omitempty"`
 }
 type Request struct {
 	System, DurableSpec, Plan string
@@ -65,7 +70,12 @@ type Request struct {
 	Effort                    model.Effort
 	Strict                    bool
 }
-type Usage struct{ InputTokens, OutputTokens, CacheReadTokens, CacheWriteTokens int }
+type Usage struct {
+	InputTokens      int `json:"input_tokens"`
+	OutputTokens     int `json:"output_tokens"`
+	CacheReadTokens  int `json:"cache_read_tokens"`
+	CacheWriteTokens int `json:"cache_write_tokens"`
+}
 type Response struct {
 	Message    Message
 	Usage      Usage

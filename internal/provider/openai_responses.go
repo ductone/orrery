@@ -62,11 +62,12 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 		tools := []any{}
 		for _, t := range r.Tools {
 			schema := toolInputSchema(t.InputSchema)
-			if r.Strict && m.Compat.SupportsStrictTools {
+			strict := r.Strict && m.Compat.SupportsStrictTools && supportsStrictSchema(schema)
+			if strict {
 				schema = strictifySchema(schema)
 			}
 			tool := map[string]any{"type": "function", "name": toWire[t.Name], "description": t.Description, "parameters": schema}
-			if r.Strict && m.Compat.SupportsStrictTools {
+			if strict {
 				tool["strict"] = true
 			}
 			tools = append(tools, tool)

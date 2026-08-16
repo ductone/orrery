@@ -74,9 +74,11 @@ func TestOpenAIChatMapsNamespacedToolNames(t *testing.T) {
 		})
 	}))
 	defer srv.Close()
-	m, _ := model.Get("xai/grok-4.6")
+	m, _ := model.Get("openai/gpt-5.6-sol")
 	c := newOpenAI(srv.URL, []string{"key"}, false)
-	resp, err := c.Complete(context.Background(), m, Request{MaxOutput: 10, Tools: []Tool{{Name: "gateway.identity"}}})
+	resp, err := c.Complete(context.Background(), m, Request{MaxOutput: 10, Strict: true, Tools: []Tool{{Name: "gateway.identity", InputSchema: map[string]any{
+		"type": "object", "properties": map[string]any{"features": map[string]any{"type": "array"}},
+	}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,6 +89,10 @@ func TestOpenAIChatMapsNamespacedToolNames(t *testing.T) {
 	}
 	if parameters == nil {
 		t.Fatal("nil MCP schema must be sent as an object schema")
+	}
+	function := got["tools"].([]any)[0].(map[string]any)["function"].(map[string]any)
+	if function["strict"] != nil {
+		t.Fatal("tool schemas that omit array item types must degrade from strict mode without changing their meaning")
 	}
 }
 

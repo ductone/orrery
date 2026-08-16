@@ -91,11 +91,12 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 		var ts []any
 		for _, t := range r.Tools {
 			schema := toolInputSchema(t.InputSchema)
-			if r.Strict && m.Compat.SupportsStrictTools {
+			strict := r.Strict && m.Compat.SupportsStrictTools && supportsStrictSchema(schema)
+			if strict {
 				schema = strictifySchema(schema)
 			}
 			fn := map[string]any{"name": toWire[t.Name], "description": t.Description, "parameters": schema}
-			if r.Strict && m.Compat.SupportsStrictTools {
+			if strict {
 				fn["strict"] = true
 			}
 			ts = append(ts, map[string]any{"type": "function", "function": fn})
@@ -179,6 +180,31 @@ func imageURL(image Image) string {
 	return "data:" + mediaType + ";base64," + image.Data
 }
 func strictifySchema(s map[string]any) map[string]any { return strictify(s, false).(map[string]any) }
+
+func supportsStrictSchema(v any) bool {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return false
+	}
+	switch m["type"] {
+	case "object":
+		props, _ := m["properties"].(map[string]any)
+		for _, value := range props {
+			if !supportsStrictSchema(value) {
+				return false
+			}
+		}
+	case "array":
+		if m["items"] == nil || !supportsStrictSchema(m["items"]) {
+			return false
+		}
+	case "string", "number", "integer", "boolean", "null":
+	default:
+		return false
+	}
+	return true
+}
+
 func strictify(v any, nullable bool) any {
 	m, ok := v.(map[string]any)
 	if !ok {
