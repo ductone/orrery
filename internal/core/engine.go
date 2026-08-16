@@ -420,7 +420,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			if len(runtimeCfg.Instructions) > 0 {
 				system += "\n\nDEPLOYMENT INSTRUCTIONS\n" + strings.Join(runtimeCfg.Instructions, "\n")
 			}
-			system += "\n\nTOOL CALL DISCIPLINE\nCall each tool with a given set of arguments at most once per response. Never emit duplicate identical tool calls. Use the edit tool for every workspace source-file mutation. Never create or modify source files through exec, shell redirection, sed, tee, or formatters with write flags; this bypasses edit safety and metrics."
+			system += "\n\nTOOL CALL DISCIPLINE\nCall each tool with a given set of arguments at most once per response. Never emit duplicate identical tool calls. Use the edit tool for every workspace source-file mutation. Never create or modify source files through exec, shell redirection, sed, tee, or formatters with write flags; this bypasses edit safety and metrics. Stay inside the assigned workspace. Do not clone another repository or search outside the workspace unless the task explicitly authorizes it. If decisive checks show that required source or another prerequisite is absent, stop promptly and return a clear failed or blocked explanation instead of rewriting the plan."
 			if !efficientWorker {
 				system += " No lower-cost worker model is configured. Do not spawn a worker merely for repository exploration; explore directly."
 			}
@@ -596,6 +596,11 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "duplicate_tool_calls", "count": duplicateCalls}, emit)
 		}
 		progress.endTurn()
+		if reason := progress.terminalStallReason(); reason != "" {
+			progress.export(&outcome)
+			e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "terminal_stall", "reason": reason, "signals": progress.stall()}, emit)
+			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: reason}, emit)
+		}
 		if progress.shouldDelegate() && req.Depth > 0 && e.hasEfficientWorker() {
 			job, spawnErr := e.spawn(ctx, sid, parentJob, req, map[string]any{
 				"spec":            "Explore the repository for the current task. Find the smallest relevant code path, collect decisive evidence, and return concise findings with exact file paths and recommended next action. Do not edit files.",

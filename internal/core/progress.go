@@ -14,6 +14,7 @@ type progressTracker struct {
 	phase                         string
 	phaseTurns, noProgressTurns   int
 	repeatedReads, repeatedSearch int
+	repeatedTodos                 int
 	nudges, completionRejections  int
 	delegated, edited, verified   bool
 	reviewed                      bool
@@ -64,6 +65,7 @@ func (p *progressTracker) observe(call provider.ToolCall, value any, callErr err
 		case "todo":
 			todoHash := fingerprint("todo", call.Arguments)
 			if p.lastTodo == todoHash {
+				p.repeatedTodos++
 				return map[string]any{
 					"suppressed": true,
 					"unchanged":  true,
@@ -111,12 +113,24 @@ func (p *progressTracker) shouldNudge() bool {
 
 func (p *progressTracker) markNudged() { p.nudges++ }
 
+// terminalStallReason is deliberately narrow: an agent may spend many turns on
+// a hard task, but repeatedly submitting the exact same plan after a progress
+// intervention cannot create new evidence. Ending the run preserves budget and
+// gives the caller an actionable failure instead of an unbounded loop.
+func (p *progressTracker) terminalStallReason() string {
+	if p.repeatedTodos >= 6 && p.noProgressTurns >= 6 {
+		return "agent stalled after repeatedly submitting an unchanged todo plan"
+	}
+	return ""
+}
+
 func (p *progressTracker) stall() map[string]int {
 	return map[string]int{
 		"no_progress_turns": p.noProgressTurns,
 		"phase_turns":       p.phaseTurns,
 		"repeated_reads":    p.repeatedReads,
 		"repeated_searches": p.repeatedSearch,
+		"repeated_todos":    p.repeatedTodos,
 	}
 }
 

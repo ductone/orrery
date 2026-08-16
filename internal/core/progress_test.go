@@ -57,6 +57,22 @@ func TestUnchangedTodoDoesNotResetStallDetection(t *testing.T) {
 	}
 }
 
+func TestRepeatedUnchangedTodoTerminatesStall(t *testing.T) {
+	p := newProgressTracker()
+	call := provider.ToolCall{Name: "todo", Arguments: map[string]any{"items": []any{map[string]any{"text": "find missing source", "status": "in_progress"}}}}
+	for range 7 {
+		p.beginTurn("plan")
+		p.observe(call, map[string]any{"phase": "plan"}, nil)
+		p.endTurn()
+	}
+	if p.repeatedTodos != 6 || p.noProgressTurns != 6 {
+		t.Fatalf("tracker=%+v", p)
+	}
+	if got := p.terminalStallReason(); got == "" {
+		t.Fatal("repeated unchanged todo did not terminate the stall")
+	}
+}
+
 func TestSuccessfulSpawnMarksDelegationAndNudgeIsOncePerPhase(t *testing.T) {
 	p := newProgressTracker()
 	p.beginTurn("explore")
