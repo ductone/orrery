@@ -245,7 +245,7 @@ func run(ctx context.Context, rt *runtime, args []string) int {
 		b, _ := os.ReadFile("/dev/stdin")
 		*prompt = strings.TrimSpace(string(b))
 	}
-	req := agentproto.TaskRequest{Spec: *prompt, Budget: agentproto.Budget{MaxUSD: *budget, MaxTokens: *maxTokens, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: *workspace, Isolation: "shared"}, Hints: agentproto.RoutingHints{TierPin: *tier}, Depth: 4}
+	req := agentproto.TaskRequest{Spec: *prompt, Budget: agentproto.Budget{MaxUSD: *budget, MaxTokens: *maxTokens, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: *workspace, Mode: "shared-write"}, Hints: agentproto.RoutingHints{TierPin: *tier}, Depth: 4}
 	result, err := rt.engine.Run(ctx, req, func(ev agentproto.AgentEvent) {
 		if ev.Type == "routing.decision" || ev.Type == "tool.started" {
 			b, _ := json.Marshal(ev)

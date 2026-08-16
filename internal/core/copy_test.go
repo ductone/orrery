@@ -1,53 +1,38 @@
 package core
 
 import (
-	"context"
-	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func TestCopyTreePreservesDirectorySymlink(t *testing.T) {
-	root := t.TempDir()
-	src := filepath.Join(root, "src")
-	dst := filepath.Join(root, "dst")
-	if err := os.MkdirAll(filepath.Join(src, "real"), 0755); err != nil {
-		t.Fatal(err)
+func TestWorkspaceModesAreSemantic(t *testing.T) {
+	for _, mode := range []string{"read", "shared-write"} {
+		if err := validateWorkspaceMode(mode); err != nil {
+			t.Fatalf("mode %q: %v", mode, err)
+		}
 	}
-	if err := os.Symlink("real", filepath.Join(src, "linked")); err != nil {
-		t.Fatal(err)
-	}
-	if err := copyTree(src, dst); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Lstat(filepath.Join(dst, "linked"))
-	if err != nil || info.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("info=%v error=%v", info, err)
+	for _, mode := range []string{"", "worktree", "copy", "shared-ro", "isolated-write"} {
+		if err := validateWorkspaceMode(mode); err == nil {
+			t.Fatalf("legacy or unknown mode %q accepted", mode)
+		}
 	}
 }
 
-func TestCopyTreePrunesDependencies(t *testing.T) {
-	root := t.TempDir()
-	src := filepath.Join(root, "src")
-	dst := filepath.Join(root, "dst")
-	if err := os.MkdirAll(filepath.Join(src, "vendor"), 0755); err != nil {
+func TestWorkspaceWriterLease(t *testing.T) {
+	e := &Engine{writers: map[string]string{}}
+	workspace := t.TempDir()
+	release, err := e.acquireWorkspaceWriter(workspace, "one")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(src, "vendor", "large"), []byte("x"), 0600); err != nil {
+	if _, err := e.acquireWorkspaceWriter(filepath.Join(workspace, "."), "two"); err == nil || !strings.Contains(err.Error(), "active writer") {
+		t.Fatalf("second writer error = %v", err)
+	}
+	release()
+	secondRelease, err := e.acquireWorkspaceWriter(workspace, "two")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := copyTree(src, dst); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(dst, "vendor")); !os.IsNotExist(err) {
-		t.Fatalf("vendor copied: %v", err)
-	}
-}
-
-func TestPrepareSharedReadOnlyUsesExistingCheckout(t *testing.T) {
-	root := t.TempDir()
-	got, isolation, err := prepareWorkspace(context.Background(), root, filepath.Join(t.TempDir(), "job"), "shared-ro")
-	if err != nil || got != root || isolation != "shared-ro" {
-		t.Fatalf("path=%q isolation=%q error=%v", got, isolation, err)
-	}
+	secondRelease()
 }

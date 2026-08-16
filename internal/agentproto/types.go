@@ -28,7 +28,7 @@ type Budget struct {
 }
 type Workspace struct {
 	Path      string `json:"path"`
-	Isolation string `json:"isolation"`
+	Mode      string `json:"mode"`
 	Ownership string `json:"ownership,omitempty"`
 }
 type RoutingHints struct {

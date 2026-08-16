@@ -32,7 +32,7 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		root = runtimeCfg.WorkspaceRoot
 	}
 	r := builtin.New(root)
-	if req.Workspace.Isolation == "shared-ro" {
+	if req.Workspace.Mode == "read" {
 		r = builtin.NewReadOnly(root)
 	}
 	r.Add("ask", "Pause safely and request information that is genuinely required to continue. Do not use for permission or questions answerable from the workspace.", obj(map[string]any{"question": str(), "choices": map[string]any{"type": "array", "items": str()}, "allow_freeform": map[string]any{"type": "boolean"}}, "question"), func(ctx context.Context, a map[string]any) (any, error) {
@@ -111,7 +111,7 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		e.emit(ctx, sid, "link.created", x, emit)
 		return x, nil
 	})
-	r.Add("spawn", "Create an in-process worker with isolated session state and a hard budget slice.", obj(map[string]any{"spec": str(), "result_schema": map[string]any{"type": "object"}, "budget_fraction": map[string]any{"type": "number"}, "review": map[string]any{"type": "boolean"}, "phase": map[string]any{"type": "string", "enum": []string{"explore", "plan", "implement", "diagnose", "review", "wrap-up"}}, "isolation": map[string]any{"type": "string", "enum": []string{"worktree", "copy", "shared-ro"}}}, "spec"), func(ctx context.Context, a map[string]any) (any, error) {
+	r.Add("spawn", "Create an in-process worker with isolated session state and a hard budget slice. Read workers run asynchronously. Shared-write workers run synchronously so the parent cannot mutate the checkout at the same time.", obj(map[string]any{"spec": str(), "result_schema": map[string]any{"type": "object"}, "budget_fraction": map[string]any{"type": "number"}, "review": map[string]any{"type": "boolean"}, "phase": map[string]any{"type": "string", "enum": []string{"explore", "plan", "implement", "diagnose", "review", "wrap-up"}}, "workspace_mode": map[string]any{"type": "string", "enum": []string{"read", "shared-write"}}}, "spec"), func(ctx context.Context, a map[string]any) (any, error) {
 		if req.Depth == 0 {
 			return nil, errors.New("spawn forbidden at depth 0")
 		}
@@ -215,16 +215,28 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 	if available <= 0 {
 		return nil, errors.New("no unreserved session budget remains")
 	}
-	isolation := fmt.Sprint(a["isolation"])
-	if isolation == "" {
-		isolation = "worktree"
+	phase := router.Implement
+	if requested := router.Phase(fmt.Sprint(a["phase"])); requested != "" {
+		phase = requested
 	}
-	workspacePath, actualIsolation, err := prepareWorkspace(ctx, parentReq.Workspace.Path, jobDir, isolation)
-	if err != nil {
+	if review {
+		phase = router.Review
+	}
+	workspaceMode := fmt.Sprint(a["workspace_mode"])
+	if workspaceMode == "" {
+		workspaceMode = "shared-write"
+		if phase == router.Explore || phase == router.Plan || phase == router.Review {
+			workspaceMode = "read"
+		}
+	}
+	if err := validateWorkspaceMode(workspaceMode); err != nil {
 		return nil, err
 	}
+	if parentReq.Workspace.Mode == "read" && workspaceMode != "read" {
+		return nil, errors.New("read workers cannot create shared-write descendants")
+	}
 	childUSD := min(parentReq.Budget.MaxUSD*fraction, available*fraction)
-	child := agentproto.TaskRequest{Spec: spec, ResultSchema: schema, Budget: agentproto.Budget{MaxTokens: max(1000, int(float64(parentReq.Budget.MaxTokens)*fraction)), MaxUSD: childUSD, MaxWallClock: parentReq.Budget.MaxWallClock, MaxDepth: parentReq.Budget.MaxDepth}, Workspace: agentproto.Workspace{Path: workspacePath, Isolation: actualIsolation}, Depth: parentReq.Depth - 1}
+	child := agentproto.TaskRequest{Spec: spec, ResultSchema: schema, Budget: agentproto.Budget{MaxTokens: max(1000, int(float64(parentReq.Budget.MaxTokens)*fraction)), MaxUSD: childUSD, MaxWallClock: parentReq.Budget.MaxWallClock, MaxDepth: parentReq.Budget.MaxDepth}, Workspace: agentproto.Workspace{Path: parentReq.Workspace.Path, Mode: workspaceMode, Ownership: parentReq.Workspace.Ownership}, Depth: parentReq.Depth - 1}
 	child.Hints.Review = review
 	if review {
 		if s, _ := e.store.Session(ctx, sid); s.Model != "" {
@@ -234,13 +246,8 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 		}
 	}
 	point := router.JobCreation
-	phase := router.Implement
-	if requested := router.Phase(fmt.Sprint(a["phase"])); requested != "" {
-		phase = requested
-	}
 	if review {
 		point = router.ReviewCreation
-		phase = router.Review
 	}
 	_, runtimeProviders, runtimePolicy, _, _ := e.runtimeSnapshot()
 	jobState := router.RoutingState{SessionID: sid, Turn: parentSession.Turn, Point: point, Phase: phase, InputTokens: estimate(spec), EstimatedOutput: 4000, AvailableModels: runtimeProviders.AvailableIDs(), ImplementerFamily: model.Family(child.Hints.ImplementerFamily)}
@@ -260,20 +267,33 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 		return nil, err
 	}
 	_ = os.WriteFile(filepath.Join(jobDir, "spec.json"), []byte(store.JSON(child)), 0600)
-	e.emit(ctx, sid, "job.started", map[string]any{"id": id, "parent_session_id": sid, "parent_job_id": parent, "spec": spec, "model": jobDecision.Model.ID, "explanation": jobWhy}, emit)
-	go func() {
+	e.emit(ctx, sid, "job.started", map[string]any{"id": id, "parent_session_id": sid, "parent_job_id": parent, "spec": spec, "model": jobDecision.Model.ID, "workspace_mode": workspaceMode, "explanation": jobWhy}, emit)
+	runJob := func(runCtx context.Context) agentproto.TaskResult {
 		childSID := uuid.NewString()
-		_ = e.store.CreateSession(context.Background(), store.Session{ID: childSID, Spec: spec, Phase: string(phase), Model: jobDecision.Model.ID, BudgetUSD: child.Budget.MaxUSD})
-		result := e.run(context.Background(), childSID, id, child, nil)
+		if err := e.store.CreateSession(runCtx, store.Session{ID: childSID, Spec: spec, Phase: string(phase), Model: jobDecision.Model.ID, BudgetUSD: child.Budget.MaxUSD, WorkspacePath: child.Workspace.Path, WorkspaceOwnership: child.Workspace.Ownership, RequestJSON: store.JSON(child)}); err != nil {
+			return agentproto.TaskResult{Status: agentproto.Fail, Error: "create worker session: " + err.Error()}
+		}
+		jobCtx, cancel := context.WithTimeout(runCtx, child.Budget.MaxWallClock)
+		defer cancel()
+		return e.run(jobCtx, childSID, id, child, nil)
+	}
+	finishJob := func(result agentproto.TaskResult, injectHandoff bool) {
 		_ = e.store.FinishJob(context.Background(), id, string(result.Status), result.Result, result.Outcome)
 		_ = e.store.AddSpend(context.Background(), sid, result.Outcome.CostUSD)
 		_ = e.store.UpdateLatestJobRoutingOutcome(context.Background(), sid, result)
 		_ = os.WriteFile(filepath.Join(jobDir, "result.json"), []byte(store.JSON(result)), 0600)
 		_ = os.WriteFile(filepath.Join(jobDir, "status"), []byte(string(result.Status)+"\n"), 0600)
-		_ = e.store.AddMessage(context.Background(), sid, "user", provider.Message{Role: "user", Content: "Worker job " + id + " completed. Treat this durable result as the exploration handoff, do not repeat its discovery, and advance the todo: " + store.JSON(result)})
+		if injectHandoff {
+			_ = e.store.AddMessage(context.Background(), sid, "user", provider.Message{Role: "user", Content: "Worker job " + id + " completed. Treat this durable result as a worker handoff and advance the todo without repeating completed work: " + store.JSON(result)})
+		}
 		e.emit(context.Background(), sid, "job.terminal", map[string]any{"id": id, "parent_session_id": sid, "parent_job_id": parent, "result": result}, emit)
-		cleanupWorkspace(parentReq.Workspace.Path, workspacePath, actualIsolation)
-	}()
+	}
+	if workspaceMode == "shared-write" {
+		result := runJob(ctx)
+		finishJob(result, false)
+		return map[string]any{"id": id, "status": result.Status, "result": result, "uri": "job://" + id + "/result"}, nil
+	}
+	go func() { finishJob(runJob(context.Background()), true) }()
 	return map[string]any{"id": id, "status": "running", "uri": "job://" + id + "/result"}, nil
 }
 
@@ -289,7 +309,7 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 		"spec":            "Review this proposed workspace diff. Report only correctness bugs introduced by the patch. Return JSON with pass=true only if there are no correctness findings.\n\nDIFF\n" + string(diff),
 		"result_schema":   map[string]any{"type": "object", "properties": map[string]any{"pass": map[string]any{"type": "boolean"}, "findings": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "required": []string{"pass", "findings"}},
 		"budget_fraction": 0.10,
-		"isolation":       "shared-ro",
+		"workspace_mode":  "read",
 		"review":          true,
 		"phase":           "review",
 	}, emit)
@@ -446,96 +466,6 @@ func appendReviewFile(diff []byte, workspace, rel string) ([]byte, error) {
 		}
 	}
 	return diff, nil
-}
-
-func prepareWorkspace(ctx context.Context, src, jobDir, mode string) (string, string, error) {
-	dst := filepath.Join(jobDir, "workspace")
-	switch mode {
-	case "shared-ro":
-		return src, mode, nil
-	case "worktree":
-		cmd := exec.CommandContext(ctx, "git", "-C", src, "worktree", "add", "--detach", dst, "HEAD")
-		if out, err := cmd.CombinedOutput(); err == nil {
-			return dst, mode, nil
-		} else if !strings.Contains(string(out), "not a git repository") {
-			return "", "", fmt.Errorf("create worktree: %v: %s", err, out)
-		}
-		mode = "copy"
-	case "copy":
-	default:
-		return "", "", fmt.Errorf("unknown isolation %q", mode)
-	}
-	if err := copyTree(src, dst); err != nil {
-		return "", "", err
-	}
-	return dst, mode, nil
-}
-
-func cleanupWorkspace(parent, workspace, isolation string) {
-	if isolation == "shared-ro" {
-		return
-	}
-	if isolation == "worktree" {
-		cmd := exec.Command("git", "-C", parent, "worktree", "remove", "--force", workspace)
-		if cmd.Run() == nil {
-			return
-		}
-	}
-	_ = os.RemoveAll(workspace)
-}
-
-func copyTree(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		if rel == ".git" || rel == ".orrery" || strings.HasPrefix(rel, ".git/") || strings.HasPrefix(rel, ".orrery/") {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.IsDir() {
-			switch d.Name() {
-			case "node_modules", "vendor", "local_vendor", "bazel-bin", "bazel-out", "bazel-testlogs", ".cache":
-				return filepath.SkipDir
-			}
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0755)
-		}
-		if d.Type()&os.ModeSymlink != 0 {
-			link, err := os.Readlink(path)
-			if err != nil {
-				return err
-			}
-			return os.Symlink(link, target)
-		}
-		in, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer in.Close()
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode())
-		if err != nil {
-			return err
-		}
-		_, copyErr := io.Copy(out, in)
-		closeErr := out.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		return closeErr
-	})
 }
 
 func (e *Engine) mcpBoundary(ctx context.Context) error {

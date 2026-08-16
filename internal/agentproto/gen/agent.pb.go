@@ -152,7 +152,7 @@ func (x *Budget) GetMaxDepth() uint32 {
 type Workspace struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Path          string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
-	Isolation     string                 `protobuf:"bytes,2,opt,name=isolation,proto3" json:"isolation,omitempty"`
+	Mode          string                 `protobuf:"bytes,2,opt,name=mode,proto3" json:"mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -194,9 +194,9 @@ func (x *Workspace) GetPath() string {
 	return ""
 }
 
-func (x *Workspace) GetIsolation() string {
+func (x *Workspace) GetMode() string {
 	if x != nil {
-		return x.Isolation
+		return x.Mode
 	}
 	return ""
 }
@@ -987,10 +987,10 @@ const file_agent_proto_rawDesc = "" +
 	"max_tokens\x18\x01 \x01(\x04R\tmaxTokens\x12\x17\n" +
 	"\amax_usd\x18\x02 \x01(\x01R\x06maxUsd\x12>\n" +
 	"\rmax_wallclock\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\fmaxWallclock\x12\x1b\n" +
-	"\tmax_depth\x18\x04 \x01(\rR\bmaxDepth\"=\n" +
+	"\tmax_depth\x18\x04 \x01(\rR\bmaxDepth\"3\n" +
 	"\tWorkspace\x12\x12\n" +
-	"\x04path\x18\x01 \x01(\tR\x04path\x12\x1c\n" +
-	"\tisolation\x18\x02 \x01(\tR\tisolation\"\x99\x01\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n" +
+	"\x04mode\x18\x02 \x01(\tR\x04mode\"\x99\x01\n" +
 	"\fRoutingHints\x12\x19\n" +
 	"\btier_pin\x18\x01 \x01(\tR\atierPin\x12'\n" +
 	"\x0ffamily_excludes\x18\x02 \x03(\tR\x0efamilyExcludes\x12\x16\n" +

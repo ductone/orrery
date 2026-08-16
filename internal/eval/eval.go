@@ -176,7 +176,7 @@ func runCase(parent context.Context, engine *core.Engine, policy string, c Case,
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	req := agentproto.TaskRequest{Spec: c.Spec, ResultSchema: c.ResultSchema, Workspace: agentproto.Workspace{Path: workspace, Isolation: "shared"}, Budget: agentproto.Budget{MaxUSD: maxUSD, MaxTokens: maxTokens, MaxWallClock: timeout, MaxDepth: 4}, Depth: 4}
+	req := agentproto.TaskRequest{Spec: c.Spec, ResultSchema: c.ResultSchema, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write"}, Budget: agentproto.Budget{MaxUSD: maxUSD, MaxTokens: maxTokens, MaxWallClock: timeout, MaxDepth: 4}, Depth: 4}
 	if policy == "frontier-pinned" {
 		req.Hints.TierPin = "frontier"
 	}

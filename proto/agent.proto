@@ -5,7 +5,7 @@ import "google/protobuf/struct.proto";
 import "google/protobuf/duration.proto";
 service Agent { rpc Run(TaskRequest) returns (stream AgentEvent); rpc Continue(ContinueRequest) returns (stream ContinueEvent); rpc Cancel(CancelRequest) returns (CancelResponse); }
 message Budget { uint64 max_tokens=1; double max_usd=2; google.protobuf.Duration max_wallclock=3; uint32 max_depth=4; }
-message Workspace { string path=1; string isolation=2; }
+message Workspace { string path=1; string mode=2; }
 message RoutingHints { string tier_pin=1; repeated string family_excludes=2; bool review=3; string implementer_family=4; }
 message AttachmentRef { string id=1; string path=2; string media_type=3; string filename=4; }
 message TaskRequest { string spec=1; google.protobuf.Struct result_schema=2; Budget budget=3; Workspace workspace=4; RoutingHints hints=5; uint32 depth=6; repeated AttachmentRef attachments=7; }

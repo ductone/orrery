@@ -188,7 +188,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	req := agentproto.TaskRequest{Spec: in.Prompt, Budget: agentproto.Budget{MaxUSD: in.BudgetUSD, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: in.Workspace, Isolation: "shared"}, Depth: 4}
+	req := agentproto.TaskRequest{Spec: in.Prompt, Budget: agentproto.Budget{MaxUSD: in.BudgetUSD, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: in.Workspace, Mode: "shared-write"}, Depth: 4}
 	id, _, err := s.engine.Start(context.Background(), req, nil)
 	if err != nil {
 		http.Error(w, err.Error(), 400)
@@ -205,7 +205,7 @@ type budgetInput struct {
 }
 type workspaceInput struct {
 	Path      string `json:"path"`
-	Isolation string `json:"isolation"`
+	Mode      string `json:"mode"`
 	Ownership string `json:"ownership"`
 }
 type createInput struct {
@@ -254,7 +254,7 @@ func (s *Server) createV1(w http.ResponseWriter, r *http.Request) {
 	req := agentproto.TaskRequest{
 		Spec:      in.Prompt,
 		Budget:    agentproto.Budget{MaxTokens: in.Budget.MaxTokens, MaxUSD: in.Budget.MaxUSD, MaxWallClock: time.Duration(in.Budget.MaxWallclockSeconds) * time.Second, MaxDepth: in.Budget.MaxDepth},
-		Workspace: agentproto.Workspace{Path: in.Workspace.Path, Isolation: in.Workspace.Isolation, Ownership: in.Workspace.Ownership},
+		Workspace: agentproto.Workspace{Path: in.Workspace.Path, Mode: in.Workspace.Mode, Ownership: in.Workspace.Ownership},
 		Hints:     in.Routing, Depth: in.Budget.MaxDepth, Attachments: attachmentRefs(in.Attachments),
 	}
 	info, err := s.engine.StartIntegrated(context.Background(), req, core.SessionOptions{Integration: in.Integration, ExternalID: in.ExternalID, ExternalIncarnation: in.ExternalIncarnation, RequestID: in.RequestID, WorkspaceOwnership: in.Workspace.Ownership, Context: in.Context}, nil)

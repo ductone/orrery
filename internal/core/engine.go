@@ -44,10 +44,11 @@ type Engine struct {
 	cancels   map[string]context.CancelFunc
 	turnIDs   map[string]string
 	discovery map[string]*instructionDiscovery
+	writers   map[string]string
 }
 
 func New(cfg config.Config, s *store.Store, p *provider.Registry, mc *mcp.Manager) *Engine {
-	return &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), lsp: lsp.New(cfg.LSP), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}}
+	return &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), lsp: lsp.New(cfg.LSP), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}, writers: map[string]string{}}
 }
 func (e *Engine) Store() *store.Store { return e.store }
 func (e *Engine) Close() error {
@@ -155,6 +156,12 @@ func (e *Engine) Start(ctx context.Context, req agentproto.TaskRequest, emit Emi
 	}
 	cfg, _, _, _, _ := e.runtimeSnapshot()
 	applyBudgetDefaults(&req, cfg)
+	if req.Workspace.Mode == "" {
+		req.Workspace.Mode = "shared-write"
+	}
+	if err := validateWorkspaceMode(req.Workspace.Mode); err != nil {
+		return "", nil, err
+	}
 	id := uuid.NewString()
 	turnID := uuid.NewString()
 	if err := e.store.CreateSession(ctx, store.Session{ID: id, Spec: req.Spec, Phase: "plan", BudgetUSD: req.Budget.MaxUSD, WorkspacePath: req.Workspace.Path, WorkspaceOwnership: req.Workspace.Ownership, RequestJSON: store.JSON(req)}); err != nil {
@@ -176,6 +183,12 @@ func (e *Engine) StartIntegrated(ctx context.Context, req agentproto.TaskRequest
 	}
 	cfg, _, _, _, _ := e.runtimeSnapshot()
 	applyBudgetDefaults(&req, cfg)
+	if req.Workspace.Mode == "" {
+		req.Workspace.Mode = "shared-write"
+	}
+	if err := validateWorkspaceMode(req.Workspace.Mode); err != nil {
+		return StartInfo{}, err
+	}
 	if opts.WorkspaceOwnership == "" {
 		opts.WorkspaceOwnership = "external"
 	}
@@ -207,7 +220,7 @@ func (e *Engine) startExisting(parent context.Context, id, turnID string, req ag
 	go func() {
 		defer close(out)
 		defer cancel()
-		out <- e.run(ctx, id, "", req, emit)
+		out <- e.runRoot(ctx, id, req, emit)
 		e.mu.Lock()
 		delete(e.cancels, id)
 		delete(e.turnIDs, id)
@@ -234,7 +247,7 @@ func (e *Engine) CreateIdle(ctx context.Context, workspace string, budgetUSD flo
 	if budgetUSD <= 0 {
 		budgetUSD = cfg.Budget.SessionUSD
 	}
-	req := agentproto.TaskRequest{Spec: "Interactive coding session", Budget: agentproto.Budget{MaxTokens: 4_000_000, MaxUSD: budgetUSD, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: workspace, Isolation: "shared", Ownership: "external"}, Depth: 4}
+	req := agentproto.TaskRequest{Spec: "Interactive coding session", Budget: agentproto.Budget{MaxTokens: 4_000_000, MaxUSD: budgetUSD, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"}, Depth: 4}
 	s := store.Session{ID: uuid.NewString(), Spec: req.Spec, Phase: "plan", BudgetUSD: budgetUSD, Status: "interrupted", WorkspacePath: workspace, WorkspaceOwnership: "external", RequestJSON: store.JSON(req)}
 	if err := e.store.CreateSession(ctx, s); err != nil {
 		return store.Session{}, err
@@ -272,7 +285,7 @@ func (e *Engine) ContinueIntegratedWithAttachments(ctx context.Context, id, inst
 	}
 	req := agentproto.TaskRequest{}
 	if json.Unmarshal([]byte(s.RequestJSON), &req) != nil {
-		req = agentproto.TaskRequest{Spec: s.Spec, Budget: agentproto.Budget{MaxUSD: s.BudgetUSD - s.SpentUSD, MaxTokens: 4_000_000, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: s.WorkspacePath, Isolation: "shared", Ownership: s.WorkspaceOwnership}, Depth: 4}
+		req = agentproto.TaskRequest{Spec: s.Spec, Budget: agentproto.Budget{MaxUSD: s.BudgetUSD - s.SpentUSD, MaxTokens: 4_000_000, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: s.WorkspacePath, Mode: "shared-write", Ownership: s.WorkspaceOwnership}, Depth: 4}
 	}
 	req.Attachments = append(req.Attachments, attachments...)
 	if err := validateAttachments(&req); err != nil {
@@ -363,13 +376,77 @@ func (e *Engine) launchExisting(ctx context.Context, cancel context.CancelFunc, 
 	go func() {
 		defer close(out)
 		defer cancel()
-		out <- e.run(ctx, id, "", req, emit)
+		out <- e.runRoot(ctx, id, req, emit)
 		e.mu.Lock()
 		delete(e.cancels, id)
 		delete(e.turnIDs, id)
 		e.mu.Unlock()
 	}()
 	return out
+}
+
+func (e *Engine) runRoot(ctx context.Context, id string, req agentproto.TaskRequest, emit EmitFunc) agentproto.TaskResult {
+	if req.Workspace.Mode == "" {
+		req.Workspace.Mode = "shared-write"
+	}
+	if err := validateWorkspaceMode(req.Workspace.Mode); err != nil {
+		return e.finish(id, agentproto.TaskResult{Status: agentproto.Fail, Error: err.Error()}, emit)
+	}
+	if req.Workspace.Mode == "read" {
+		return e.run(ctx, id, "", req, emit)
+	}
+	release, err := e.acquireWorkspaceWriter(req.Workspace.Path, id)
+	if err != nil {
+		return e.finish(id, agentproto.TaskResult{Status: agentproto.Fail, Error: err.Error()}, emit)
+	}
+	defer release()
+	return e.run(ctx, id, "", req, emit)
+}
+
+func (e *Engine) acquireWorkspaceWriter(path, owner string) (func(), error) {
+	key, err := workspaceKey(path)
+	if err != nil {
+		return nil, err
+	}
+	e.mu.Lock()
+	current := e.writers[key]
+	if current == "" {
+		e.writers[key] = owner
+	}
+	e.mu.Unlock()
+	if current != "" {
+		return nil, fmt.Errorf("workspace already has an active writer: %s", key)
+	}
+	return func() {
+		e.mu.Lock()
+		if e.writers[key] == owner {
+			delete(e.writers, key)
+		}
+		e.mu.Unlock()
+	}, nil
+}
+
+func workspaceKey(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", errors.New("workspace path required")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace: %w", err)
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(abs); resolveErr == nil {
+		abs = resolved
+	}
+	return filepath.Clean(abs), nil
+}
+
+func validateWorkspaceMode(mode string) error {
+	switch mode {
+	case "read", "shared-write":
+		return nil
+	default:
+		return fmt.Errorf("unknown workspace mode %q", mode)
+	}
 }
 
 func (e *Engine) Cancel(id string) bool {
@@ -520,7 +597,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		e.emit(ctx, sid, "routing.decision", map[string]any{"decision": decision, "explanation": why}, emit)
 		reg := e.toolRegistry(sid, parentJob, req, discovery, emit)
 		efficientWorker := e.hasEfficientWorker()
-		forceSynthesis := req.Workspace.Isolation == "shared-ro" && s.Turn >= 6
+		forceSynthesis := req.Workspace.Mode == "read" && s.Turn >= 6
 		forceAdvance := parentJob == "" && s.Phase == string(router.Explore) && progress.phaseTurns >= 8
 		forcePlanSynthesis := parentJob == "" && s.Phase == string(router.Plan) && (progress.delegated || progress.phaseTurns >= 4)
 		forceImplementation := parentJob == "" && s.Phase == string(router.Implement) && progress.noProgressTurns >= 3
@@ -540,8 +617,8 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				system += " No lower-cost worker model is configured. Do not spawn a worker merely for repository exploration; explore directly."
 			}
 			definitions := reg.Definitions()
-			if req.Workspace.Isolation == "shared-ro" {
-				system += " You are a bounded read-only exploration worker. Gather decisive evidence efficiently and return structured findings; do not attempt implementation."
+			if req.Workspace.Mode == "read" {
+				system += " You are a bounded read-only worker. Follow the assigned spec, gather decisive evidence efficiently, and return structured findings; do not attempt implementation."
 			}
 			if forceSynthesis {
 				system += " Exploration is now complete. No more tools are available. Synthesize the strongest existing evidence into the required result now."
@@ -764,7 +841,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				"spec":            "Explore the repository for the current task. Find the smallest relevant code path, collect decisive evidence, and return concise findings with exact file paths and recommended next action. Do not edit files.",
 				"result_schema":   map[string]any{"type": "object"},
 				"budget_fraction": 0.10,
-				"isolation":       "shared-ro",
+				"workspace_mode":  "read",
 				"phase":           "explore",
 			}, emit)
 			if spawnErr == nil {
