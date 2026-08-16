@@ -60,7 +60,7 @@ func New(ctx context.Context, cfg map[string]config.MCPConfig, logRoot string) (
 		case "http":
 			cl = &httpClient{url: c.URL, auth: c.AuthHeader, headers: c.Headers, http: &http.Client{Timeout: 2 * time.Minute}}
 		case "stdio":
-			cl, err = newStdio(ctx, c.Command)
+			cl, err = newStdio(ctx, c.Command, c.Env)
 		default:
 			err = fmt.Errorf("unknown transport %q", c.Transport)
 		}
@@ -301,11 +301,15 @@ type stdioClient struct {
 	id  atomic.Int64
 }
 
-func newStdio(ctx context.Context, argv []string) (*stdioClient, error) {
+func newStdio(ctx context.Context, argv []string, env map[string]string) (*stdioClient, error) {
 	if len(argv) == 0 {
 		return nil, errors.New("command required")
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = os.Environ()
+	for name, value := range env {
+		cmd.Env = append(cmd.Env, name+"="+value)
+	}
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

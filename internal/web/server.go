@@ -64,6 +64,7 @@ func newServer(addr string, e *core.Engine, viewOnly bool, version ...string) *S
 	mux.HandleFunc("GET /api/v1/sessions", s.sessions)
 	mux.HandleFunc("GET /api/v1/sessions/{id}", s.session)
 	mux.HandleFunc("GET /api/v1/sessions/{id}/events", s.events)
+	mux.HandleFunc("GET /api/v1/sessions/{id}/log", s.log)
 	mux.HandleFunc("GET /api/v1/sessions/{id}/jobs", s.jobs)
 	mux.HandleFunc("GET /api/v1/active-turns", s.activeTurns)
 	if !viewOnly {
@@ -275,6 +276,22 @@ func (s *Server) rejectWhileDraining(w http.ResponseWriter) bool {
 func (s *Server) jobs(w http.ResponseWriter, r *http.Request) {
 	xs, err := s.engine.Store().Jobs(r.Context(), r.PathValue("id"))
 	write(w, xs, err)
+}
+func (s *Server) log(w http.ResponseWriter, r *http.Request) {
+	messages, err := s.engine.Store().Messages(r.Context(), r.PathValue("id"))
+	if err != nil {
+		write(w, nil, err)
+		return
+	}
+	out := make([]map[string]any, 0, len(messages))
+	for _, message := range messages {
+		var content any
+		if err := json.Unmarshal([]byte(message.ContentJSON), &content); err != nil {
+			content = message.ContentJSON
+		}
+		out = append(out, map[string]any{"role": message.Role, "content": content, "timestamp": message.CreatedAt})
+	}
+	write(w, out, nil)
 }
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	fl, ok := w.(http.Flusher)

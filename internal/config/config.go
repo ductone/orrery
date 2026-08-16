@@ -38,6 +38,7 @@ type MCPConfig struct {
 	Command    []string          `yaml:"command"`
 	AuthHeader string            `yaml:"auth_header"`
 	Headers    map[string]string `yaml:"headers"`
+	Env        map[string]string `yaml:"env"`
 	Squire     bool              `yaml:"squire"`
 }
 
@@ -112,6 +113,18 @@ func expandHome(path string) string {
 
 func resolveSecrets(cfg *Config) error {
 	resolve := func(v *string) error {
+		if strings.HasPrefix(*v, "!env ") {
+			name := strings.TrimSpace(strings.TrimPrefix(*v, "!env "))
+			if name == "" {
+				return errors.New("secret environment variable name is empty")
+			}
+			value, ok := os.LookupEnv(name)
+			if !ok || strings.TrimSpace(value) == "" {
+				return fmt.Errorf("secret environment variable %s is not set", name)
+			}
+			*v = strings.TrimSpace(value)
+			return nil
+		}
 		if !strings.HasPrefix(*v, "!cmd ") {
 			return nil
 		}
@@ -144,6 +157,12 @@ func resolveSecrets(cfg *Config) error {
 				return err
 			}
 			m.Headers[k] = v
+		}
+		for k, v := range m.Env {
+			if err := resolve(&v); err != nil {
+				return fmt.Errorf("mcp %s env %s: %w", name, k, err)
+			}
+			m.Env[k] = v
 		}
 		cfg.MCP[name] = m
 	}
