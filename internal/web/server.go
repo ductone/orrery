@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,9 +31,21 @@ type Server struct {
 	version    string
 	instanceID string
 	startedAt  time.Time
+	draining   atomic.Bool
 }
 
 func New(addr string, e *core.Engine, version ...string) *Server {
+	return newServer(addr, e, false, version...)
+}
+
+// NewView exposes only static assets and read-only session/event endpoints.
+// It is suitable for a separately registered collaborator-grade service; a
+// query parameter is never used as the authorization boundary.
+func NewView(addr string, e *core.Engine, version ...string) *Server {
+	return newServer(addr, e, true, version...)
+}
+
+func newServer(addr string, e *core.Engine, viewOnly bool, version ...string) *Server {
 	v := "dev"
 	if len(version) > 0 && version[0] != "" {
 		v = version[0]
@@ -42,23 +55,29 @@ func New(addr string, e *core.Engine, version ...string) *Server {
 	static, _ := fs.Sub(assets, "static")
 	mux.Handle("GET /", http.FileServer(http.FS(static)))
 	mux.HandleFunc("GET /api/sessions", s.sessions)
-	mux.HandleFunc("POST /sessions", s.create)
 	mux.HandleFunc("GET /sessions/{id}/events", s.events)
-	mux.HandleFunc("POST /sessions/{id}/messages", s.message)
-	mux.HandleFunc("DELETE /sessions/{id}", s.cancel)
 	mux.HandleFunc("GET /sessions/{id}/jobs", s.jobs)
 	mux.HandleFunc("GET /api/v1/healthz", s.health)
 	mux.HandleFunc("GET /api/v1/readyz", s.ready)
 	mux.HandleFunc("GET /api/v1/capabilities", s.capabilities)
 	mux.HandleFunc("GET /api/v1/version", s.versionInfo)
 	mux.HandleFunc("GET /api/v1/sessions", s.sessions)
-	mux.HandleFunc("POST /api/v1/sessions", s.createV1)
 	mux.HandleFunc("GET /api/v1/sessions/{id}", s.session)
 	mux.HandleFunc("GET /api/v1/sessions/{id}/events", s.events)
 	mux.HandleFunc("GET /api/v1/sessions/{id}/jobs", s.jobs)
-	mux.HandleFunc("POST /api/v1/sessions/{id}/messages", s.messageV1)
-	mux.HandleFunc("POST /api/v1/sessions/{id}/cancel", s.cancelTurn)
-	mux.HandleFunc("POST /api/v1/sessions/{id}/resume", s.resumeV1)
+	mux.HandleFunc("GET /api/v1/active-turns", s.activeTurns)
+	if !viewOnly {
+		mux.HandleFunc("POST /sessions", s.create)
+		mux.HandleFunc("POST /sessions/{id}/messages", s.message)
+		mux.HandleFunc("DELETE /sessions/{id}", s.cancel)
+		mux.HandleFunc("POST /api/v1/sessions", s.createV1)
+		mux.HandleFunc("POST /api/v1/sessions/{id}/messages", s.messageV1)
+		mux.HandleFunc("POST /api/v1/sessions/{id}/cancel", s.cancelTurn)
+		mux.HandleFunc("POST /api/v1/sessions/{id}/terminate", s.terminate)
+		mux.HandleFunc("POST /api/v1/sessions/{id}/resume", s.resumeV1)
+		mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.deleteSession)
+		mux.HandleFunc("POST /api/v1/drain", s.drain)
+	}
 	s.http = &http.Server{Addr: addr, Handler: securityHeaders(mux), ReadHeaderTimeout: 10 * time.Second}
 	return s
 }
@@ -72,6 +91,10 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	write(w, map[string]any{"status": "ok", "instance_id": s.instanceID, "started_at": s.startedAt}, nil)
 }
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
+	if s.draining.Load() {
+		writeStatus(w, http.StatusServiceUnavailable, map[string]any{"status": "draining", "instance_id": s.instanceID}, nil)
+		return
+	}
 	if err := s.engine.Store().DB().PingContext(r.Context()); err != nil {
 		writeStatus(w, http.StatusServiceUnavailable, nil, err)
 		return
@@ -128,6 +151,7 @@ type workspaceInput struct {
 	Ownership string `json:"ownership"`
 }
 type createInput struct {
+	Integration         string                  `json:"integration"`
 	ExternalID          string                  `json:"external_id"`
 	ExternalIncarnation string                  `json:"external_incarnation"`
 	RequestID           string                  `json:"request_id"`
@@ -139,6 +163,9 @@ type createInput struct {
 }
 
 func (s *Server) createV1(w http.ResponseWriter, r *http.Request) {
+	if s.rejectWhileDraining(w) {
+		return
+	}
 	var in createInput
 	if err := decode(r, &in); err != nil {
 		writeStatus(w, http.StatusBadRequest, nil, err)
@@ -147,13 +174,16 @@ func (s *Server) createV1(w http.ResponseWriter, r *http.Request) {
 	if in.Workspace.Ownership == "" {
 		in.Workspace.Ownership = "external"
 	}
+	if in.Integration == "" {
+		in.Integration = "squire"
+	}
 	req := agentproto.TaskRequest{
 		Spec:      in.Prompt,
 		Budget:    agentproto.Budget{MaxTokens: in.Budget.MaxTokens, MaxUSD: in.Budget.MaxUSD, MaxWallClock: time.Duration(in.Budget.MaxWallclockSeconds) * time.Second, MaxDepth: in.Budget.MaxDepth},
 		Workspace: agentproto.Workspace{Path: in.Workspace.Path, Isolation: in.Workspace.Isolation, Ownership: in.Workspace.Ownership},
 		Hints:     in.Routing, Depth: in.Budget.MaxDepth,
 	}
-	info, err := s.engine.StartIntegrated(context.Background(), req, core.SessionOptions{Integration: "squire", ExternalID: in.ExternalID, ExternalIncarnation: in.ExternalIncarnation, RequestID: in.RequestID, WorkspaceOwnership: in.Workspace.Ownership, Context: in.Context}, nil)
+	info, err := s.engine.StartIntegrated(context.Background(), req, core.SessionOptions{Integration: in.Integration, ExternalID: in.ExternalID, ExternalIncarnation: in.ExternalIncarnation, RequestID: in.RequestID, WorkspaceOwnership: in.Workspace.Ownership, Context: in.Context}, nil)
 	if err != nil {
 		writeStatus(w, http.StatusBadRequest, nil, err)
 		return
@@ -182,6 +212,9 @@ type messageInput struct {
 }
 
 func (s *Server) messageV1(w http.ResponseWriter, r *http.Request) {
+	if s.rejectWhileDraining(w) {
+		return
+	}
 	var in messageInput
 	if err := decode(r, &in); err != nil {
 		writeStatus(w, http.StatusBadRequest, nil, err)
@@ -204,6 +237,40 @@ func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) cancelTurn(w http.ResponseWriter, r *http.Request) {
 	write(w, map[string]bool{"cancelled": s.engine.Cancel(r.PathValue("id"))}, nil)
+}
+func (s *Server) terminate(w http.ResponseWriter, r *http.Request) {
+	err := s.engine.Terminate(r.Context(), r.PathValue("id"))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeStatus(w, http.StatusNotFound, nil, err)
+		return
+	}
+	write(w, map[string]any{"terminated": err == nil}, err)
+}
+func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
+	err := s.engine.Delete(r.Context(), r.PathValue("id"))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeStatus(w, http.StatusNotFound, nil, err)
+		return
+	}
+	if err != nil {
+		writeStatus(w, http.StatusConflict, nil, err)
+		return
+	}
+	write(w, map[string]bool{"deleted": true}, nil)
+}
+func (s *Server) activeTurns(w http.ResponseWriter, _ *http.Request) {
+	write(w, map[string]any{"instance_id": s.instanceID, "draining": s.draining.Load(), "turns": s.engine.ActiveTurns()}, nil)
+}
+func (s *Server) drain(w http.ResponseWriter, _ *http.Request) {
+	s.draining.Store(true)
+	write(w, map[string]any{"status": "draining", "active_turns": s.engine.ActiveTurns()}, nil)
+}
+func (s *Server) rejectWhileDraining(w http.ResponseWriter) bool {
+	if !s.draining.Load() {
+		return false
+	}
+	writeStatus(w, http.StatusServiceUnavailable, map[string]string{"status": "draining"}, nil)
+	return true
 }
 func (s *Server) jobs(w http.ResponseWriter, r *http.Request) {
 	xs, err := s.engine.Store().Jobs(r.Context(), r.PathValue("id"))

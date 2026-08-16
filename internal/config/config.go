@@ -38,6 +38,7 @@ type MCPConfig struct {
 	Command    []string          `yaml:"command"`
 	AuthHeader string            `yaml:"auth_header"`
 	Headers    map[string]string `yaml:"headers"`
+	Squire     bool              `yaml:"squire"`
 }
 
 type RouterConfig struct {

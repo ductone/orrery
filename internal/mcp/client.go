@@ -130,6 +130,13 @@ func (m *Manager) Definitions() []provider.Tool {
 	return out
 }
 func (m *Manager) Call(ctx context.Context, name string, args map[string]any) (any, error) {
+	return m.CallForSession(ctx, "", name, args)
+}
+
+// CallForSession injects Orrery's native session identity only for MCP servers
+// explicitly marked as Squire bridges. The reserved value is added after tool
+// argument validation and never appears in model-visible schemas.
+func (m *Manager) CallForSession(ctx context.Context, sessionID, name string, args map[string]any) (any, error) {
 	dot := strings.IndexByte(name, '.')
 	if dot < 1 {
 		return nil, errors.New("invalid MCP tool name")
@@ -138,7 +145,15 @@ func (m *Manager) Call(ctx context.Context, name string, args map[string]any) (a
 	if s == nil {
 		return nil, errors.New("MCP server not found")
 	}
-	raw, err := s.client.Call(ctx, "tools/call", map[string]any{"name": name[dot+1:], "arguments": args})
+	callArgs := args
+	if s.cfg.Squire && sessionID != "" {
+		callArgs = make(map[string]any, len(args)+1)
+		for k, v := range args {
+			callArgs[k] = v
+		}
+		callArgs["_squire_session_id"] = "orrery:" + sessionID
+	}
+	raw, err := s.client.Call(ctx, "tools/call", map[string]any{"name": name[dot+1:], "arguments": callArgs})
 	if err != nil {
 		return nil, err
 	}

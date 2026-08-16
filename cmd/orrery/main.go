@@ -92,6 +92,10 @@ func openRuntime(ctx context.Context, path string) (*runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err = s.MarkRunningInterrupted(ctx); err != nil {
+		s.Close()
+		return nil, err
+	}
 	shutdownOTel, err := telemetry.Setup(ctx, cfg.Telemetry.OTLPEndpoint)
 	if err != nil {
 		s.Close()
@@ -109,15 +113,29 @@ func openRuntime(ctx context.Context, path string) (*runtime, error) {
 func serve(ctx context.Context, rt *runtime, args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	listen := fs.String("listen", rt.cfg.Listen, "listen address")
+	viewListen := fs.String("view-listen", "", "optional read-only web listener")
 	if fs.Parse(args) != nil {
 		return 2
 	}
 	srv := web.New(*listen, rt.engine, version)
+	var view *web.Server
+	if *viewListen != "" {
+		view = web.NewView(*viewListen, rt.engine, version)
+		go func() {
+			if err := view.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("read-only server", "error", err)
+			}
+		}()
+		slog.Info("Orrery read-only UI listening", "address", *viewListen)
+	}
 	go func() {
 		<-ctx.Done()
 		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(c)
+		if view != nil {
+			_ = view.Shutdown(c)
+		}
 	}()
 	slog.Info("Orrery listening", "address", *listen)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

@@ -111,6 +111,33 @@ func TestMigrationAddsIntegrationColumns(t *testing.T) {
 		t.Fatalf("session=%+v err=%v", x, err)
 	}
 }
+
+func TestInterruptedAndDeleteLifecycle(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(t.TempDir() + "/db.sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err = s.CreateSession(ctx, Session{ID: "s", Spec: "task", BudgetUSD: 1, Status: "running"}); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = s.AddEvent(ctx, "s", "event", nil)
+	_ = s.AddMessage(ctx, "s", "user", map[string]string{"content": "hello"})
+	if err = s.MarkRunningInterrupted(ctx); err != nil {
+		t.Fatal(err)
+	}
+	x, err := s.Session(ctx, "s")
+	if err != nil || x.Status != "interrupted" {
+		t.Fatalf("session=%+v err=%v", x, err)
+	}
+	if err = s.DeleteSession(ctx, "s"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Session(ctx, "s"); err != sql.ErrNoRows {
+		t.Fatalf("expected deleted session, got %v", err)
+	}
+}
 func TestConcurrentWriters(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(t.TempDir() + "/db.sqlite")

@@ -239,6 +239,34 @@ func (s *Store) UpdateSession(ctx context.Context, x Session) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET durable_summary=?,phase=?,model=?,turn=?,status=?,updated_at=? WHERE id=?`, x.DurableSummary, x.Phase, x.Model, x.Turn, x.Status, time.Now().UTC().Format(time.RFC3339Nano), x.ID)
 	return err
 }
+func (s *Store) SetSessionStatus(ctx context.Context, id, status string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET status=?,updated_at=? WHERE id=?`, status, time.Now().UTC().Format(time.RFC3339Nano), id)
+	return err
+}
+func (s *Store) MarkRunningInterrupted(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET status='interrupted',updated_at=? WHERE status='running'`, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+func (s *Store) DeleteSession(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, table := range []string{"request_receipts", "events", "messages", "todos", "cache_ledger", "jobs", "routing_records"} {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE session_id=?`, id); err != nil {
+			return err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
+}
 func (s *Store) AddSpend(ctx context.Context, id string, usd float64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET spent_usd=spent_usd+?,updated_at=? WHERE id=?`, usd, time.Now().UTC().Format(time.RFC3339Nano), id)
 	return err

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,8 +48,35 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 			_ = e.store.UpdateSession(ctx, old)
 			_ = e.mcpBoundary(ctx)
 		}
-		e.emit(ctx, sid, "todo.updated", ts, emit)
+		e.emit(ctx, sid, "todo.changed", ts, emit)
 		return ts, nil
+	})
+	r.Add("artifact", "Register a task artifact for the parent harness and web UI.", obj(map[string]any{"path": str(), "description": str()}, "path"), func(ctx context.Context, a map[string]any) (any, error) {
+		path := fmt.Sprint(a["path"])
+		if path == "" {
+			return nil, errors.New("artifact path required")
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(root, path)
+		}
+		clean := filepath.Clean(path)
+		rel, err := filepath.Rel(filepath.Clean(root), clean)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, errors.New("artifact path must be inside the assigned workspace")
+		}
+		x := map[string]any{"path": clean, "description": fmt.Sprint(a["description"])}
+		e.emit(ctx, sid, "artifact.created", x, emit)
+		return x, nil
+	})
+	r.Add("link", "Register a public task link such as a pull request, commit, issue, or deployment.", obj(map[string]any{"url": str(), "label": str(), "type": str()}, "url"), func(ctx context.Context, a map[string]any) (any, error) {
+		raw := fmt.Sprint(a["url"])
+		u, err := url.Parse(raw)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			return nil, errors.New("link must be an absolute HTTP(S) URL")
+		}
+		x := map[string]any{"url": raw, "label": fmt.Sprint(a["label"]), "type": fmt.Sprint(a["type"])}
+		e.emit(ctx, sid, "link.created", x, emit)
+		return x, nil
 	})
 	r.Add("spawn", "Create an in-process worker with isolated session state and a hard budget slice.", obj(map[string]any{"spec": str(), "result_schema": map[string]any{"type": "object"}, "budget_fraction": map[string]any{"type": "number"}, "review": map[string]any{"type": "boolean"}, "phase": map[string]any{"type": "string", "enum": []string{"explore", "plan", "implement", "diagnose", "review", "wrap-up"}}, "isolation": map[string]any{"type": "string", "enum": []string{"worktree", "copy", "shared-ro"}}}, "spec"), func(ctx context.Context, a map[string]any) (any, error) {
 		if req.Depth == 0 {
@@ -90,7 +118,9 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 	if e.mcp != nil {
 		for _, d := range e.mcp.Definitions() {
 			def := d
-			r.Add(def.Name, def.Description, def.InputSchema, func(ctx context.Context, a map[string]any) (any, error) { return e.mcp.Call(ctx, def.Name, a) })
+			r.Add(def.Name, def.Description, def.InputSchema, func(ctx context.Context, a map[string]any) (any, error) {
+				return e.mcp.CallForSession(ctx, sid, def.Name, a)
+			})
 		}
 	}
 	return r
@@ -165,7 +195,7 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 		return nil, err
 	}
 	_ = os.WriteFile(filepath.Join(jobDir, "spec.json"), []byte(store.JSON(child)), 0600)
-	e.emit(ctx, sid, "job.started", map[string]any{"id": id, "spec": spec, "model": jobDecision.Model.ID, "explanation": jobWhy}, emit)
+	e.emit(ctx, sid, "job.started", map[string]any{"id": id, "parent_session_id": sid, "parent_job_id": parent, "spec": spec, "model": jobDecision.Model.ID, "explanation": jobWhy}, emit)
 	go func() {
 		childSID := uuid.NewString()
 		_ = e.store.CreateSession(context.Background(), store.Session{ID: childSID, Spec: spec, Phase: string(phase), Model: jobDecision.Model.ID, BudgetUSD: child.Budget.MaxUSD})
@@ -176,7 +206,7 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 		_ = os.WriteFile(filepath.Join(jobDir, "result.json"), []byte(store.JSON(result)), 0600)
 		_ = os.WriteFile(filepath.Join(jobDir, "status"), []byte(string(result.Status)+"\n"), 0600)
 		_ = e.store.AddMessage(context.Background(), sid, "user", provider.Message{Role: "user", Content: "Worker job " + id + " completed. Treat this durable result as the exploration handoff, do not repeat its discovery, and advance the todo: " + store.JSON(result)})
-		e.emit(context.Background(), sid, "job.terminal", map[string]any{"id": id, "result": result}, emit)
+		e.emit(context.Background(), sid, "job.terminal", map[string]any{"id": id, "parent_session_id": sid, "parent_job_id": parent, "result": result}, emit)
 		cleanupWorkspace(parentReq.Workspace.Path, workspacePath, actualIsolation)
 	}()
 	return map[string]any{"id": id, "status": "running", "uri": "job://" + id + "/result"}, nil

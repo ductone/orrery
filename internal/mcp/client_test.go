@@ -73,6 +73,53 @@ func TestHTTPLifecycleAndBoundaryRefresh(t *testing.T) {
 	}
 }
 
+func TestSquireSessionIdentityIsHiddenAndScoped(t *testing.T) {
+	var seen []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in rpcRequest
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		if in.Method == "notifications/initialized" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		result := any(map[string]any{})
+		if in.Method == "tools/list" {
+			result = map[string]any{"tools": []any{map[string]any{"name": "ping", "description": "p", "inputSchema": map[string]any{"type": "object"}}}}
+		}
+		if in.Method == "tools/call" {
+			params, _ := in.Params.(map[string]any)
+			args, _ := params["arguments"].(map[string]any)
+			seen = append(seen, args)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": in.ID, "result": result})
+	}))
+	defer srv.Close()
+	m, err := New(context.Background(), map[string]config.MCPConfig{
+		"squire": {Transport: "http", URL: srv.URL, Squire: true},
+		"plain":  {Transport: "http", URL: srv.URL},
+	}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	original := map[string]any{"value": "hello"}
+	if _, err = m.CallForSession(context.Background(), "session-1", "squire.ping", original); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = m.CallForSession(context.Background(), "session-1", "plain.ping", original); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 2 || seen[0]["_squire_session_id"] != "orrery:session-1" {
+		t.Fatalf("squire args=%+v", seen)
+	}
+	if _, ok := seen[1]["_squire_session_id"]; ok {
+		t.Fatalf("identity leaked to ordinary MCP: %+v", seen[1])
+	}
+	if _, ok := original["_squire_session_id"]; ok {
+		t.Fatalf("caller arguments were mutated: %+v", original)
+	}
+}
+
 func TestStdioLifecycleAndCall(t *testing.T) {
 	m, err := New(context.Background(), map[string]config.MCPConfig{
 		"test": {Transport: "stdio", Command: []string{os.Args[0], "-test.run=TestStdioHelperProcess"}},

@@ -84,3 +84,55 @@ func TestSSELastEventID(t *testing.T) {
 		t.Fatalf("unexpected SSE: %s", joined)
 	}
 }
+
+func TestDrainRejectsNewMutations(t *testing.T) {
+	ts, st := testServer(t)
+	defer ts.Close()
+	defer st.Close()
+	res, err := http.Post(ts.URL+"/api/v1/drain", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("drain status=%d", res.StatusCode)
+	}
+	res, err = http.Post(ts.URL+"/api/v1/sessions", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("create while draining status=%d", res.StatusCode)
+	}
+	res, err = http.Get(ts.URL + "/api/v1/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("ready while draining status=%d", res.StatusCode)
+	}
+}
+
+func TestReadOnlySurfaceDoesNotMountMutations(t *testing.T) {
+	cfg := config.Default()
+	cfg.Database = t.TempDir() + "/db.sqlite"
+	st, err := store.Open(cfg.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	e := core.New(cfg, st, provider.New(cfg), nil)
+	view := NewView("127.0.0.1:0", e, "test")
+	ts := httptest.NewServer(view.http.Handler)
+	defer ts.Close()
+	res, err := http.Post(ts.URL+"/api/v1/sessions", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("mutation exposed on view surface: %d", res.StatusCode)
+	}
+}

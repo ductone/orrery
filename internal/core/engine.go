@@ -165,6 +165,10 @@ func (e *Engine) ContinueIntegrated(ctx context.Context, id, instruction, reques
 	if req.Workspace.Path == "" {
 		req.Workspace.Path = e.cfg.WorkspaceRoot
 	}
+	if err := e.store.SetSessionStatus(ctx, id, "running"); err != nil {
+		e.mu.Unlock()
+		return StartInfo{}, err
+	}
 	turnCtx, cancel := context.WithTimeout(withTurnID(ctx, receipt.TurnID), req.Budget.MaxWallClock)
 	e.cancels[id] = cancel
 	e.turnIDs[id] = receipt.TurnID
@@ -196,6 +200,38 @@ func (e *Engine) Cancel(id string) bool {
 		return true
 	}
 	return false
+}
+
+func (e *Engine) ActiveTurns() map[string]string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make(map[string]string, len(e.cancels))
+	for id := range e.cancels {
+		out[id] = e.turnIDs[id]
+	}
+	return out
+}
+
+func (e *Engine) Terminate(ctx context.Context, id string) error {
+	e.Cancel(id)
+	if _, err := e.store.Session(ctx, id); err != nil {
+		return err
+	}
+	if err := e.store.SetSessionStatus(ctx, id, "terminated"); err != nil {
+		return err
+	}
+	e.emit(ctx, id, "session.terminated", map[string]any{"status": "terminated"}, nil)
+	return nil
+}
+
+func (e *Engine) Delete(ctx context.Context, id string) error {
+	e.mu.Lock()
+	_, active := e.cancels[id]
+	e.mu.Unlock()
+	if active {
+		return errors.New("cannot delete a session with an active turn")
+	}
+	return e.store.DeleteSession(ctx, id)
 }
 
 func (e *Engine) emit(ctx context.Context, sid, typ string, data any, emit EmitFunc) {
@@ -348,7 +384,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		_ = e.store.WarmCache(ctx, sid, decision.Model.ID, max(inputTokens, resp.Usage.CacheReadTokens+resp.Usage.CacheWriteTokens), ttl)
 		_ = e.store.AddMessage(ctx, sid, "assistant", resp.Message)
 		e.emit(ctx, sid, "assistant.message", map[string]any{"message": resp.Message, "usage": resp.Usage, "cost_usd": cost, "model": decision.Model.ID}, emit)
-		e.emit(ctx, sid, "usage.reported", map[string]any{"model": decision.Model.ID, "input_tokens": resp.Usage.InputTokens, "output_tokens": resp.Usage.OutputTokens, "cache_read_tokens": resp.Usage.CacheReadTokens, "cache_write_tokens": resp.Usage.CacheWriteTokens, "cost_usd": cost, "latency": resp.Latency}, emit)
+		e.emit(ctx, sid, "usage.reported", map[string]any{"model": decision.Model.ID, "job_id": parentJob, "input_tokens": resp.Usage.InputTokens, "output_tokens": resp.Usage.OutputTokens, "cache_read_tokens": resp.Usage.CacheReadTokens, "cache_write_tokens": resp.Usage.CacheWriteTokens, "cost_usd": cost, "latency": resp.Latency}, emit)
 		turnOutcome := map[string]any{"tokens": resp.Usage.InputTokens + resp.Usage.OutputTokens, "input_tokens": resp.Usage.InputTokens, "output_tokens": resp.Usage.OutputTokens, "cache_read_tokens": resp.Usage.CacheReadTokens, "cache_write_tokens": resp.Usage.CacheWriteTokens, "latency": resp.Latency, "cost_usd": cost, "model": decision.Model.ID}
 		if len(resp.Message.ToolCalls) == 0 {
 			if emptyFinalResponse(resp.Message) {
@@ -478,10 +514,15 @@ func (e *Engine) finish(sid string, result agentproto.TaskResult, emit EmitFunc)
 		if s.SpentUSD > result.Outcome.CostUSD {
 			result.Outcome.CostUSD = s.SpentUSD
 		}
-		s.Status = string(result.Status)
-		_ = e.store.UpdateSession(context.Background(), s)
+		if s.Status != "terminated" {
+			s.Status = string(result.Status)
+			_ = e.store.UpdateSession(context.Background(), s)
+		}
 	}
 	_ = e.store.UpdateSessionRoutingOutcome(context.Background(), sid, result)
+	for _, artifact := range result.Artifacts {
+		e.emit(context.Background(), sid, "artifact.created", artifact, emit)
+	}
 	e.emit(context.Background(), sid, "session.terminal", result, emit)
 	if emit != nil {
 		emit(agentproto.AgentEvent{Type: "terminal", Data: result, Terminal: &result})
