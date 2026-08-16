@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"os/exec"
@@ -289,6 +290,9 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 const maxReviewDiff = 120_000
 
 func workspaceHasReviewableChanges(ctx context.Context, workspace string) (bool, error) {
+	if !isGitWorkspace(ctx, workspace) {
+		return false, nil
+	}
 	diff, err := collectWorkspaceDiff(ctx, workspace)
 	return len(diff) > 0, err
 }
@@ -296,6 +300,9 @@ func workspaceHasReviewableChanges(ctx context.Context, workspace string) (bool,
 func collectWorkspaceDiff(ctx context.Context, workspace string) ([]byte, error) {
 	if workspace == "" {
 		return nil, nil
+	}
+	if !isGitWorkspace(ctx, workspace) {
+		return collectNonGitWorkspace(ctx, workspace)
 	}
 	diffCmd := exec.CommandContext(ctx, "git", "-C", workspace, "diff", "--no-ext-diff", "--unified=40")
 	diff, err := diffCmd.CombinedOutput()
@@ -315,31 +322,93 @@ func collectWorkspaceDiff(ctx context.Context, workspace string) ([]byte, error)
 		if rel == "" || rel == ".orrery" || strings.HasPrefix(rel, ".orrery/") {
 			continue
 		}
-		fullPath := filepath.Join(workspace, filepath.FromSlash(rel))
-		info, statErr := os.Lstat(fullPath)
-		if statErr != nil {
-			return nil, fmt.Errorf("inspect untracked file %s: %w", rel, statErr)
+		diff, err = appendReviewFile(diff, workspace, rel)
+		if err != nil {
+			return nil, err
 		}
-		var content []byte
-		if info.Mode()&os.ModeSymlink != 0 {
-			content = []byte("[symlink target omitted]\n")
-		} else {
-			content, err = os.ReadFile(fullPath)
-			if err != nil {
-				return nil, fmt.Errorf("read untracked file %s: %w", rel, err)
+		if len(diff) >= maxReviewDiff {
+			return diff[:maxReviewDiff], nil
+		}
+	}
+	return diff, nil
+}
+
+func isGitWorkspace(ctx context.Context, workspace string) bool {
+	if workspace == "" {
+		return false
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", workspace, "rev-parse", "--is-inside-work-tree")
+	out, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(out)) == "true"
+}
+
+func collectNonGitWorkspace(ctx context.Context, workspace string) ([]byte, error) {
+	var diff []byte
+	err := filepath.WalkDir(workspace, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if path != workspace && ignoredInstructionDir(entry.Name()) {
+				return filepath.SkipDir
 			}
+			return nil
 		}
-		if bytes.IndexByte(content, 0) >= 0 {
-			content = []byte("[binary file omitted]\n")
+		if len(diff) >= maxReviewDiff {
+			return fs.SkipAll
 		}
-		header := []byte(fmt.Sprintf("\ndiff --git a/%s b/%s\nnew file mode 100644\n--- /dev/null\n+++ b/%s\n@@ new file @@\n", rel, rel, rel))
-		diff = append(diff, header...)
-		for _, line := range bytes.SplitAfter(content, []byte("\n")) {
-			diff = append(diff, '+')
-			diff = append(diff, line...)
-			if len(diff) >= maxReviewDiff {
-				return diff[:maxReviewDiff], nil
-			}
+		rel, err := filepath.Rel(workspace, path)
+		if err != nil {
+			return nil
+		}
+		diff, err = appendReviewFile(diff, workspace, filepath.ToSlash(rel))
+		return err
+	})
+	if len(diff) > maxReviewDiff {
+		diff = diff[:maxReviewDiff]
+	}
+	return diff, err
+}
+
+func appendReviewFile(diff []byte, workspace, rel string) ([]byte, error) {
+	fullPath := filepath.Join(workspace, filepath.FromSlash(rel))
+	info, err := os.Lstat(fullPath)
+	if err != nil {
+		return nil, fmt.Errorf("inspect review file %s: %w", rel, err)
+	}
+	var content []byte
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		content = []byte("[symlink target omitted]\n")
+	case !info.Mode().IsRegular():
+		return diff, nil
+	default:
+		file, openErr := os.Open(fullPath)
+		if openErr != nil {
+			return nil, fmt.Errorf("read review file %s: %w", rel, openErr)
+		}
+		content, err = io.ReadAll(io.LimitReader(file, maxReviewDiff+1))
+		closeErr := file.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read review file %s: %w", rel, err)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("close review file %s: %w", rel, closeErr)
+		}
+	}
+	if bytes.IndexByte(content, 0) >= 0 {
+		content = []byte("[binary file omitted]\n")
+	}
+	header := []byte(fmt.Sprintf("\ndiff --git a/%s b/%s\nnew file mode 100644\n--- /dev/null\n+++ b/%s\n@@ new file @@\n", rel, rel, rel))
+	diff = append(diff, header...)
+	for _, line := range bytes.SplitAfter(content, []byte("\n")) {
+		diff = append(diff, '+')
+		diff = append(diff, line...)
+		if len(diff) >= maxReviewDiff {
+			return diff[:maxReviewDiff], nil
 		}
 	}
 	return diff, nil

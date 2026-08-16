@@ -57,3 +57,26 @@ func TestCollectWorkspaceDiffIncludesNewFilesAndIgnoresRuntimeState(t *testing.T
 		t.Fatalf("dirty=%v err=%v", dirty, err)
 	}
 }
+
+func TestCollectWorkspaceDiffSupportsNonGitWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "result.txt"), []byte("complete\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, ".orrery"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".orrery", "runtime.log"), []byte("omit me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if dirty, err := workspaceHasReviewableChanges(context.Background(), dir); err != nil || dirty {
+		t.Fatalf("non-git workspace was treated as an existing dirty checkout: dirty=%v err=%v", dirty, err)
+	}
+	diff, err := collectWorkspaceDiff(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(diff), "result.txt") || !strings.Contains(string(diff), "+complete") || strings.Contains(string(diff), "runtime.log") {
+		t.Fatalf("unexpected non-git review input:\n%s", diff)
+	}
+}
