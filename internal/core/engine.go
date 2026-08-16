@@ -33,6 +33,8 @@ type Engine struct {
 	policy    router.Policy
 	mcp       *mcp.Manager
 	web       *webtools.Client
+	runtimeMu sync.RWMutex
+	boundary  func(context.Context) error
 	mu        sync.Mutex
 	cancels   map[string]context.CancelFunc
 	turnIDs   map[string]string
@@ -42,6 +44,30 @@ func New(cfg config.Config, s *store.Store, p *provider.Registry, mc *mcp.Manage
 	return &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}}
 }
 func (e *Engine) Store() *store.Store { return e.store }
+
+// SetBoundaryHook installs the deployment-owned phase-boundary callback. The
+// standalone binary uses it to atomically apply a queued runtime config reload.
+func (e *Engine) SetBoundaryHook(hook func(context.Context) error) { e.boundary = hook }
+
+// ReplaceRuntime swaps only deployment/runtime state. The compiled model
+// catalog and session store are intentionally outside this boundary.
+func (e *Engine) ReplaceRuntime(cfg config.Config, providers *provider.Registry, mc *mcp.Manager) *mcp.Manager {
+	e.runtimeMu.Lock()
+	defer e.runtimeMu.Unlock()
+	old := e.mcp
+	e.cfg = cfg
+	e.providers = providers
+	e.policy = router.NewV1(cfg.Router, e.store)
+	e.mcp = mc
+	e.web = webtools.New(cfg.WebSearch.APIKey)
+	return old
+}
+
+func (e *Engine) runtimeSnapshot() (config.Config, *provider.Registry, router.Policy, *mcp.Manager, *webtools.Client) {
+	e.runtimeMu.RLock()
+	defer e.runtimeMu.RUnlock()
+	return e.cfg, e.providers, e.policy, e.mcp, e.web
+}
 
 type SessionOptions struct {
 	Integration         string
@@ -64,7 +90,8 @@ func (e *Engine) Start(ctx context.Context, req agentproto.TaskRequest, emit Emi
 	if req.Spec == "" {
 		return "", nil, errors.New("task spec required")
 	}
-	applyBudgetDefaults(&req, e.cfg)
+	cfg, _, _, _, _ := e.runtimeSnapshot()
+	applyBudgetDefaults(&req, cfg)
 	id := uuid.NewString()
 	turnID := uuid.NewString()
 	if err := e.store.CreateSession(ctx, store.Session{ID: id, Spec: req.Spec, Phase: "plan", BudgetUSD: req.Budget.MaxUSD, WorkspacePath: req.Workspace.Path, WorkspaceOwnership: req.Workspace.Ownership, RequestJSON: store.JSON(req)}); err != nil {
@@ -81,7 +108,8 @@ func (e *Engine) StartIntegrated(ctx context.Context, req agentproto.TaskRequest
 	if opts.RequestID == "" || opts.Integration == "" || opts.ExternalID == "" {
 		return StartInfo{}, errors.New("integration, external_id, and request_id are required")
 	}
-	applyBudgetDefaults(&req, e.cfg)
+	cfg, _, _, _, _ := e.runtimeSnapshot()
+	applyBudgetDefaults(&req, cfg)
 	if opts.WorkspaceOwnership == "" {
 		opts.WorkspaceOwnership = "external"
 	}
@@ -163,7 +191,8 @@ func (e *Engine) ContinueIntegrated(ctx context.Context, id, instruction, reques
 	}
 	req := agentproto.TaskRequest{Spec: s.Spec, Budget: agentproto.Budget{MaxUSD: s.BudgetUSD - s.SpentUSD, MaxTokens: 1_000_000, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: s.WorkspacePath, Isolation: "shared", Ownership: s.WorkspaceOwnership}, Depth: 4}
 	if req.Workspace.Path == "" {
-		req.Workspace.Path = e.cfg.WorkspaceRoot
+		cfg, _, _, _, _ := e.runtimeSnapshot()
+		req.Workspace.Path = cfg.WorkspaceRoot
 	}
 	if err := e.store.SetSessionStatus(ctx, id, "running"); err != nil {
 		e.mu.Unlock()
@@ -307,12 +336,13 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			point = router.Escalation
 		}
 		newInstruction := len(stored) > 0 && stored[len(stored)-1].Role == "user"
-		state := router.RoutingState{SessionID: sid, Turn: s.Turn + 1, Point: point, Phase: router.Phase(s.Phase), CurrentModel: s.Model, InputTokens: inputTokens, EstimatedOutput: 4000, HasImage: messagesHaveImages(stored), ToolContinuation: len(stored) > 0 && stored[len(stored)-1].Role == "tool", NewInstruction: newInstruction, Stall: stall, AvailableModels: e.providers.AvailableIDs()}
+		runtimeCfg, runtimeProviders, runtimePolicy, _, _ := e.runtimeSnapshot()
+		state := router.RoutingState{SessionID: sid, Turn: s.Turn + 1, Point: point, Phase: router.Phase(s.Phase), CurrentModel: s.Model, InputTokens: inputTokens, EstimatedOutput: 4000, HasImage: messagesHaveImages(stored), ToolContinuation: len(stored) > 0 && stored[len(stored)-1].Role == "tool", NewInstruction: newInstruction, Stall: stall, AvailableModels: runtimeProviders.AvailableIDs()}
 		if newInstruction {
 			state.Phase = router.Plan
 		}
 		applyHints(&state, req.Hints)
-		decision, why, err := e.policy.Decide(ctx, state)
+		decision, why, err := runtimePolicy.Decide(ctx, state)
 		if err != nil {
 			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: err.Error()}, emit)
 		}
@@ -328,6 +358,9 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				return provider.Request{}, err
 			}
 			system := systemPrompt(d, req.Depth)
+			if len(runtimeCfg.Instructions) > 0 {
+				system += "\n\nDEPLOYMENT INSTRUCTIONS\n" + strings.Join(runtimeCfg.Instructions, "\n")
+			}
 			definitions := reg.Definitions()
 			if req.Workspace.Isolation == "shared-ro" {
 				system += " You are a bounded read-only exploration worker. Gather decisive evidence efficiently and return structured findings; do not attempt implementation."
@@ -349,7 +382,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		var resp provider.Response
 		failed := []string{}
 		for {
-			resp, err = e.providers.CompleteOne(ctx, decision, build)
+			resp, err = runtimeProviders.CompleteOne(ctx, decision, build)
 			if err == nil {
 				break
 			}
@@ -360,9 +393,9 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			}
 			failed = append(failed, decision.Model.ID)
 			state.ExcludeModels = failed
-			state.AvailableModels = e.providers.AvailableIDs()
+			state.AvailableModels = runtimeProviders.AvailableIDs()
 			state.CurrentModel = decision.Model.ID
-			decision, why, err = e.policy.Decide(ctx, state)
+			decision, why, err = runtimePolicy.Decide(ctx, state)
 			if err != nil {
 				return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: err.Error()}, emit)
 			}

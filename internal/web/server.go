@@ -32,6 +32,7 @@ type Server struct {
 	instanceID string
 	startedAt  time.Time
 	draining   atomic.Bool
+	reload     func(map[string]string)
 }
 
 func New(addr string, e *core.Engine, version ...string) *Server {
@@ -78,12 +79,14 @@ func newServer(addr string, e *core.Engine, viewOnly bool, version ...string) *S
 		mux.HandleFunc("POST /api/v1/sessions/{id}/resume", s.resumeV1)
 		mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.deleteSession)
 		mux.HandleFunc("POST /api/v1/drain", s.drain)
+		mux.HandleFunc("POST /api/v1/runtime-config/reload", s.reloadRuntime)
 	}
 	s.http = &http.Server{Addr: addr, Handler: securityHeaders(mux), ReadHeaderTimeout: 10 * time.Second}
 	return s
 }
-func (s *Server) ListenAndServe() error              { return s.http.ListenAndServe() }
-func (s *Server) Shutdown(ctx context.Context) error { return s.http.Shutdown(ctx) }
+func (s *Server) ListenAndServe() error                           { return s.http.ListenAndServe() }
+func (s *Server) Shutdown(ctx context.Context) error              { return s.http.Shutdown(ctx) }
+func (s *Server) SetRuntimeReload(reload func(map[string]string)) { s.reload = reload }
 func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 	xs, err := s.engine.Store().Sessions(r.Context())
 	write(w, xs, err)
@@ -107,7 +110,7 @@ func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
 		"api_version": 1, "event_schema": 1,
 		"surfaces": []string{"web", "structured_chat"},
 		"resume":   true, "attachments": false, "dynamic_model_routing": true,
-		"runtime_config_reload": false, "idempotent_mutations": true,
+		"runtime_config_reload": true, "runtime_config_boundary": "phase", "idempotent_mutations": true,
 		"external_workspaces": true, "last_event_id": true,
 	}, nil)
 }
@@ -265,6 +268,23 @@ func (s *Server) activeTurns(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) drain(w http.ResponseWriter, _ *http.Request) {
 	s.draining.Store(true)
 	write(w, map[string]any{"status": "draining", "active_turns": s.engine.ActiveTurns()}, nil)
+}
+func (s *Server) reloadRuntime(w http.ResponseWriter, r *http.Request) {
+	if s.reload == nil {
+		writeStatus(w, http.StatusNotImplemented, nil, errors.New("runtime reload is not configured"))
+		return
+	}
+	var input struct {
+		Env map[string]string `json:"env"`
+	}
+	if r.ContentLength != 0 {
+		if err := decode(r, &input); err != nil {
+			writeStatus(w, http.StatusBadRequest, nil, err)
+			return
+		}
+	}
+	s.reload(input.Env)
+	writeStatus(w, http.StatusAccepted, map[string]any{"status": "pending", "applies_at": "phase_boundary"}, nil)
 }
 func (s *Server) rejectWhileDraining(w http.ResponseWriter) bool {
 	if !s.draining.Load() {

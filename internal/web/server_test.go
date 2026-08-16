@@ -136,3 +136,29 @@ func TestReadOnlySurfaceDoesNotMountMutations(t *testing.T) {
 		t.Fatalf("mutation exposed on view surface: %d", res.StatusCode)
 	}
 }
+
+func TestRuntimeReloadQueuesSecretOverrides(t *testing.T) {
+	cfg := config.Default()
+	cfg.Database = t.TempDir() + "/db.sqlite"
+	st, err := store.Open(cfg.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := New("127.0.0.1:0", core.New(cfg, st, provider.New(cfg), nil), "test")
+	queued := make(chan map[string]string, 1)
+	srv.SetRuntimeReload(func(env map[string]string) { queued <- env })
+	ts := httptest.NewServer(srv.http.Handler)
+	defer ts.Close()
+	res, err := http.Post(ts.URL+"/api/v1/runtime-config/reload", "application/json", strings.NewReader(`{"env":{"OPENAI_API_KEY":"rotated"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("reload status=%d", res.StatusCode)
+	}
+	if got := <-queued; got["OPENAI_API_KEY"] != "rotated" {
+		t.Fatalf("queued env = %#v", got)
+	}
+}

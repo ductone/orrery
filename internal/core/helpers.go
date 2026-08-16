@@ -44,6 +44,9 @@ func (e *Engine) compact(ctx context.Context, sid string, emit EmitFunc) {
 	_ = e.store.UpdateSession(ctx, s)
 	_ = e.store.CompactMessages(ctx, sid, len(msgs)-keepAt)
 	_ = e.store.InvalidateCaches(ctx, sid)
+	if err := e.mcpBoundary(ctx); err != nil {
+		e.emit(ctx, sid, "runtime_config.reload_failed", map[string]any{"error": err.Error()}, emit)
+	}
 	e.emit(ctx, sid, "context.compacted", map[string]any{"kept_messages": len(msgs) - keepAt, "kept_turns": 4}, emit)
 }
 func compactionKeepIndex(msgs []store.Message, turnsToKeep int) int {

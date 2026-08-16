@@ -24,6 +24,7 @@ type Config struct {
 	Budget        BudgetConfig              `yaml:"budget"`
 	Telemetry     TelemetryConfig           `yaml:"telemetry"`
 	WebSearch     WebSearchConfig           `yaml:"web_search"`
+	Instructions  []string                  `yaml:"instructions"`
 }
 
 type ProviderConfig struct {
@@ -73,6 +74,13 @@ func Default() Config {
 }
 
 func Load(path string) (Config, error) {
+	return LoadWithEnv(path, nil)
+}
+
+// LoadWithEnv resolves !env references from overrides before the process
+// environment. It lets a trusted local supervisor rotate credentials without
+// persisting secret values or mutating process-global environment state.
+func LoadWithEnv(path string, overrides map[string]string) (Config, error) {
 	cfg := Default()
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -97,7 +105,7 @@ func Load(path string) (Config, error) {
 	if cfg.Budget.SessionUSD <= 0 || cfg.Budget.JobDefaultFraction <= 0 || cfg.Budget.JobDefaultFraction > 1 {
 		return cfg, errors.New("config: invalid budget")
 	}
-	if err := resolveSecrets(&cfg); err != nil {
+	if err := resolveSecrets(&cfg, overrides); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
@@ -111,14 +119,17 @@ func expandHome(path string) string {
 	return path
 }
 
-func resolveSecrets(cfg *Config) error {
+func resolveSecrets(cfg *Config, overrides map[string]string) error {
 	resolve := func(v *string) error {
 		if strings.HasPrefix(*v, "!env ") {
 			name := strings.TrimSpace(strings.TrimPrefix(*v, "!env "))
 			if name == "" {
 				return errors.New("secret environment variable name is empty")
 			}
-			value, ok := os.LookupEnv(name)
+			value, ok := overrides[name]
+			if !ok {
+				value, ok = os.LookupEnv(name)
+			}
 			if !ok || strings.TrimSpace(value) == "" {
 				return fmt.Errorf("secret environment variable %s is not set", name)
 			}

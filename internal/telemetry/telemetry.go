@@ -8,11 +8,13 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
+	"go.opentelemetry.io/otel/trace"
 	"strings"
 )
 
 func Setup(ctx context.Context, endpoint string) (func(context.Context) error, error) {
 	if endpoint == "" {
+		otel.SetTracerProvider(trace.NewNoopTracerProvider())
 		return func(context.Context) error { return nil }, nil
 	}
 	opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://"))}

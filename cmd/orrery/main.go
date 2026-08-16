@@ -21,6 +21,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -28,11 +30,15 @@ import (
 var version = "dev"
 
 type runtime struct {
-	cfg      config.Config
-	store    *store.Store
-	mcp      *mcp.Manager
-	engine   *core.Engine
-	shutdown func(context.Context) error
+	mu           sync.Mutex
+	cfg          config.Config
+	configPath   string
+	store        *store.Store
+	mcp          *mcp.Manager
+	engine       *core.Engine
+	shutdownOTel func(context.Context) error
+	pending      atomic.Bool
+	pendingEnv   map[string]string
 }
 
 func main() { os.Exit(realMain()) }
@@ -63,7 +69,7 @@ func realMain() int {
 	defer func() {
 		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_ = rt.shutdown(c)
+		_ = rt.close(c)
 	}()
 	switch cmd {
 	case "serve":
@@ -108,7 +114,9 @@ func openRuntime(ctx context.Context, path string) (*runtime, error) {
 	}
 	p := provider.New(cfg)
 	e := core.New(cfg, s, p, mc)
-	return &runtime{cfg, s, mc, e, func(ctx context.Context) error { return errors.Join(mc.Close(), shutdownOTel(ctx), s.Close()) }}, nil
+	rt := &runtime{cfg: cfg, configPath: path, store: s, mcp: mc, engine: e, shutdownOTel: shutdownOTel}
+	e.SetBoundaryHook(rt.phaseBoundary)
+	return rt, nil
 }
 func serve(ctx context.Context, rt *runtime, args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
@@ -118,6 +126,7 @@ func serve(ctx context.Context, rt *runtime, args []string) int {
 		return 2
 	}
 	srv := web.New(*listen, rt.engine, version)
+	srv.SetRuntimeReload(rt.queueReload)
 	var view *web.Server
 	if *viewListen != "" {
 		view = web.NewView(*viewListen, rt.engine, version)
@@ -143,6 +152,70 @@ func serve(ctx context.Context, rt *runtime, args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func (rt *runtime) queueReload(env map[string]string) {
+	rt.mu.Lock()
+	rt.pendingEnv = make(map[string]string, len(env))
+	for name, value := range env {
+		rt.pendingEnv[name] = value
+	}
+	rt.pending.Store(true)
+	rt.mu.Unlock()
+}
+
+func (rt *runtime) phaseBoundary(ctx context.Context) error {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if !rt.pending.Swap(false) {
+		if rt.mcp != nil {
+			return rt.mcp.PhaseBoundary(ctx)
+		}
+		return nil
+	}
+	nextCfg, err := config.LoadWithEnv(rt.configPath, rt.pendingEnv)
+	if err != nil {
+		rt.pending.Store(true)
+		return fmt.Errorf("reload config: %w", err)
+	}
+	nextMCP, err := mcp.New(ctx, nextCfg.MCP, filepath.Join(".orrery", "logs"))
+	if err != nil {
+		rt.pending.Store(true)
+		return fmt.Errorf("reload MCP: %w", err)
+	}
+	nextShutdownOTel, err := telemetry.Setup(ctx, nextCfg.Telemetry.OTLPEndpoint)
+	if err != nil {
+		_ = nextMCP.Close()
+		rt.pending.Store(true)
+		return fmt.Errorf("reload telemetry: %w", err)
+	}
+	oldMCP := rt.engine.ReplaceRuntime(nextCfg, provider.New(nextCfg), nextMCP)
+	oldShutdownOTel := rt.shutdownOTel
+	rt.cfg = nextCfg
+	rt.pendingEnv = nil
+	rt.mcp = nextMCP
+	rt.shutdownOTel = nextShutdownOTel
+	if oldMCP != nil {
+		_ = oldMCP.Close()
+	}
+	if oldShutdownOTel != nil {
+		_ = oldShutdownOTel(ctx)
+	}
+	slog.Info("Orrery runtime config reloaded at phase boundary")
+	return nextMCP.PhaseBoundary(ctx)
+}
+
+func (rt *runtime) close(ctx context.Context) error {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	var mcpErr, otelErr error
+	if rt.mcp != nil {
+		mcpErr = rt.mcp.Close()
+	}
+	if rt.shutdownOTel != nil {
+		otelErr = rt.shutdownOTel(ctx)
+	}
+	return errors.Join(mcpErr, otelErr, rt.store.Close())
 }
 func run(ctx context.Context, rt *runtime, args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)

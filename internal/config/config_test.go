@@ -27,3 +27,20 @@ func TestLoadStrictAndSecrets(t *testing.T) {
 		t.Fatal("unknown field accepted")
 	}
 }
+
+func TestLoadWithEnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "orrery.yaml")
+	content := "database: '" + filepath.Join(dir, "db.sqlite") + "'\nproviders:\n  openai:\n    api_key: '!env OPENAI_API_KEY'\nbudget: {session_usd: 1, job_default_fraction: 0.2}\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENAI_API_KEY", "old")
+	cfg, err := LoadWithEnv(path, map[string]string{"OPENAI_API_KEY": "rotated"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Providers["openai"].APIKey; got != "rotated" {
+		t.Fatalf("API key = %q, want override", got)
+	}
+}

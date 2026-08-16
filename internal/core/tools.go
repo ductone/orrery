@@ -23,9 +23,10 @@ import (
 )
 
 func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest, emit EmitFunc) *builtin.Registry {
+	runtimeCfg, _, _, runtimeMCP, runtimeWeb := e.runtimeSnapshot()
 	root := req.Workspace.Path
 	if root == "" {
-		root = e.cfg.WorkspaceRoot
+		root = runtimeCfg.WorkspaceRoot
 	}
 	r := builtin.New(root)
 	if req.Workspace.Isolation == "shared-ro" {
@@ -46,7 +47,9 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 			old.Phase = phase
 			old.DurableSummary = setPlanSnapshot(old.DurableSummary, store.JSON(ts))
 			_ = e.store.UpdateSession(ctx, old)
-			_ = e.mcpBoundary(ctx)
+			if err := e.mcpBoundary(ctx); err != nil {
+				e.emit(ctx, sid, "runtime_config.reload_failed", map[string]any{"error": err.Error()}, emit)
+			}
 		}
 		e.emit(ctx, sid, "todo.changed", ts, emit)
 		return ts, nil
@@ -110,16 +113,16 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		if x, ok := a["count"].(float64); ok {
 			count = int(x)
 		}
-		return e.web.Search(ctx, fmt.Sprint(a["query"]), count)
+		return runtimeWeb.Search(ctx, fmt.Sprint(a["query"]), count)
 	})
 	r.Add("fetch", "Fetch a public HTTP(S) URL. Private and link-local addresses are rejected.", obj(map[string]any{"url": str()}, "url"), func(ctx context.Context, a map[string]any) (any, error) {
-		return e.web.Fetch(ctx, fmt.Sprint(a["url"]))
+		return runtimeWeb.Fetch(ctx, fmt.Sprint(a["url"]))
 	})
-	if e.mcp != nil {
-		for _, d := range e.mcp.Definitions() {
+	if runtimeMCP != nil {
+		for _, d := range runtimeMCP.Definitions() {
 			def := d
 			r.Add(def.Name, def.Description, def.InputSchema, func(ctx context.Context, a map[string]any) (any, error) {
-				return e.mcp.CallForSession(ctx, sid, def.Name, a)
+				return runtimeMCP.CallForSession(ctx, sid, def.Name, a)
 			})
 		}
 	}
@@ -132,7 +135,8 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 		fraction = x
 	}
 	if fraction <= 0 {
-		fraction = e.cfg.Budget.JobDefaultFraction
+		cfg, _, _, _, _ := e.runtimeSnapshot()
+		fraction = cfg.Budget.JobDefaultFraction
 	}
 	if fraction > 1 {
 		return nil, errors.New("budget fraction exceeds parent")
@@ -178,14 +182,15 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 		point = router.ReviewCreation
 		phase = router.Review
 	}
-	jobState := router.RoutingState{SessionID: sid, Turn: parentSession.Turn, Point: point, Phase: phase, InputTokens: estimate(spec), EstimatedOutput: 4000, AvailableModels: e.providers.AvailableIDs(), ImplementerFamily: model.Family(child.Hints.ImplementerFamily)}
+	_, runtimeProviders, runtimePolicy, _, _ := e.runtimeSnapshot()
+	jobState := router.RoutingState{SessionID: sid, Turn: parentSession.Turn, Point: point, Phase: phase, InputTokens: estimate(spec), EstimatedOutput: 4000, AvailableModels: runtimeProviders.AvailableIDs(), ImplementerFamily: model.Family(child.Hints.ImplementerFamily)}
 	if phase == router.Explore {
 		child.Depth = 0
 		child.Budget.MaxDepth = 0
 		child.Budget.MaxTokens = min(child.Budget.MaxTokens, 150_000)
 		child.Budget.MaxUSD = min(child.Budget.MaxUSD, 0.35)
 	}
-	jobDecision, jobWhy, err := e.policy.Decide(ctx, jobState)
+	jobDecision, jobWhy, err := runtimePolicy.Decide(ctx, jobState)
 	if err != nil {
 		return nil, err
 	}
@@ -348,8 +353,12 @@ func copyTree(src, dst string) error {
 }
 
 func (e *Engine) mcpBoundary(ctx context.Context) error {
-	if e.mcp != nil {
-		return e.mcp.PhaseBoundary(ctx)
+	if e.boundary != nil {
+		return e.boundary(ctx)
+	}
+	_, _, _, runtimeMCP, _ := e.runtimeSnapshot()
+	if runtimeMCP != nil {
+		return runtimeMCP.PhaseBoundary(ctx)
 	}
 	return nil
 }
