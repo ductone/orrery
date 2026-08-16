@@ -529,12 +529,23 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		}
 		emptyCompletions = 0
 		turnImages := []provider.Image{}
+		type toolExecution struct {
+			value  any
+			shaped any
+		}
+		seenCalls := map[string]toolExecution{}
 		for _, call := range resp.Message.ToolCalls {
 			outcome.ToolCalls++
 			if call.Name == "edit" {
 				outcome.EditAttempts++
 			}
 			e.emit(ctx, sid, "tool.started", call, emit)
+			callKey := toolCallKey(call)
+			if prior, duplicate := seenCalls[callKey]; duplicate {
+				_ = e.store.AddMessage(ctx, sid, "tool", provider.Message{Role: "tool", ToolCallID: call.ID, Content: store.JSON(prior.shaped)})
+				e.emit(ctx, sid, "tool.finished", map[string]any{"call": call, "result": prior.value, "deduplicated": true}, emit)
+				continue
+			}
 			value, callErr := reg.Call(ctx, call.Name, call.Arguments)
 			if callErr != nil {
 				outcome.ToolErrors++
@@ -562,6 +573,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			}
 			shaped, images := extractImages(value)
 			shaped = progress.observe(call, shaped, callErr)
+			seenCalls[callKey] = toolExecution{value: value, shaped: shaped}
 			toolMsg := provider.Message{Role: "tool", ToolCallID: call.ID, Content: store.JSON(shaped)}
 			_ = e.store.AddMessage(ctx, sid, "tool", toolMsg)
 			turnImages = append(turnImages, images...)
@@ -601,6 +613,11 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			e.compact(ctx, sid, emit)
 		}
 	}
+}
+
+func toolCallKey(call provider.ToolCall) string {
+	arguments, _ := json.Marshal(call.Arguments)
+	return call.Name + "\x00" + string(arguments)
 }
 
 func (e *Engine) hasEfficientWorker() bool {

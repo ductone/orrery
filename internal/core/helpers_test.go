@@ -23,6 +23,18 @@ func TestEmptyFinalResponse(t *testing.T) {
 	}
 }
 
+func TestToolCallKeyIgnoresArgumentMapOrder(t *testing.T) {
+	left := provider.ToolCall{Name: "todo", Arguments: map[string]any{"b": 2, "a": 1}}
+	right := provider.ToolCall{Name: "todo", Arguments: map[string]any{"a": 1, "b": 2}}
+	if toolCallKey(left) != toolCallKey(right) {
+		t.Fatal("semantically identical tool calls must share a key")
+	}
+	right.Name = "edit"
+	if toolCallKey(left) == toolCallKey(right) {
+		t.Fatal("different tools must not share a key")
+	}
+}
+
 func TestResultSchemaValidation(t *testing.T) {
 	s := map[string]any{"type": "object", "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "required": []any{"ok"}, "additionalProperties": false}
 	if err := validateSchema(s, map[string]any{"ok": true}); err != nil {
