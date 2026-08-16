@@ -37,6 +37,26 @@ func TestProgressRecognizesEditsAndVerification(t *testing.T) {
 	}
 }
 
+func TestUnchangedTodoDoesNotResetStallDetection(t *testing.T) {
+	p := newProgressTracker()
+	call := provider.ToolCall{Name: "todo", Arguments: map[string]any{"items": []any{map[string]any{"text": "explore", "status": "in_progress"}}}}
+	p.beginTurn("explore")
+	if got := p.observe(call, map[string]any{"phase": "explore"}, nil); isSuppressed(got) {
+		t.Fatal("first todo update suppressed")
+	}
+	p.endTurn()
+	for range 4 {
+		p.beginTurn("explore")
+		if got := p.observe(call, map[string]any{"phase": "explore"}, nil); !isSuppressed(got) {
+			t.Fatal("unchanged todo was treated as progress")
+		}
+		p.endTurn()
+	}
+	if p.noProgressTurns != 4 || !p.shouldNudge() {
+		t.Fatalf("tracker=%+v", p)
+	}
+}
+
 func TestSuccessfulSpawnMarksDelegationAndNudgeIsOncePerPhase(t *testing.T) {
 	p := newProgressTracker()
 	p.beginTurn("explore")

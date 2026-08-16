@@ -18,6 +18,7 @@ type progressTracker struct {
 	delegated, edited, verified   bool
 	reviewed                      bool
 	seenResults                   map[string]string
+	lastTodo                      string
 	turnProgress                  bool
 	turnEdited, turnVerified      bool
 }
@@ -60,11 +61,20 @@ func (p *progressTracker) observe(call provider.ToolCall, value any, callErr err
 	}
 	if callErr == nil {
 		switch name {
-		case "todo", "spawn":
-			p.turnProgress = true
-			if name == "spawn" {
-				p.delegated = true
+		case "todo":
+			todoHash := fingerprint("todo", call.Arguments)
+			if p.lastTodo == todoHash {
+				return map[string]any{
+					"suppressed": true,
+					"unchanged":  true,
+					"hint":       "This todo is unchanged. Do not submit it again; gather new evidence or advance an item/phase.",
+				}
 			}
+			p.lastTodo = todoHash
+			p.turnProgress = true
+		case "spawn":
+			p.turnProgress = true
+			p.delegated = true
 		case "edit":
 			p.turnProgress = true
 			p.turnEdited = true
