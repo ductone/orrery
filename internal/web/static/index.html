@@ -38,7 +38,7 @@
       grid-template-columns: 292px minmax(0, 1fr);
       letter-spacing: -.006em;
     }
-    button, textarea { font: inherit; }
+    button, textarea, dialog { font: inherit; }
     button { cursor: pointer; }
     button:disabled { cursor: not-allowed; opacity: .45; }
     .sidebar {
@@ -89,6 +89,9 @@
     .metric strong { display: block; color: var(--bright); font-size: 12px; font-weight: 600; margin-top: 2px; }
     .metric.cost strong { color: var(--electric); }
     .cancel { border: 1px solid rgba(255, 122, 133, .35); background: transparent; color: var(--danger); padding: 7px 10px; border-radius: 8px; }
+    .actions { display: flex; gap: 6px; }
+    .action { border: 1px solid var(--circuit); background: rgba(22,24,28,.75); color: var(--signal); padding: 7px 9px; border-radius: 8px; }
+    .action:hover { color: var(--bright); border-color: rgba(155,128,248,.45); }
     #events { overflow: auto; padding: 30px max(24px, calc((100% - 920px) / 2)); scroll-behavior: smooth; }
     .empty { min-height: 100%; display: grid; place-items: center; text-align: center; color: var(--signal); }
     .empty-inner { max-width: 460px; }
@@ -132,6 +135,15 @@
     .composer-foot { display: flex; align-items: center; justify-content: space-between; padding: 7px 8px 8px 14px; color: var(--signal); font-size: 10px; }
     .send { min-width: 88px; border: 0; border-radius: 8px; padding: 9px 13px; color: var(--void); background: var(--electric); font-weight: 750; }
     .error-banner { margin-bottom: 10px; padding: 10px 12px; border: 1px solid rgba(255, 122, 133, .4); border-radius: 9px; color: var(--danger); background: rgba(255, 122, 133, .08); font-size: 12px; }
+    .input-card { border-color: rgba(246,216,107,.4); }
+    .choices { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 13px 13px; }
+    .choice { border: 1px solid rgba(246,216,107,.35); background: rgba(246,216,107,.08); color: var(--warning); border-radius: 8px; padding: 8px 11px; }
+    dialog { width: min(620px, calc(100vw - 28px)); border: 1px solid var(--circuit); border-radius: 14px; color: var(--bright); background: var(--terminal); box-shadow: var(--shadow); }
+    dialog::backdrop { background: rgba(0,0,0,.72); backdrop-filter: blur(4px); }
+    .dialog-head { display:flex;align-items:center;justify-content:space-between;margin-bottom:14px; }
+    .dialog-head h2 { margin:0;font-size:16px; }
+    .checkpoint-list { display:grid;gap:8px;max-height:55vh;overflow:auto; }
+    .checkpoint { display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;border:1px solid var(--circuit);border-radius:9px;padding:10px 12px; }
     body.embed { grid-template-columns: 1fr; }
     body.embed .sidebar { display: none; }
     body.readonly .composer-wrap, body.readonly .cancel { display: none; }
@@ -159,6 +171,7 @@
       <div class="metrics">
         <span class="metric"><span>model</span><strong id="model">—</strong></span>
         <span class="metric cost"><span>cost</span><strong id="meter">$0.0000</strong></span>
+        <div class="actions" id="actions" hidden><button class="action" id="checkpoint">Checkpoint</button><button class="action" id="compact">Compact</button><button class="action" id="fork">Fork</button><button class="action" id="history">History</button></div>
         <button class="cancel" id="cancel" hidden>Stop</button>
       </div>
     </header>
@@ -171,8 +184,9 @@
       </form>
     </div>
   </main>
+  <dialog id="history-dialog"><div class="dialog-head"><h2>Session checkpoints</h2><button class="action" id="close-history">Close</button></div><div class="checkpoint-list" id="checkpoint-list"></div></dialog>
   <script>
-    const state = { current: null, stream: null, sessions: [], cost: 0, model: "—", phase: "idle", status: "", pending: false };
+    const state = { current: null, stream: null, sessions: [], cost: 0, model: "—", phase: "idle", status: "", pending: false, input: null };
     const params = new URLSearchParams(location.search);
     const $ = selector => document.querySelector(selector);
     if (params.get("embed") === "1") document.body.classList.add("embed");
@@ -216,6 +230,9 @@
       $("#send").textContent = state.pending ? "Working…" : (state.current ? "Send" : "Start task");
       $("#send").disabled = state.pending;
       $("#cancel").hidden = !state.current || state.status !== "running";
+      $("#actions").hidden = !state.current;
+      document.querySelectorAll("#actions button").forEach(button => button.disabled = state.status === "running");
+      $("#prompt").placeholder = state.input ? state.input.question : "Ask Orrery to build, investigate, or review…";
     }
 
     function emptyState() {
@@ -304,6 +321,15 @@
         addEvent("context", "context", `<div class="card"><div class="card-head"><div class="card-title"><span class="icon">↺</span>Context compacted</div><span class="card-meta">${escapeHTML(data.kept_turns || "")} turns retained</span></div></div>`);
         return;
       }
+      if (type === "input.required") {
+        state.status = "input_required"; state.pending = false; state.input = data;
+        const choices = (data.choices || []).map(choice => `<button class="choice" data-answer="${escapeHTML(choice)}">${escapeHTML(choice)}</button>`).join("");
+        const node = addEvent("input", "input required", `<div class="card input-card"><div class="card-head"><div class="card-title"><span class="icon">?</span>${escapeHTML(data.question)}</div><span class="card-meta">paused safely</span></div>${choices ? `<div class="choices">${choices}</div>` : ""}</div>`);
+        node.querySelectorAll("[data-answer]").forEach(button => button.addEventListener("click", () => answerInput(button.dataset.answer)));
+        syncHeader(); loadSessions(); $("#prompt").focus(); return;
+      }
+      if (type === "input.answered") { state.input = null; state.status = "running"; syncHeader(); return; }
+      if (type === "session.restored") { addEvent("context","restored",`<div class="card"><div class="card-head"><div class="card-title"><span class="icon">↶</span>Checkpoint restored</div></div></div>`); return; }
       if (type === "session.terminal" || type === "terminal") {
         const result = data.status ? data : (data.terminal || data);
         state.status = result.status || "complete";
@@ -318,7 +344,7 @@
     }
 
     async function openSession(id) {
-      state.current = id; state.cost = 0; state.model = "—"; state.pending = false;
+      state.current = id; state.cost = 0; state.model = "—"; state.pending = false; state.input = null;
       state.stream?.close(); $("#events").innerHTML = ""; showError();
       try {
         const session = await request(`/api/v1/sessions/${encodeURIComponent(id)}`);
@@ -327,16 +353,17 @@
         state.model = (pick(session, "Model", "model") || "—").split("/").pop();
         state.cost = Number(pick(session, "SpentUSD", "spent_usd") || 0);
         $("#title").textContent = pick(session, "Spec", "spec") || shortID(id);
+        if (state.status === "input_required") { try { const input = await request(`/api/v1/sessions/${encodeURIComponent(id)}/input`); if (input && input.ID) state.input = {id:input.ID,question:input.Question,choices:input.Choices || [],allow_freeform:input.AllowFreeform}; } catch {} }
       } catch (error) { showError(error); }
       state.stream = new EventSource(`/api/v1/sessions/${encodeURIComponent(id)}/events`);
       state.stream.onopen = () => { $("#connection").textContent = "live"; };
       state.stream.onerror = () => { $("#connection").textContent = "reconnecting"; };
-      ["routing.decision","routing.fallback","assistant.message","tool.started","tool.finished","todo.changed","job.started","job.terminal","usage.reported","artifact.created","link.created","session.terminal","context.compacted","progress.intervention","completion.rejected","provider.error"].forEach(type => state.stream.addEventListener(type, renderEvent));
+      ["routing.decision","routing.fallback","assistant.message","tool.started","tool.finished","todo.changed","job.started","job.terminal","usage.reported","artifact.created","link.created","session.terminal","context.compacted","context.compaction_failed","input.required","input.answered","session.restored","progress.intervention","completion.rejected","provider.error"].forEach(type => state.stream.addEventListener(type, renderEvent));
       syncHeader(); loadSessions();
     }
 
     function resetComposer() {
-      state.stream?.close(); state.current = null; state.cost = 0; state.model = "—"; state.phase = "idle"; state.status = ""; state.pending = false;
+      state.stream?.close(); state.current = null; state.cost = 0; state.model = "—"; state.phase = "idle"; state.status = ""; state.pending = false; state.input = null;
       $("#title").textContent = "New task"; $("#prompt").value = ""; autoSize(); emptyState(); syncHeader(); loadSessions(); $("#prompt").focus();
     }
 
@@ -352,11 +379,15 @@
         } else {
           addEvent("user", "you", `<div class="bubble">${markdown(content)}</div>`);
           await request(`/sessions/${encodeURIComponent(state.current)}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content }) });
-          $("#prompt").value = ""; autoSize();
+          $("#prompt").value = ""; state.input = null; autoSize();
         }
       } catch (error) { state.pending = false; showError(error); }
       syncHeader();
     }
+
+    function answerInput(answer) { $("#prompt").value = answer; send(); }
+
+    async function sessionAction(action,body={}) { if(!state.current)return;showError();try{return await request(`/api/v1/sessions/${encodeURIComponent(state.current)}/${action}`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)})}catch(error){showError(error);throw error} }
 
     function autoSize() {
       const input = $("#prompt"); input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 240)}px`;
@@ -372,6 +403,11 @@
       if (!state.current) return;
       try { await request(`/api/v1/sessions/${encodeURIComponent(state.current)}/cancel`, { method: "POST" }); } catch (error) { showError(error); }
     });
+    $("#checkpoint").addEventListener("click",async()=>{await sessionAction("checkpoint",{label:"Manual checkpoint"});await showHistory()});
+    $("#compact").addEventListener("click",async()=>{await sessionAction("compact");await openSession(state.current)});
+    $("#fork").addEventListener("click",async()=>{const fork=await sessionAction("fork");if(fork?.id)await openSession(fork.id)});
+    async function showHistory(){if(!state.current)return;const checkpoints=await request(`/api/v1/sessions/${encodeURIComponent(state.current)}/checkpoints`);$("#checkpoint-list").innerHTML=(checkpoints||[]).map(cp=>`<div class="checkpoint"><div><strong>${escapeHTML(cp.Label)}</strong><div class="card-meta">${escapeHTML(cp.Reason)} · ${escapeHTML(new Date(cp.CreatedAt).toLocaleString())}</div></div><button class="action" data-restore="${escapeHTML(cp.ID)}">Restore</button></div>`).join("")||`<div class="empty-inner">No checkpoints yet.</div>`;$("#checkpoint-list").querySelectorAll("[data-restore]").forEach(button=>button.addEventListener("click",async()=>{await sessionAction("restore",{checkpoint_id:button.dataset.restore});$("#history-dialog").close();await openSession(state.current)}));$("#history-dialog").showModal()}
+    $("#history").addEventListener("click",showHistory);$("#close-history").addEventListener("click",()=>$("#history-dialog").close());
 
     emptyState(); syncHeader(); loadSessions().then(() => {
       const direct = params.get("session");

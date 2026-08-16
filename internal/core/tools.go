@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ductone/orrey/internal/agentproto"
+	"github.com/ductone/orrey/internal/lsp"
 	"github.com/ductone/orrey/internal/model"
 	"github.com/ductone/orrey/internal/provider"
 	"github.com/ductone/orrey/internal/router"
@@ -164,6 +165,19 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 	r.Add("fetch", "Fetch a public HTTP(S) URL. Private and link-local addresses are rejected.", obj(map[string]any{"url": str()}, "url"), func(ctx context.Context, a map[string]any) (any, error) {
 		return runtimeWeb.Fetch(ctx, fmt.Sprint(a["url"]))
 	})
+	if e.lsp != nil && e.lsp.Configured() {
+		r.Add("lsp", "Query configured language servers for semantic navigation and diagnostics. line is 1-based and character is 0-based. This tool is read-only; use hashline edit for changes.", obj(map[string]any{"operation": map[string]any{"type": "string", "enum": []string{"definition", "references", "hover", "document_symbols", "workspace_symbols", "diagnostics"}}, "path": str(), "line": map[string]any{"type": "integer"}, "character": map[string]any{"type": "integer"}, "query": str(), "server": str()}, "operation"), func(ctx context.Context, a map[string]any) (any, error) {
+			line := 0
+			if n, ok := a["line"].(float64); ok && n > 0 {
+				line = int(n) - 1
+			}
+			character := 0
+			if n, ok := a["character"].(float64); ok && n > 0 {
+				character = int(n)
+			}
+			return e.lsp.Call(ctx, root, lsp.Request{Operation: fmt.Sprint(a["operation"]), Path: fmt.Sprint(a["path"]), Line: line, Character: character, Query: fmt.Sprint(a["query"]), Server: fmt.Sprint(a["server"])})
+		})
+	}
 	if runtimeMCP != nil {
 		for _, d := range runtimeMCP.Definitions() {
 			def := d

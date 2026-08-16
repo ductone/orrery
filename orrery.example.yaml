@@ -11,6 +11,11 @@ mcp:
     transport: http
     url: "https://mcp.internal.example/v1"
     auth_header: "!cmd op read op://dev/c1-gateway/token"
+lsp:
+  gopls:
+    command: ["gopls"]
+    extensions: [".go"]
+    language_id: "go"
 router:
   lambda_cost: 0.35
   frontier_floor_phases: [plan, diagnose, review]

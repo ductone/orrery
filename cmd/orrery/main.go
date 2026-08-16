@@ -229,7 +229,7 @@ func (rt *runtime) close(ctx context.Context) error {
 	if rt.shutdownOTel != nil {
 		otelErr = rt.shutdownOTel(ctx)
 	}
-	return errors.Join(mcpErr, otelErr, rt.store.Close())
+	return errors.Join(mcpErr, otelErr, rt.engine.Close(), rt.store.Close())
 }
 func run(ctx context.Context, rt *runtime, args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)

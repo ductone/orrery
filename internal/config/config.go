@@ -25,6 +25,13 @@ type Config struct {
 	Telemetry     TelemetryConfig           `yaml:"telemetry"`
 	WebSearch     WebSearchConfig           `yaml:"web_search"`
 	Instructions  []string                  `yaml:"instructions"`
+	LSP           map[string]LSPConfig      `yaml:"lsp"`
+}
+
+type LSPConfig struct {
+	Command    []string `yaml:"command"`
+	Extensions []string `yaml:"extensions"`
+	LanguageID string   `yaml:"language_id"`
 }
 
 type ProviderConfig struct {
@@ -68,6 +75,7 @@ func Default() Config {
 	return Config{
 		Listen: "127.0.0.1:7433", WorkspaceRoot: filepath.Join(home, "src"), Database: ".orrery/orrery.db",
 		Providers: map[string]ProviderConfig{}, MCP: map[string]MCPConfig{},
+		LSP:    map[string]LSPConfig{},
 		Router: RouterConfig{LambdaCost: .35, FrontierFloorPhases: []string{"plan", "diagnose", "review"}},
 		Budget: BudgetConfig{SessionUSD: 25, JobDefaultFraction: .2},
 	}
@@ -104,6 +112,21 @@ func LoadWithEnv(path string, overrides map[string]string) (Config, error) {
 	}
 	if cfg.Budget.SessionUSD <= 0 || cfg.Budget.JobDefaultFraction <= 0 || cfg.Budget.JobDefaultFraction > 1 {
 		return cfg, errors.New("config: invalid budget")
+	}
+	for name, server := range cfg.LSP {
+		if strings.TrimSpace(name) == "" || len(server.Command) == 0 || strings.TrimSpace(server.Command[0]) == "" {
+			return cfg, fmt.Errorf("config: lsp %q requires a command", name)
+		}
+		if len(server.Extensions) == 0 {
+			return cfg, fmt.Errorf("config: lsp %q requires extensions", name)
+		}
+		for i, ext := range server.Extensions {
+			if !strings.HasPrefix(ext, ".") {
+				return cfg, fmt.Errorf("config: lsp %q extension %q must start with a dot", name, ext)
+			}
+			server.Extensions[i] = strings.ToLower(ext)
+		}
+		cfg.LSP[name] = server
 	}
 	if err := resolveSecrets(&cfg, overrides); err != nil {
 		return cfg, err

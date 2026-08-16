@@ -19,6 +19,7 @@ import (
 
 	"github.com/ductone/orrey/internal/agentproto"
 	"github.com/ductone/orrey/internal/config"
+	"github.com/ductone/orrey/internal/lsp"
 	"github.com/ductone/orrey/internal/mcp"
 	"github.com/ductone/orrey/internal/model"
 	"github.com/ductone/orrey/internal/provider"
@@ -36,6 +37,7 @@ type Engine struct {
 	policy    router.Policy
 	mcp       *mcp.Manager
 	web       *webtools.Client
+	lsp       *lsp.Manager
 	runtimeMu sync.RWMutex
 	boundary  func(context.Context) error
 	mu        sync.Mutex
@@ -45,9 +47,15 @@ type Engine struct {
 }
 
 func New(cfg config.Config, s *store.Store, p *provider.Registry, mc *mcp.Manager) *Engine {
-	return &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}}
+	return &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), lsp: lsp.New(cfg.LSP), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}}
 }
 func (e *Engine) Store() *store.Store { return e.store }
+func (e *Engine) Close() error {
+	if e.lsp != nil {
+		return e.lsp.Close()
+	}
+	return nil
+}
 
 func (e *Engine) sessionIdle(id string) bool {
 	e.mu.Lock()
@@ -107,6 +115,11 @@ func (e *Engine) ReplaceRuntime(cfg config.Config, providers *provider.Registry,
 	e.policy = router.NewV1(cfg.Router, e.store)
 	e.mcp = mc
 	e.web = webtools.New(cfg.WebSearch.APIKey)
+	if e.lsp == nil {
+		e.lsp = lsp.New(cfg.LSP)
+	} else {
+		e.lsp.Reconfigure(cfg.LSP)
+	}
 	return old
 }
 
