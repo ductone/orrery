@@ -96,6 +96,22 @@ func parseResult(s string) map[string]any {
 	if json.Unmarshal([]byte(strings.TrimSpace(s)), &v) == nil {
 		return v
 	}
+	// Reasoning models sometimes explain their verdict before emitting the
+	// requested JSON object. Keep the last valid object so examples in the
+	// explanation do not override the terminal structured result.
+	var last map[string]any
+	for i := 0; i < len(s); i++ {
+		if s[i] != '{' {
+			continue
+		}
+		var candidate map[string]any
+		if json.NewDecoder(strings.NewReader(s[i:])).Decode(&candidate) == nil && candidate != nil {
+			last = candidate
+		}
+	}
+	if last != nil {
+		return last
+	}
 	return map[string]any{"answer": s}
 }
 func validateSchema(schema, result map[string]any) error {

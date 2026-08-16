@@ -144,3 +144,13 @@ func TestSerializedToolCallResponse(t *testing.T) {
 		t.Fatal("ordinary final rejected")
 	}
 }
+
+func TestParseResultUsesTrailingStructuredVerdict(t *testing.T) {
+	got := parseResult("Evidence summary with an example {\"pass\":false}.\n\n```json\n{\"pass\":true,\"findings\":[]}\n```")
+	if pass, _ := got["pass"].(bool); !pass {
+		t.Fatalf("trailing verdict was not parsed: %#v", got)
+	}
+	if findings, ok := got["findings"].([]any); !ok || len(findings) != 0 {
+		t.Fatalf("findings were not parsed: %#v", got)
+	}
+}

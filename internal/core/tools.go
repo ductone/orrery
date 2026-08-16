@@ -259,6 +259,9 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 			if getErr != nil || j.Status == "running" {
 				continue
 			}
+			if j.Status != string(agentproto.Pass) {
+				return false, "", fmt.Errorf("review job %s ended with status %s", id, j.Status)
+			}
 			var result map[string]any
 			if json.Unmarshal([]byte(j.ResultJSON), &result) != nil {
 				return false, j.ResultJSON, nil
