@@ -410,7 +410,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		forceSynthesis := req.Workspace.Isolation == "shared-ro" && s.Turn >= 6
 		forceAdvance := parentJob == "" && s.Phase == string(router.Explore) && progress.phaseTurns >= 8
 		forcePlanSynthesis := parentJob == "" && s.Phase == string(router.Plan) && progress.delegated
-		forceImplementation := parentJob == "" && s.Phase == string(router.Implement) && progress.noProgressTurns >= 3 && !progress.edited
+		forceImplementation := parentJob == "" && s.Phase == string(router.Implement) && progress.noProgressTurns >= 3
 		build := func(m model.ModelSpec, d router.Decision) (provider.Request, error) {
 			history, err := e.providerMessages(ctx, sid)
 			if err != nil {
@@ -420,7 +420,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			if len(runtimeCfg.Instructions) > 0 {
 				system += "\n\nDEPLOYMENT INSTRUCTIONS\n" + strings.Join(runtimeCfg.Instructions, "\n")
 			}
-			system += "\n\nTOOL CALL DISCIPLINE\nCall each tool with a given set of arguments at most once per response. Never emit duplicate identical tool calls."
+			system += "\n\nTOOL CALL DISCIPLINE\nCall each tool with a given set of arguments at most once per response. Never emit duplicate identical tool calls. Use the edit tool for every workspace source-file mutation. Never create or modify source files through exec, shell redirection, sed, tee, or formatters with write flags; this bypasses edit safety and metrics."
 			if !efficientWorker {
 				system += " No lower-cost worker model is configured. Do not spawn a worker merely for repository exploration; explore directly."
 			}
@@ -437,8 +437,8 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				definitions = reg.DefinitionsOnly("todo", "edit", "job_result")
 			}
 			if forceImplementation {
-				system += " Implementation is stalled after decisive evidence. Only todo and edit are available. Make the smallest justified edit now."
-				definitions = reg.DefinitionsOnly("todo", "edit")
+				system += " Implementation is stalled after decisive evidence. Stop broad exploration. Read only an exact edit window if needed, finish the smallest justified edit, then run focused verification."
+				definitions = reg.DefinitionsOnly("todo", "read", "edit", "exec")
 			}
 			return provider.Request{System: system, DurableSpec: "TASK\n" + s.Spec + "\n\nDURABLE SUMMARY\n" + s.DurableSummary, Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the durable summary.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: definitions, MaxOutput: min(8000, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
 		}
