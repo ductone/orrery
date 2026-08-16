@@ -5,11 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/ductone/orrey/internal/model"
+	"github.com/ductone/orrey/internal/router"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+type blockingClient struct{}
+
+func (blockingClient) Complete(ctx context.Context, _ model.ModelSpec, _ Request) (Response, error) {
+	<-ctx.Done()
+	return Response{}, ctx.Err()
+}
 
 func TestOpenAICompatAssembly(t *testing.T) {
 	var got map[string]any
@@ -210,6 +218,21 @@ func TestCredentialBackoffIsRetryable(t *testing.T) {
 	}
 	if !IsRetryable(errors.Join(errors.New("model failed"), ErrCredentialsBackoff)) {
 		t.Fatal("wrapped credential backoff should remain retryable")
+	}
+}
+
+func TestCompleteOneHonorsModelRequestTimeout(t *testing.T) {
+	spec := model.ModelSpec{ID: "xai/timeout-test", Compat: model.Compat{StreamIdleTimeout: 10 * time.Millisecond}}
+	r := &Registry{clients: map[string]Client{"xai": blockingClient{}}}
+	started := time.Now()
+	_, err := r.CompleteOne(context.Background(), router.Decision{Model: spec}, func(model.ModelSpec, router.Decision) (Request, error) {
+		return Request{}, nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("request timeout took %v", elapsed)
 	}
 }
 
