@@ -49,6 +49,7 @@ type Outcome struct {
 	Latency               time.Duration `json:"latency"`
 	ToolCalls             int           `json:"tool_calls"`
 	ToolErrors            int           `json:"tool_errors"`
+	EditAttempts          int           `json:"edit_attempts"`
 	EditRetries           int           `json:"edit_retries"`
 	NoProgressTurns       int           `json:"no_progress_turns,omitempty"`
 	DuplicateReads        int           `json:"duplicate_reads,omitempty"`

@@ -434,6 +434,7 @@ type Outcome struct {
 	ToolCalls     uint32                 `protobuf:"varint,4,opt,name=tool_calls,json=toolCalls,proto3" json:"tool_calls,omitempty"`
 	ToolErrors    uint32                 `protobuf:"varint,5,opt,name=tool_errors,json=toolErrors,proto3" json:"tool_errors,omitempty"`
 	EditRetries   uint32                 `protobuf:"varint,6,opt,name=edit_retries,json=editRetries,proto3" json:"edit_retries,omitempty"`
+	EditAttempts  uint32                 `protobuf:"varint,7,opt,name=edit_attempts,json=editAttempts,proto3" json:"edit_attempts,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -506,6 +507,13 @@ func (x *Outcome) GetToolErrors() uint32 {
 func (x *Outcome) GetEditRetries() uint32 {
 	if x != nil {
 		return x.EditRetries
+	}
+	return 0
+}
+
+func (x *Outcome) GetEditAttempts() uint32 {
+	if x != nil {
+		return x.EditAttempts
 	}
 	return 0
 }
@@ -818,7 +826,7 @@ const file_agent_proto_rawDesc = "" +
 	"\tworkspace\x18\x04 \x01(\v2\x1a.orrery.agent.v1.WorkspaceR\tworkspace\x123\n" +
 	"\x05hints\x18\x05 \x01(\v2\x1d.orrery.agent.v1.RoutingHintsR\x05hints\x12\x14\n" +
 	"\x05depth\x18\x06 \x01(\rR\x05depth\x12@\n" +
-	"\vattachments\x18\a \x03(\v2\x1e.orrery.agent.v1.AttachmentRefR\vattachments\"\xd4\x01\n" +
+	"\vattachments\x18\a \x03(\v2\x1e.orrery.agent.v1.AttachmentRefR\vattachments\"\xf9\x01\n" +
 	"\aOutcome\x12\x16\n" +
 	"\x06tokens\x18\x01 \x01(\x04R\x06tokens\x12\x19\n" +
 	"\bcost_usd\x18\x02 \x01(\x01R\acostUsd\x123\n" +
@@ -827,7 +835,8 @@ const file_agent_proto_rawDesc = "" +
 	"tool_calls\x18\x04 \x01(\rR\ttoolCalls\x12\x1f\n" +
 	"\vtool_errors\x18\x05 \x01(\rR\n" +
 	"toolErrors\x12!\n" +
-	"\fedit_retries\x18\x06 \x01(\rR\veditRetries\"C\n" +
+	"\fedit_retries\x18\x06 \x01(\rR\veditRetries\x12#\n" +
+	"\redit_attempts\x18\a \x01(\rR\feditAttempts\"C\n" +
 	"\vArtifactRef\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\"\xf4\x01\n" +

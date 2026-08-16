@@ -78,7 +78,7 @@ func realMain() int {
 		return run(ctx, rt, args)
 	case "export":
 		return export(ctx, rt, args)
-	case "eval":
+	case "eval", "benchmark":
 		return evaluate(ctx, rt, args)
 	case "help", "-h", "--help":
 		usage()
@@ -278,6 +278,9 @@ func evaluate(ctx context.Context, rt *runtime, args []string) int {
 	policy := fs.String("policy", "v1", "frontier-pinned, v1, or candidate")
 	buildSession := fs.String("build-session", "", "build one replay JSONL row from a completed session")
 	acceptance := fs.String("acceptance", "", "acceptance command for --build-session")
+	baseline := fs.String("baseline", "", "optional prior benchmark report for regression comparison")
+	output := fs.String("output", "", "optional path for the formatted benchmark report")
+	minPassRatio := fs.Float64("min-pass-ratio", .97, "minimum pass-rate ratio versus --baseline")
 	if fs.Parse(args) != nil {
 		return 2
 	}
@@ -304,7 +307,30 @@ func evaluate(ctx context.Context, rt *runtime, args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	_ = json.NewEncoder(os.Stdout).Encode(report)
+	if *baseline != "" {
+		prior, loadErr := orreval.LoadReport(*baseline)
+		if loadErr != nil {
+			fmt.Fprintln(os.Stderr, loadErr)
+			return 1
+		}
+		comparison := orreval.Compare(report, prior, *minPassRatio)
+		report.Comparison = &comparison
+	}
+	encoded, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if *output != "" {
+		if err := os.WriteFile(*output, append(encoded, '\n'), 0600); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
+	fmt.Println(string(encoded))
+	if report.Comparison != nil && !report.Comparison.Passed {
+		return 4
+	}
 	return 0
 }
 func parseSince(v string) (time.Time, error) {
@@ -322,5 +348,6 @@ commands:
   serve [--listen address]       run the web UI and HTTP/SSE transport
   run -p "task" [--workspace]    run one task; emit JSON TaskResult
   export [--since 24h]           emit routing records as JSONL
-  eval --set tasks.jsonl         run a replay set`)
+  eval --set tasks.jsonl         run a replay set
+  benchmark --set cases.jsonl    run isolated engineering cases and compare trends`)
 }

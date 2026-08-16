@@ -30,7 +30,15 @@ Provider keys may be literal strings or `!cmd <command>` values. Secret commands
 ./orrery --config orrery.yaml eval --build-session SESSION_ID --acceptance "go test ./..." >> replay.jsonl
 ./orrery --config orrery.yaml eval --set replay.jsonl --policy frontier-pinned
 ./orrery --config orrery.yaml eval --set replay.jsonl --policy v1
+
+# Run the public-safe engineering suite and compare a candidate to a baseline
+./orrery --config orrery.yaml benchmark --set benchmarks/engineering/cases.jsonl \
+  --policy v1 --output .orrery/benchmarks/baseline.json
+./orrery --config orrery.yaml benchmark --set benchmarks/engineering/cases.jsonl \
+  --policy candidate --baseline .orrery/benchmarks/baseline.json
 ```
+
+Benchmark cases run in disposable fixture copies. Reports include pass rate, cost per successful case, tokens, latency percentiles, tool errors, first-attempt edit land rate, verification, and independent review. A baseline comparison enforces the 97% pass-rate guardrail before cost improvements count. Keep private replay sets and reports under `.orrery/`; only synthetic, public-safe fixtures belong in the repository.
 
 Root and worker agents share the typed contract in [`proto/agent.proto`](proto/agent.proto). Workers default to detached Git worktrees and fall back to a copied workspace outside Git repositories. Their specs, status, and schema-validated results remain under `.orrery/jobs/` as well as in SQLite.
 

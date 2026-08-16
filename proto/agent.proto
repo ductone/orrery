@@ -10,7 +10,7 @@ message RoutingHints { string tier_pin=1; repeated string family_excludes=2; boo
 message AttachmentRef { string id=1; string path=2; string media_type=3; string filename=4; }
 message TaskRequest { string spec=1; google.protobuf.Struct result_schema=2; Budget budget=3; Workspace workspace=4; RoutingHints hints=5; uint32 depth=6; repeated AttachmentRef attachments=7; }
 enum Status { STATUS_UNSPECIFIED=0; PASS=1; FAIL=2; BUDGET_EXHAUSTED=3; CANCELLED=4; }
-message Outcome { uint64 tokens=1; double cost_usd=2; google.protobuf.Duration latency=3; uint32 tool_calls=4; uint32 tool_errors=5; uint32 edit_retries=6; }
+message Outcome { uint64 tokens=1; double cost_usd=2; google.protobuf.Duration latency=3; uint32 tool_calls=4; uint32 tool_errors=5; uint32 edit_retries=6; uint32 edit_attempts=7; }
 message ArtifactRef { string path=1; string description=2; }
 message TaskResult { Status status=1; google.protobuf.Struct result=2; Outcome outcome=3; repeated ArtifactRef artifacts=4; string error=5; }
 message AgentEvent { string type=1; google.protobuf.Struct data=2; TaskResult terminal=3; }

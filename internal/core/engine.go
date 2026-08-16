@@ -531,6 +531,9 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		turnImages := []provider.Image{}
 		for _, call := range resp.Message.ToolCalls {
 			outcome.ToolCalls++
+			if call.Name == "edit" {
+				outcome.EditAttempts++
+			}
 			e.emit(ctx, sid, "tool.started", call, emit)
 			value, callErr := reg.Call(ctx, call.Name, call.Arguments)
 			if callErr != nil {
