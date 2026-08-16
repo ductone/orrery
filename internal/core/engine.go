@@ -372,6 +372,11 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			return agentproto.TaskResult{Status: agentproto.Fail, Error: err.Error()}
 		}
 		progress.beginTurn(s.Phase)
+		if reason := progress.reviewRemediationReason(parentJob); reason != "" {
+			progress.export(&outcome)
+			e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "terminal_review_remediation_stall", "reason": reason, "signals": progress.stall()}, emit)
+			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: reason}, emit)
+		}
 		if reason := terminalPhaseStallReason(parentJob, s.Phase, progress.phaseTurns); reason != "" {
 			progress.export(&outcome)
 			e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "terminal_phase_stall", "reason": reason, "signals": progress.stall()}, emit)
@@ -416,7 +421,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		forceAdvance := parentJob == "" && s.Phase == string(router.Explore) && progress.phaseTurns >= 8
 		forcePlanSynthesis := parentJob == "" && s.Phase == string(router.Plan) && (progress.delegated || progress.phaseTurns >= 4)
 		forceImplementation := parentJob == "" && s.Phase == string(router.Implement) && progress.noProgressTurns >= 3
-		forceResolution := parentJob == "" && (s.Phase == string(router.Review) || s.Phase == string(router.Diagnose)) && progress.phaseTurns >= 6
+		forceResolution := parentJob == "" && ((s.Phase == string(router.Review) || s.Phase == string(router.Diagnose)) && progress.phaseTurns >= 6 || progress.reviewRemediation && progress.reviewRemediationTurns >= 4)
 		build := func(m model.ModelSpec, d router.Decision) (provider.Request, error) {
 			history, err := e.providerMessages(ctx, sid)
 			if err != nil {
@@ -526,6 +531,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				progress.reviewed = passed
 				if !passed {
 					progress.completionRejections++
+					progress.markReviewRejected()
 					e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "independent review failed", "review": reviewText}, emit)
 					_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Content: "Independent review rejected completion. Address these correctness findings, re-run verification, then complete:\n" + reviewText})
 					continue

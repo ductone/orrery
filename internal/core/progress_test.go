@@ -87,6 +87,27 @@ func TestRootReviewAndDiagnosisHaveTerminalBounds(t *testing.T) {
 	}
 }
 
+func TestIndependentReviewRemediationBoundSurvivesPhaseChanges(t *testing.T) {
+	p := newProgressTracker()
+	p.markReviewRejected()
+	for i, phase := range []string{"diagnose", "explore", "plan", "implement", "review", "explore", "diagnose"} {
+		p.beginTurn(phase)
+		if i == 3 {
+			p.markReviewRejected()
+		}
+		if got := p.reviewRemediationReason(""); got != "" {
+			t.Fatalf("remediation terminated early at turn %d: %s", i+1, got)
+		}
+	}
+	p.beginTurn("explore")
+	if got := p.reviewRemediationReason(""); got == "" {
+		t.Fatal("phase changes bypassed independent-review remediation bound")
+	}
+	if got := p.reviewRemediationReason("child"); got != "" {
+		t.Fatalf("child remediation was incorrectly bounded: %s", got)
+	}
+}
+
 func TestSuccessfulSpawnMarksDelegationAndNudgeIsOncePerPhase(t *testing.T) {
 	p := newProgressTracker()
 	p.beginTurn("explore")

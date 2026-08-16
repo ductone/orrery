@@ -16,8 +16,10 @@ type progressTracker struct {
 	repeatedReads, repeatedSearch int
 	repeatedTodos                 int
 	nudges, completionRejections  int
+	reviewRemediationTurns        int
 	delegated, edited, verified   bool
 	reviewed                      bool
+	reviewRemediation             bool
 	seenResults                   map[string]string
 	lastTodo                      string
 	turnProgress                  bool
@@ -29,6 +31,9 @@ func newProgressTracker() *progressTracker {
 }
 
 func (p *progressTracker) beginTurn(phase string) {
+	if p.reviewRemediation {
+		p.reviewRemediationTurns++
+	}
 	if phase != p.phase {
 		p.phase = phase
 		p.phaseTurns = 0
@@ -113,6 +118,20 @@ func (p *progressTracker) shouldNudge() bool {
 
 func (p *progressTracker) markNudged() { p.nudges++ }
 
+func (p *progressTracker) markReviewRejected() {
+	if !p.reviewRemediation {
+		p.reviewRemediation = true
+		p.reviewRemediationTurns = 0
+	}
+}
+
+func (p *progressTracker) reviewRemediationReason(parentJob string) string {
+	if parentJob == "" && p.reviewRemediation && p.reviewRemediationTurns >= 8 {
+		return "agent exceeded the bounded independent-review remediation window"
+	}
+	return ""
+}
+
 // terminalStallReason is deliberately narrow: an agent may spend many turns on
 // a hard task, but repeatedly submitting the exact same plan after a progress
 // intervention cannot create new evidence. Ending the run preserves budget and
@@ -133,11 +152,12 @@ func terminalPhaseStallReason(parentJob, phase string, phaseTurns int) string {
 
 func (p *progressTracker) stall() map[string]int {
 	return map[string]int{
-		"no_progress_turns": p.noProgressTurns,
-		"phase_turns":       p.phaseTurns,
-		"repeated_reads":    p.repeatedReads,
-		"repeated_searches": p.repeatedSearch,
-		"repeated_todos":    p.repeatedTodos,
+		"no_progress_turns":        p.noProgressTurns,
+		"phase_turns":              p.phaseTurns,
+		"repeated_reads":           p.repeatedReads,
+		"repeated_searches":        p.repeatedSearch,
+		"repeated_todos":           p.repeatedTodos,
+		"review_remediation_turns": p.reviewRemediationTurns,
 	}
 }
 
