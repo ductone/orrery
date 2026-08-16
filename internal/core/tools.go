@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -225,16 +226,12 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 }
 
 func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req agentproto.TaskRequest, emit EmitFunc) (bool, string, error) {
-	diffCmd := exec.CommandContext(ctx, "git", "-C", req.Workspace.Path, "diff", "--no-ext-diff", "--unified=40")
-	diff, err := diffCmd.CombinedOutput()
+	diff, err := collectWorkspaceDiff(ctx, req.Workspace.Path)
 	if err != nil {
-		return false, "", fmt.Errorf("collect diff: %w: %s", err, diff)
+		return false, "", fmt.Errorf("collect diff: %w", err)
 	}
 	if len(diff) == 0 {
 		return true, "no diff", nil
-	}
-	if len(diff) > 120_000 {
-		diff = diff[:120_000]
 	}
 	job, err := e.spawn(ctx, sid, parent, req, map[string]any{
 		"spec":            "Review this proposed workspace diff. Report only correctness bugs introduced by the patch. Return JSON with pass=true only if there are no correctness findings.\n\nDIFF\n" + string(diff),
@@ -270,6 +267,65 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 			return passed, store.JSON(result), nil
 		}
 	}
+}
+
+const maxReviewDiff = 120_000
+
+func workspaceHasReviewableChanges(ctx context.Context, workspace string) (bool, error) {
+	diff, err := collectWorkspaceDiff(ctx, workspace)
+	return len(diff) > 0, err
+}
+
+func collectWorkspaceDiff(ctx context.Context, workspace string) ([]byte, error) {
+	if workspace == "" {
+		return nil, nil
+	}
+	diffCmd := exec.CommandContext(ctx, "git", "-C", workspace, "diff", "--no-ext-diff", "--unified=40")
+	diff, err := diffCmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("tracked diff: %w: %s", err, diff)
+	}
+	if len(diff) >= maxReviewDiff {
+		return diff[:maxReviewDiff], nil
+	}
+	untrackedCmd := exec.CommandContext(ctx, "git", "-C", workspace, "ls-files", "--others", "--exclude-standard", "-z")
+	untracked, err := untrackedCmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("list untracked files: %w: %s", err, untracked)
+	}
+	for _, rawPath := range bytes.Split(untracked, []byte{0}) {
+		rel := filepath.ToSlash(string(rawPath))
+		if rel == "" || rel == ".orrery" || strings.HasPrefix(rel, ".orrery/") {
+			continue
+		}
+		fullPath := filepath.Join(workspace, filepath.FromSlash(rel))
+		info, statErr := os.Lstat(fullPath)
+		if statErr != nil {
+			return nil, fmt.Errorf("inspect untracked file %s: %w", rel, statErr)
+		}
+		var content []byte
+		if info.Mode()&os.ModeSymlink != 0 {
+			content = []byte("[symlink target omitted]\n")
+		} else {
+			content, err = os.ReadFile(fullPath)
+			if err != nil {
+				return nil, fmt.Errorf("read untracked file %s: %w", rel, err)
+			}
+		}
+		if bytes.IndexByte(content, 0) >= 0 {
+			content = []byte("[binary file omitted]\n")
+		}
+		header := []byte(fmt.Sprintf("\ndiff --git a/%s b/%s\nnew file mode 100644\n--- /dev/null\n+++ b/%s\n@@ new file @@\n", rel, rel, rel))
+		diff = append(diff, header...)
+		for _, line := range bytes.SplitAfter(content, []byte("\n")) {
+			diff = append(diff, '+')
+			diff = append(diff, line...)
+			if len(diff) >= maxReviewDiff {
+				return diff[:maxReviewDiff], nil
+			}
+		}
+	}
+	return diff, nil
 }
 
 func prepareWorkspace(ctx context.Context, src, jobDir, mode string) (string, string, error) {

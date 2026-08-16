@@ -356,6 +356,9 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 	outcome := agentproto.Outcome{}
 	stall := router.StallSignals{}
 	progress := newProgressTracker()
+	if dirty, dirtyErr := workspaceHasReviewableChanges(ctx, req.Workspace.Path); dirtyErr == nil && dirty {
+		progress.edited = true
+	}
 	emptyCompletions := 0
 	e.emit(ctx, sid, "session.started", map[string]any{"spec": req.Spec}, emit)
 	for {
