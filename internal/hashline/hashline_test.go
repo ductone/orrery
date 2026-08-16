@@ -47,6 +47,19 @@ func TestApplyRejectsAccidentalDeclarationDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestApplyRejectsNoOpPatch(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "x.txt")
+	if err := os.WriteFile(p, []byte("unchanged\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	lines, _ := Read(p)
+	err := Apply(Patch{Path: p, Hunks: []Hunk{{Anchor: lines[0].Hash, Delete: 1, Insert: []string{"unchanged"}}}})
+	if !errors.Is(err, ErrNoChanges) {
+		t.Fatalf("error = %v, want ErrNoChanges", err)
+	}
+}
+
 func TestAmbiguousAnchorRejected(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "x")
 	_ = os.WriteFile(p, []byte("same\nsame\n"), 0600)

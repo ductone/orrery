@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -30,6 +31,8 @@ type StaleError struct {
 	Anchor string
 	Fresh  []Line
 }
+
+var ErrNoChanges = errors.New("hashline: patch makes no changes")
 
 func (e *StaleError) Error() string { return fmt.Sprintf("stale or ambiguous anchor %q", e.Anchor) }
 func hash(s string) string          { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:])[:8] }
@@ -58,6 +61,7 @@ func Apply(p Patch) error {
 	for i, l := range lines {
 		raw[i] = l.Text
 	}
+	original := append([]string(nil), raw...)
 	type located struct {
 		at int
 		h  Hunk
@@ -98,6 +102,9 @@ func Apply(p Patch) error {
 	for i := len(loc) - 1; i >= 0; i-- {
 		x := loc[i]
 		raw = append(raw[:x.at], append(x.h.Insert, raw[x.at+x.h.Delete:]...)...)
+	}
+	if slices.Equal(raw, original) {
+		return ErrNoChanges
 	}
 	info, err := os.Stat(p.Path)
 	if err != nil {

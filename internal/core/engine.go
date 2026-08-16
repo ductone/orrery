@@ -409,7 +409,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		efficientWorker := e.hasEfficientWorker()
 		forceSynthesis := req.Workspace.Isolation == "shared-ro" && s.Turn >= 6
 		forceAdvance := parentJob == "" && s.Phase == string(router.Explore) && progress.phaseTurns >= 8
-		forcePlanSynthesis := parentJob == "" && s.Phase == string(router.Plan) && progress.delegated
+		forcePlanSynthesis := parentJob == "" && s.Phase == string(router.Plan) && (progress.delegated || progress.phaseTurns >= 4)
 		forceImplementation := parentJob == "" && s.Phase == string(router.Implement) && progress.noProgressTurns >= 3
 		build := func(m model.ModelSpec, d router.Decision) (provider.Request, error) {
 			history, err := e.providerMessages(ctx, sid)
