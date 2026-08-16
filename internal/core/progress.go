@@ -124,6 +124,13 @@ func (p *progressTracker) terminalStallReason() string {
 	return ""
 }
 
+func terminalPhaseStallReason(parentJob, phase string, phaseTurns int) string {
+	if parentJob == "" && phaseTurns >= 12 && (phase == "review" || phase == "diagnose") {
+		return "agent exceeded the bounded " + phase + " phase without reaching a terminal result"
+	}
+	return ""
+}
+
 func (p *progressTracker) stall() map[string]int {
 	return map[string]int{
 		"no_progress_turns": p.noProgressTurns,

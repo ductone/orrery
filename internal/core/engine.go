@@ -372,6 +372,11 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			return agentproto.TaskResult{Status: agentproto.Fail, Error: err.Error()}
 		}
 		progress.beginTurn(s.Phase)
+		if reason := terminalPhaseStallReason(parentJob, s.Phase, progress.phaseTurns); reason != "" {
+			progress.export(&outcome)
+			e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "terminal_phase_stall", "reason": reason, "signals": progress.stall()}, emit)
+			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: reason}, emit)
+		}
 		reserved, _ := e.store.ReservedJobUSD(ctx, sid)
 		if s.SpentUSD+reserved >= s.BudgetUSD {
 			progress.export(&outcome)
@@ -411,6 +416,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		forceAdvance := parentJob == "" && s.Phase == string(router.Explore) && progress.phaseTurns >= 8
 		forcePlanSynthesis := parentJob == "" && s.Phase == string(router.Plan) && (progress.delegated || progress.phaseTurns >= 4)
 		forceImplementation := parentJob == "" && s.Phase == string(router.Implement) && progress.noProgressTurns >= 3
+		forceResolution := parentJob == "" && (s.Phase == string(router.Review) || s.Phase == string(router.Diagnose)) && progress.phaseTurns >= 6
 		build := func(m model.ModelSpec, d router.Decision) (provider.Request, error) {
 			history, err := e.providerMessages(ctx, sid)
 			if err != nil {
@@ -438,6 +444,10 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			}
 			if forceImplementation {
 				system += " Implementation is stalled after decisive evidence. Stop broad exploration. Read only an exact edit window if needed, finish the smallest justified edit, then run focused verification."
+				definitions = reg.DefinitionsOnly("todo", "read", "edit", "exec")
+			}
+			if forceResolution {
+				system += " Review or diagnosis has reached its resolution limit. Existing issue, diff, test, and review evidence is sufficient. Do not rediscover or refetch the task. Make only the smallest correction required by current evidence, run one focused verification command, then return the final result."
 				definitions = reg.DefinitionsOnly("todo", "read", "edit", "exec")
 			}
 			return provider.Request{System: system, DurableSpec: "TASK\n" + s.Spec + "\n\nDURABLE SUMMARY\n" + s.DurableSummary, Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the durable summary.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: definitions, MaxOutput: min(8000, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil

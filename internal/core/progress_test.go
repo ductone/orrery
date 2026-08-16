@@ -73,6 +73,20 @@ func TestRepeatedUnchangedTodoTerminatesStall(t *testing.T) {
 	}
 }
 
+func TestRootReviewAndDiagnosisHaveTerminalBounds(t *testing.T) {
+	for _, phase := range []string{"review", "diagnose"} {
+		if got := terminalPhaseStallReason("", phase, 12); got == "" {
+			t.Fatalf("phase %q was not bounded", phase)
+		}
+		if got := terminalPhaseStallReason("child", phase, 20); got != "" {
+			t.Fatalf("child phase %q was incorrectly bounded: %s", phase, got)
+		}
+	}
+	if got := terminalPhaseStallReason("", "implement", 20); got != "" {
+		t.Fatalf("implementation incorrectly used review bound: %s", got)
+	}
+}
+
 func TestSuccessfulSpawnMarksDelegationAndNudgeIsOncePerPhase(t *testing.T) {
 	p := newProgressTracker()
 	p.beginTurn("explore")
