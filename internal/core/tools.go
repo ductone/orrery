@@ -23,7 +23,7 @@ import (
 	"github.com/google/uuid"
 )
 
-func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest, emit EmitFunc) *builtin.Registry {
+func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest, discovery *instructionDiscovery, emit EmitFunc) *builtin.Registry {
 	runtimeCfg, _, _, runtimeMCP, runtimeWeb := e.runtimeSnapshot()
 	root := req.Workspace.Path
 	if root == "" {
@@ -101,6 +101,23 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 			return nil, err
 		}
 		return map[string]any{"status": j.Status, "result": json.RawMessage(j.ResultJSON), "outcome": json.RawMessage(j.OutcomeJSON)}, nil
+	})
+	r.Add("skill", "List workspace skills or progressively load one full SKILL.md. Load a skill before acting when the task names it or its catalog description clearly applies.", obj(map[string]any{"action": map[string]any{"type": "string", "enum": []string{"list", "load"}}, "name": str()}, "action"), func(_ context.Context, a map[string]any) (any, error) {
+		switch fmt.Sprint(a["action"]) {
+		case "list":
+			return map[string]any{"skills": discovery.SkillCatalog()}, nil
+		case "load":
+			doc, loaded, err := discovery.LoadSkill(fmt.Sprint(a["name"]))
+			if err != nil {
+				return nil, err
+			}
+			if !loaded {
+				return map[string]any{"already_loaded": true, "name": doc.Name, "path": doc.Path, "hint": "Use the skill instructions already present in context; do not load them again."}, nil
+			}
+			return map[string]any{"skill": instructionPayload([]workspaceInstruction{doc})[0], "hint": "Follow this SKILL.md for the current task. Read only the referenced resources needed to proceed."}, nil
+		default:
+			return nil, errors.New("action must be list or load")
+		}
 	})
 	r.AddScheme("job", func(ctx context.Context, a map[string]any) (any, error) {
 		parts := strings.SplitN(fmt.Sprint(a["path"]), "/", 2)

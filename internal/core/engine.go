@@ -41,10 +41,11 @@ type Engine struct {
 	mu        sync.Mutex
 	cancels   map[string]context.CancelFunc
 	turnIDs   map[string]string
+	discovery map[string]*instructionDiscovery
 }
 
 func New(cfg config.Config, s *store.Store, p *provider.Registry, mc *mcp.Manager) *Engine {
-	return &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}}
+	return &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}}
 }
 func (e *Engine) Store() *store.Store { return e.store }
 
@@ -356,6 +357,10 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 	outcome := agentproto.Outcome{}
 	stall := router.StallSignals{}
 	progress := newProgressTracker()
+	discovery, err := e.instructionDiscovery(sid, req.Workspace.Path, req.Spec)
+	if err != nil {
+		return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "workspace instruction discovery: " + err.Error()}, emit)
+	}
 	if parentJob == "" {
 		if dirty, dirtyErr := workspaceHasReviewableChanges(ctx, req.Workspace.Path); dirtyErr == nil && dirty {
 			progress.edited = true
@@ -420,7 +425,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: err.Error()}, emit)
 		}
 		e.emit(ctx, sid, "routing.decision", map[string]any{"decision": decision, "explanation": why}, emit)
-		reg := e.toolRegistry(sid, parentJob, req, emit)
+		reg := e.toolRegistry(sid, parentJob, req, discovery, emit)
 		efficientWorker := e.hasEfficientWorker()
 		forceSynthesis := req.Workspace.Isolation == "shared-ro" && s.Turn >= 6
 		forceAdvance := parentJob == "" && s.Phase == string(router.Explore) && progress.phaseTurns >= 8
@@ -436,6 +441,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			if len(runtimeCfg.Instructions) > 0 {
 				system += "\n\nDEPLOYMENT INSTRUCTIONS\n" + strings.Join(runtimeCfg.Instructions, "\n")
 			}
+			system += discovery.Bootstrap()
 			system += "\n\nTOOL CALL DISCIPLINE\nCall each tool with a given set of arguments at most once per response. Never emit duplicate identical tool calls. Use the edit tool for every workspace source-file mutation. Never create or modify source files through exec, shell redirection, sed, tee, or formatters with write flags; this bypasses edit safety and metrics. Stay inside the assigned workspace. Do not clone another repository or search outside the workspace unless the task explicitly authorizes it. If decisive checks show that required source or another prerequisite is absent, stop promptly and return a clear failed or blocked explanation instead of rewriting the plan."
 			if !efficientWorker {
 				system += " No lower-cost worker model is configured. Do not spawn a worker merely for repository exploration; explore directly."
@@ -562,6 +568,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		}
 		seenCalls := map[string]toolExecution{}
 		duplicateCalls := 0
+		instructionBoundaryHit := false
 		for _, call := range resp.Message.ToolCalls {
 			outcome.ToolCalls++
 			if call.Name == "edit" {
@@ -576,7 +583,18 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				e.emit(ctx, sid, "tool.finished", map[string]any{"call": call, "result": prior.value, "deduplicated": true}, emit)
 				continue
 			}
-			value, callErr := reg.Call(ctx, call.Name, call.Arguments)
+			instructionDocs := discovery.ForTool(call)
+			if len(instructionDocs) > 0 {
+				instructionBoundaryHit = true
+			}
+			instructionBlocked := shouldBlockEditForInstructions(call, instructionBoundaryHit)
+			var value any
+			var callErr error
+			if instructionBlocked {
+				value = map[string]any{"blocked": true, "reason": "workspace instructions or a skill were disclosed before this edit in the same response; apply them and retry the edit in the next response", "workspace_instructions": instructionPayload(instructionDocs)}
+			} else {
+				value, callErr = reg.Call(ctx, call.Name, call.Arguments)
+			}
 			if callErr != nil {
 				outcome.ToolErrors++
 				stall.ToolErrorRate = float64(outcome.ToolErrors) / float64(outcome.ToolCalls)
@@ -591,7 +609,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 					outcome.EditRetries++
 				}
 				value = map[string]any{"error": callErr.Error()}
-			} else {
+			} else if !instructionBlocked {
 				if call.Name == "exec" {
 					stall.FailedCommands = 0
 					stall.TestFailStreak = 0
@@ -602,7 +620,26 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				e.inferPhase(ctx, sid, call.Name, fmt.Sprint(call.Arguments["command"]), progress)
 			}
 			shaped, images := extractImages(value)
-			shaped = progress.observe(call, shaped, callErr)
+			if !instructionBlocked {
+				shaped = progress.observe(call, shaped, callErr)
+			}
+			if callErr == nil && !instructionBlocked && call.Name == "search" {
+				instructionDocs = append(instructionDocs, discovery.ForSearchResults(value)...)
+				instructionBoundaryHit = instructionBoundaryHit || len(instructionDocs) > 0
+			}
+			if callErr == nil && !instructionBlocked && call.Name == "skill" {
+				if loaded, ok := value.(map[string]any); ok && loaded["skill"] != nil {
+					instructionBoundaryHit = true
+				}
+			}
+			if len(instructionDocs) > 0 && !instructionBlocked {
+				shaped = map[string]any{"result": shaped, "workspace_instructions": instructionPayload(instructionDocs), "hint": "Apply these newly discovered path-scoped instructions before acting in the listed subtree."}
+			}
+			if len(instructionDocs) > 0 {
+				e.emit(ctx, sid, "instruction.discovered", map[string]any{"tool": call.Name, "documents": instructionPayload(instructionDocs), "blocked": instructionBlocked}, emit)
+			} else if instructionBlocked {
+				e.emit(ctx, sid, "instruction.blocked", map[string]any{"tool": call.Name, "reason": "instruction boundary crossed earlier in the same response"}, emit)
+			}
 			seenCalls[callKey] = toolExecution{value: value, shaped: shaped, callID: call.ID}
 			toolMsg := provider.Message{Role: "tool", ToolCallID: call.ID, Content: store.JSON(shaped)}
 			_ = e.store.AddMessage(ctx, sid, "tool", toolMsg)
@@ -652,6 +689,10 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			e.compact(ctx, sid, emit)
 		}
 	}
+}
+
+func shouldBlockEditForInstructions(call provider.ToolCall, instructionBoundaryHit bool) bool {
+	return call.Name == "edit" && instructionBoundaryHit
 }
 
 func toolCallKey(call provider.ToolCall) string {
