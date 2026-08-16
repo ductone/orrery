@@ -38,7 +38,7 @@ func TestVersionedCapabilitiesAndOriginCheck(t *testing.T) {
 	}
 	b, _ := io.ReadAll(res.Body)
 	_ = res.Body.Close()
-	if res.StatusCode != http.StatusOK || !strings.Contains(string(b), `"api_version":1`) || !strings.Contains(string(b), `"idempotent_mutations":true`) {
+	if res.StatusCode != http.StatusOK || !strings.Contains(string(b), `"api_version":1`) || !strings.Contains(string(b), `"idempotent_mutations":true`) || !strings.Contains(string(b), `"env_indirection":"string_prefix_v1"`) {
 		t.Fatalf("status=%d body=%s", res.StatusCode, b)
 	}
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/sessions", strings.NewReader(`{}`))

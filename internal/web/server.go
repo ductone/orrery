@@ -112,6 +112,7 @@ func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
 		"resume":   true, "attachments": true, "attachment_transport": "local_exact_path", "dynamic_model_routing": true,
 		"runtime_config_reload": true, "runtime_config_boundary": "phase", "idempotent_mutations": true,
 		"external_workspaces": true, "last_event_id": true,
+		"config_schema_version": 1, "env_indirection": "string_prefix_v1",
 	}, nil)
 }
 func (s *Server) versionInfo(w http.ResponseWriter, _ *http.Request) {
