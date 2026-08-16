@@ -40,7 +40,8 @@ type commandJob struct {
 
 func New(root string) *Registry {
 	r := NewReadOnly(root)
-	r.add("edit", "Apply content-anchored hashline hunks. Structural declaration deletion is rejected unless explicitly allowed.", schema(map[string]any{"path": str(), "hunks": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"anchor": str(), "offset": num(), "delete": num(), "insert": map[string]any{"type": "array", "items": str()}, "allow_structural_change": boolean()}, "required": []string{"anchor", "delete", "insert"}, "additionalProperties": false}}}, "path", "hunks"), r.edit)
+	anchor := map[string]any{"type": "string", "pattern": "^[0-9a-f]{8}$", "description": "Exact 8-character hash copied from the latest read result. Never use line text, a line number, or a placeholder."}
+	r.add("edit", "Apply content-anchored hashline hunks. You MUST read the exact target window immediately before editing and copy its latest 8-character hash into anchor. Re-read after compaction or a stale error. Structural declaration deletion is rejected unless explicitly allowed.", schema(map[string]any{"path": str(), "hunks": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"anchor": anchor, "offset": num(), "delete": num(), "insert": map[string]any{"type": "array", "items": str()}, "allow_structural_change": boolean()}, "required": []string{"anchor", "delete", "insert"}, "additionalProperties": false}}}, "path", "hunks"), r.edit)
 	r.add("exec", "Run a shell command in the workspace. Use background=true for long jobs.", schema(map[string]any{"command": str(), "background": boolean(), "timeout_seconds": num()}, "command"), r.run)
 	r.add("job", "Wait for, cancel, or read logs from a background exec job.", schema(map[string]any{"id": str(), "action": map[string]any{"type": "string", "enum": []string{"wait", "cancel", "logs"}}}, "id", "action"), r.job)
 	return r
@@ -305,6 +306,11 @@ func (r *Registry) edit(_ context.Context, a map[string]any) (any, error) {
 	}
 	p.Path = safe
 	if err := hashline.Apply(p); err != nil {
+		var stale *hashline.StaleError
+		if errors.As(err, &stale) {
+			fresh, _ := json.Marshal(stale.Fresh)
+			return nil, fmt.Errorf("%w; fresh anchors near the lookup point: %s; call read on the exact target window before retrying", err, fresh)
+		}
 		return nil, err
 	}
 	return map[string]any{"applied": len(p.Hunks)}, nil

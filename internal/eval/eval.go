@@ -68,7 +68,7 @@ func Run(ctx context.Context, e *core.Engine, policy string, cases []Case) (Repo
 	report := Report{Policy: policy}
 	var lat []float64
 	for _, c := range cases {
-		req := agentproto.TaskRequest{Spec: c.Spec, ResultSchema: c.ResultSchema, Workspace: agentproto.Workspace{Path: c.Workspace, Isolation: "shared"}, Budget: agentproto.Budget{MaxUSD: 25, MaxTokens: 1_000_000, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Depth: 4}
+		req := agentproto.TaskRequest{Spec: c.Spec, ResultSchema: c.ResultSchema, Workspace: agentproto.Workspace{Path: c.Workspace, Isolation: "shared"}, Budget: agentproto.Budget{MaxUSD: 25, MaxTokens: 4_000_000, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Depth: 4}
 		if policy == "frontier-pinned" {
 			req.Hints.TierPin = "frontier"
 		}

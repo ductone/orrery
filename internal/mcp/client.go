@@ -157,7 +157,7 @@ func (m *Manager) CallForSession(ctx context.Context, sessionID, name string, ar
 	if err != nil {
 		return nil, err
 	}
-	if len(raw) > 64<<10 {
+	if len(raw) > 16<<10 {
 		if err = os.MkdirAll(s.logRoot, 0700); err != nil {
 			return nil, err
 		}
@@ -165,7 +165,7 @@ func (m *Manager) CallForSession(ctx context.Context, sessionID, name string, ar
 		if err = os.WriteFile(path, raw, 0600); err != nil {
 			return nil, err
 		}
-		return map[string]any{"untrusted": true, "summary": string(raw[:32<<10]), "truncated": true, "log": path}, nil
+		return map[string]any{"untrusted": true, "summary": string(raw[:8<<10]), "truncated": true, "original_bytes": len(raw), "log": path, "hint": "Use the concise summary; read the log only for a specific missing field."}, nil
 	}
 	var v any
 	if err = json.Unmarshal(raw, &v); err != nil {

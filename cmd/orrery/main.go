@@ -222,7 +222,7 @@ func run(ctx context.Context, rt *runtime, args []string) int {
 	prompt := fs.String("p", "", "task prompt")
 	workspace := fs.String("workspace", rt.cfg.WorkspaceRoot, "workspace path")
 	budget := fs.Float64("budget", rt.cfg.Budget.SessionUSD, "maximum USD")
-	maxTokens := fs.Int("max-tokens", 1_000_000, "maximum total input and output tokens")
+	maxTokens := fs.Int("max-tokens", 4_000_000, "maximum total input and output tokens")
 	tier := fs.String("tier", "", "optional tier pin")
 	if fs.Parse(args) != nil {
 		return 2

@@ -42,6 +42,22 @@ func TestDefinitionsOnly(t *testing.T) {
 	}
 }
 
+func TestEditStaleAnchorReturnsFreshAnchorsAndRecoveryHint(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "file.go")
+	if err := os.WriteFile(path, []byte("package sample\n\nfunc run() {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := New(root)
+	_, err := r.Call(context.Background(), "edit", map[string]any{
+		"path":  "file.go",
+		"hunks": []any{map[string]any{"anchor": "deadbeef", "delete": float64(1), "insert": []any{"package changed"}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "fresh anchors") || !strings.Contains(err.Error(), "call read") || !strings.Contains(err.Error(), `"hash"`) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestAttachmentSchemeAllowsOnlyExactRegularFiles(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "evidence.txt")
 	if err := os.WriteFile(path, []byte("bounded evidence"), 0o600); err != nil {
