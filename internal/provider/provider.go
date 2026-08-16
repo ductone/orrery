@@ -19,6 +19,18 @@ type Tool struct {
 	Name, Description string
 	InputSchema       map[string]any
 }
+
+func toolNameMaps(tools []Tool) (map[string]string, map[string]string) {
+	toWire := make(map[string]string, len(tools))
+	fromWire := make(map[string]string, len(tools))
+	for _, tool := range tools {
+		wire := wireToolName(tool.Name)
+		toWire[tool.Name] = wire
+		fromWire[wire] = tool.Name
+	}
+	return toWire, fromWire
+}
+
 type ToolCall struct {
 	ID, Name  string
 	Arguments map[string]any

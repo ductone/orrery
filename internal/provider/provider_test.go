@@ -56,6 +56,36 @@ func TestOpenAIChatCarriesImages(t *testing.T) {
 		t.Fatalf("url=%q", url)
 	}
 }
+
+func TestOpenAIChatMapsNamespacedToolNames(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		name := got["tools"].([]any)[0].(map[string]any)["function"].(map[string]any)["name"].(string)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model": "grok-4.6",
+			"choices": []any{map[string]any{
+				"message": map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{
+					"id": "call_1", "type": "function", "function": map[string]any{"name": name, "arguments": "{}"},
+				}}},
+				"finish_reason": "tool_calls",
+			}},
+			"usage": map[string]any{},
+		})
+	}))
+	defer srv.Close()
+	m, _ := model.Get("xai/grok-4.6")
+	c := newOpenAI(srv.URL, []string{"key"}, false)
+	resp, err := c.Complete(context.Background(), m, Request{MaxOutput: 10, Tools: []Tool{{Name: "gateway.identity", InputSchema: map[string]any{"type": "object"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := got["tools"].([]any)[0].(map[string]any)["function"].(map[string]any)["name"].(string)
+	if wire == "gateway.identity" || resp.Message.ToolCalls[0].Name != "gateway.identity" {
+		t.Fatalf("wire=%q response=%+v", wire, resp.Message.ToolCalls)
+	}
+}
+
 func TestAnthropicCacheAndUsage(t *testing.T) {
 	var got map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -137,6 +167,30 @@ func TestOpenAIResponsesToolCall(t *testing.T) {
 	}
 	if len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].ID != "call_1" || resp.Usage.InputTokens != 10 {
 		t.Fatalf("response %+v", resp)
+	}
+}
+
+func TestOpenAIResponsesMapsNamespacedToolNames(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		name := got["tools"].([]any)[0].(map[string]any)["name"].(string)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model": "gpt-5.6-sol", "status": "completed",
+			"output": []any{map[string]any{"type": "function_call", "call_id": "call_1", "name": name, "arguments": "{}"}},
+			"usage":  map[string]any{"input_tokens": 10, "output_tokens": 5},
+		})
+	}))
+	defer srv.Close()
+	m, _ := model.Get("openai/gpt-5.6-sol")
+	c := newOpenAI(srv.URL, []string{"key"}, true)
+	resp, err := c.Complete(context.Background(), m, Request{MaxOutput: 10, Tools: []Tool{{Name: "gateway.identity", InputSchema: map[string]any{"type": "object"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := got["tools"].([]any)[0].(map[string]any)["name"].(string)
+	if wire == "gateway.identity" || resp.Message.ToolCalls[0].Name != "gateway.identity" {
+		t.Fatalf("wire=%q response=%+v", wire, resp.Message.ToolCalls)
 	}
 }
 

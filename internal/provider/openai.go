@@ -37,6 +37,7 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 	if !ok {
 		return Response{}, ErrCredentialsBackoff
 	}
+	toWire, fromWire := toolNameMaps(r.Tools)
 	msgs := []map[string]any{}
 	system := strings.TrimSpace(strings.Join([]string{r.System, r.DurableSpec, r.Plan}, "\n\n"))
 	if m.Compat.SystemPromptStyle == model.SystemTopLevel {
@@ -68,7 +69,11 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 			var calls []any
 			for _, tc := range x.ToolCalls {
 				b, _ := json.Marshal(tc.Arguments)
-				calls = append(calls, map[string]any{"id": tc.ID, "type": "function", "function": map[string]any{"name": tc.Name, "arguments": string(b)}})
+				name := tc.Name
+				if wire := toWire[name]; wire != "" {
+					name = wire
+				}
+				calls = append(calls, map[string]any{"id": tc.ID, "type": "function", "function": map[string]any{"name": name, "arguments": string(b)}})
 			}
 			msg["tool_calls"] = calls
 		}
@@ -89,7 +94,7 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 			if r.Strict && m.Compat.SupportsStrictTools {
 				schema = strictifySchema(schema)
 			}
-			fn := map[string]any{"name": t.Name, "description": t.Description, "parameters": schema}
+			fn := map[string]any{"name": toWire[t.Name], "description": t.Description, "parameters": schema}
 			if r.Strict && m.Compat.SupportsStrictTools {
 				fn["strict"] = true
 			}
@@ -154,7 +159,11 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 			return Response{}, fmt.Errorf("tool arguments: %w", err)
 		}
-		msg.ToolCalls = append(msg.ToolCalls, ToolCall{tc.ID, tc.Function.Name, args})
+		name := tc.Function.Name
+		if internal := fromWire[name]; internal != "" {
+			name = internal
+		}
+		msg.ToolCalls = append(msg.ToolCalls, ToolCall{tc.ID, name, args})
 	}
 	return Response{Message: msg, Usage: Usage{InputTokens: out.Usage.Prompt, OutputTokens: out.Usage.Completion, CacheReadTokens: out.Usage.Details.Cached, CacheWriteTokens: out.Usage.Details.CacheWrite}, StopReason: ch.Finish, Latency: time.Since(start), Model: out.Model}, nil
 }

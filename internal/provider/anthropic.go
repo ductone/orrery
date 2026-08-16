@@ -36,7 +36,7 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 	toWire := map[string]string{}
 	fromWire := map[string]string{}
 	for _, t := range r.Tools {
-		wire := anthropicToolName(t.Name)
+		wire := wireToolName(t.Name)
 		toWire[t.Name] = wire
 		fromWire[wire] = t.Name
 	}
@@ -134,7 +134,7 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 	return Response{Message: msg, Usage: Usage{wire.Usage.Input + wire.Usage.CacheRead + wire.Usage.CacheWrite, wire.Usage.Output, wire.Usage.CacheRead, wire.Usage.CacheWrite}, StopReason: wire.StopReason, Latency: time.Since(start), Model: wire.Model}, nil
 }
 
-func anthropicToolName(name string) string {
+func wireToolName(name string) string {
 	valid := len(name) > 0 && len(name) <= 128
 	for i := 0; valid && i < len(name); i++ {
 		c := name[i]

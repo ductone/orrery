@@ -16,6 +16,7 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 	if !ok {
 		return Response{}, ErrCredentialsBackoff
 	}
+	toWire, fromWire := toolNameMaps(r.Tools)
 	instructions := r.System + "\n\n" + r.DurableSpec + "\n\n" + r.Plan
 	input := []any{}
 	for _, x := range r.Messages {
@@ -43,7 +44,11 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 		}
 		for _, tc := range x.ToolCalls {
 			b, _ := json.Marshal(tc.Arguments)
-			input = append(input, map[string]any{"type": "function_call", "call_id": tc.ID, "name": tc.Name, "arguments": string(b)})
+			name := tc.Name
+			if wire := toWire[name]; wire != "" {
+				name = wire
+			}
+			input = append(input, map[string]any{"type": "function_call", "call_id": tc.ID, "name": name, "arguments": string(b)})
 		}
 	}
 	body := map[string]any{"model": wireModel(m.ID), "instructions": instructions, "input": input, "max_output_tokens": min(r.MaxOutput, m.MaxOutput), "store": false}
@@ -60,7 +65,7 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 			if r.Strict && m.Compat.SupportsStrictTools {
 				schema = strictifySchema(schema)
 			}
-			tool := map[string]any{"type": "function", "name": t.Name, "description": t.Description, "parameters": schema}
+			tool := map[string]any{"type": "function", "name": toWire[t.Name], "description": t.Description, "parameters": schema}
 			if r.Strict && m.Compat.SupportsStrictTools {
 				tool["strict"] = true
 			}
@@ -124,7 +129,11 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 			if err = json.Unmarshal([]byte(item.Arguments), &args); err != nil {
 				return Response{}, fmt.Errorf("tool arguments: %w", err)
 			}
-			msg.ToolCalls = append(msg.ToolCalls, ToolCall{item.CallID, item.Name, args})
+			name := item.Name
+			if internal := fromWire[name]; internal != "" {
+				name = internal
+			}
+			msg.ToolCalls = append(msg.ToolCalls, ToolCall{item.CallID, name, args})
 		}
 	}
 	return Response{Message: msg, Usage: Usage{InputTokens: out.Usage.Input, OutputTokens: out.Usage.Output, CacheReadTokens: out.Usage.Details.Cached, CacheWriteTokens: out.Usage.Details.CacheWrite}, StopReason: out.Status, Latency: time.Since(start), Model: out.Model}, nil
