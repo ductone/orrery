@@ -126,7 +126,7 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 	var candidates []Candidate
 	for _, m := range p.catalog {
 		c := Candidate{Model: m.ID}
-		if s.TierPin == "" && slices.Contains(p.cfg.FrontierFloorPhases, string(s.Phase)) && m.Tier != model.Frontier {
+		if s.TierPin == "" && s.Point != ReviewCreation && slices.Contains(p.cfg.FrontierFloorPhases, string(s.Phase)) && m.Tier != model.Frontier {
 			c.Rejected = "phase has frontier floor"
 			candidates = append(candidates, c)
 			continue
