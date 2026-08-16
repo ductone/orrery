@@ -42,6 +42,13 @@ func (d DurableState) valid() bool {
 // obtain a semantic model summary degrades to a structured transcript digest;
 // it never leaves the session half-compacted.
 func (e *Engine) Compact(ctx context.Context, sid, reason string, emit EmitFunc) error {
+	if !e.sessionIdle(sid) {
+		return errors.New("session has an active turn")
+	}
+	return e.compactState(ctx, sid, reason, emit)
+}
+
+func (e *Engine) compactState(ctx context.Context, sid, reason string, emit EmitFunc) error {
 	msgs, err := e.store.Messages(ctx, sid)
 	if err != nil {
 		return err
@@ -94,7 +101,7 @@ func (e *Engine) Compact(ctx context.Context, sid, reason string, emit EmitFunc)
 }
 
 func (e *Engine) compact(ctx context.Context, sid string, emit EmitFunc) {
-	if err := e.Compact(ctx, sid, "phase_or_context_boundary", emit); err != nil {
+	if err := e.compactState(ctx, sid, "phase_or_context_boundary", emit); err != nil {
 		e.emit(ctx, sid, "context.compaction_failed", map[string]any{"error": err.Error()}, emit)
 	}
 }

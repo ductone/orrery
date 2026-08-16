@@ -34,6 +34,26 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 	if req.Workspace.Isolation == "shared-ro" {
 		r = builtin.NewReadOnly(root)
 	}
+	r.Add("ask", "Pause safely and request information that is genuinely required to continue. Do not use for permission or questions answerable from the workspace.", obj(map[string]any{"question": str(), "choices": map[string]any{"type": "array", "items": str()}, "allow_freeform": map[string]any{"type": "boolean"}}, "question"), func(ctx context.Context, a map[string]any) (any, error) {
+		var choices []string
+		if raw, ok := a["choices"].([]any); ok {
+			for _, choice := range raw {
+				choices = append(choices, fmt.Sprint(choice))
+			}
+		}
+		allow, present := a["allow_freeform"].(bool)
+		if !present {
+			allow = len(choices) == 0
+		}
+		input := agentproto.InputRequest{ID: uuid.NewString(), Question: strings.TrimSpace(fmt.Sprint(a["question"])), Choices: choices, AllowFreeform: allow}
+		if input.Question == "" {
+			return nil, errors.New("question required")
+		}
+		if err := e.store.CreatePendingInput(ctx, store.PendingInput{ID: input.ID, SessionID: sid, Question: input.Question, Choices: input.Choices, AllowFreeform: input.AllowFreeform}); err != nil {
+			return nil, err
+		}
+		return input, nil
+	})
 	if len(req.Attachments) > 0 {
 		attachments := make(map[string]string, len(req.Attachments))
 		for _, attachment := range req.Attachments {

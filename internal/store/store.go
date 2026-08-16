@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -47,6 +48,7 @@ CREATE TABLE IF NOT EXISTS cache_ledger(session_id TEXT NOT NULL, model TEXT NOT
 CREATE TABLE IF NOT EXISTS routing_records(id TEXT PRIMARY KEY, session_id TEXT NOT NULL, turn INTEGER NOT NULL, decision_point TEXT NOT NULL, state_json TEXT NOT NULL, candidates_json TEXT NOT NULL, chosen_model TEXT NOT NULL, chosen_effort TEXT NOT NULL, was_switch INTEGER NOT NULL, cache_est_json TEXT NOT NULL, explanation TEXT NOT NULL, turn_outcome_json TEXT, job_outcome_json TEXT, session_outcome_json TEXT, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), parent_job_id TEXT, spec TEXT NOT NULL, result_schema_json TEXT NOT NULL, budget_json TEXT NOT NULL, workspace_json TEXT NOT NULL, hints_json TEXT NOT NULL, depth INTEGER NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL, result_json TEXT, outcome_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS checkpoints(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), label TEXT NOT NULL, reason TEXT NOT NULL, session_json TEXT NOT NULL, messages_json TEXT NOT NULL, todos_json TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS pending_inputs(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), question TEXT NOT NULL, choices_json TEXT NOT NULL, allow_freeform INTEGER NOT NULL, status TEXT NOT NULL, answer TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, answered_at TEXT);
 CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id,seq); CREATE INDEX IF NOT EXISTS idx_routing_session_turn ON routing_records(session_id,turn); CREATE INDEX IF NOT EXISTS idx_jobs_session ON jobs(session_id);`)
 	if err != nil {
 		return err
@@ -254,7 +256,7 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"request_receipts", "events", "messages", "todos", "cache_ledger", "jobs", "routing_records", "checkpoints"} {
+	for _, table := range []string{"request_receipts", "events", "messages", "todos", "cache_ledger", "jobs", "routing_records", "checkpoints", "pending_inputs"} {
 		if _, err = tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE session_id=?`, id); err != nil {
 			return err
 		}
@@ -299,6 +301,55 @@ type Checkpoint struct {
 	ID, SessionID, Label, Reason         string
 	SessionJSON, MessagesJSON, TodosJSON string
 	CreatedAt                            time.Time
+}
+
+type PendingInput struct {
+	ID, SessionID, Question, Answer, Status string
+	Choices                                 []string
+	AllowFreeform                           bool
+	CreatedAt, AnsweredAt                   time.Time
+}
+
+func (s *Store) CreatePendingInput(ctx context.Context, input PendingInput) error {
+	if input.ID == "" || input.SessionID == "" || strings.TrimSpace(input.Question) == "" {
+		return errors.New("input id, session, and question are required")
+	}
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO pending_inputs(id,session_id,question,choices_json,allow_freeform,status,created_at) VALUES(?,?,?,?,?,'pending',?)`, input.ID, input.SessionID, input.Question, JSON(input.Choices), input.AllowFreeform, now.Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Store) PendingInput(ctx context.Context, sid string) (PendingInput, error) {
+	var x PendingInput
+	var choices, created string
+	var answered sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT id,session_id,question,choices_json,allow_freeform,status,answer,created_at,answered_at FROM pending_inputs WHERE session_id=? AND status='pending' ORDER BY created_at DESC LIMIT 1`, sid).Scan(&x.ID, &x.SessionID, &x.Question, &choices, &x.AllowFreeform, &x.Status, &x.Answer, &created, &answered)
+	_ = json.Unmarshal([]byte(choices), &x.Choices)
+	x.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	if answered.Valid {
+		x.AnsweredAt, _ = time.Parse(time.RFC3339Nano, answered.String)
+	}
+	return x, err
+}
+
+func (s *Store) ResolvePendingInput(ctx context.Context, sid, answer string) (PendingInput, error) {
+	x, err := s.PendingInput(ctx, sid)
+	if err != nil {
+		return PendingInput{}, err
+	}
+	if !x.AllowFreeform && len(x.Choices) > 0 {
+		valid := false
+		for _, choice := range x.Choices {
+			valid = valid || answer == choice
+		}
+		if !valid {
+			return PendingInput{}, errors.New("answer must be one of the supplied choices")
+		}
+	}
+	now := time.Now().UTC()
+	_, err = s.db.ExecContext(ctx, `UPDATE pending_inputs SET status='answered',answer=?,answered_at=? WHERE id=? AND status='pending'`, answer, now.Format(time.RFC3339Nano), x.ID)
+	x.Status, x.Answer, x.AnsweredAt = "answered", answer, now
+	return x, err
 }
 
 // CreateCheckpoint snapshots conversational state before a destructive context

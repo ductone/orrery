@@ -12,6 +12,7 @@ import (
 	orreval "github.com/ductone/orrey/internal/eval"
 	"github.com/ductone/orrey/internal/mcp"
 	"github.com/ductone/orrey/internal/provider"
+	rpcserver "github.com/ductone/orrey/internal/rpc"
 	"github.com/ductone/orrey/internal/store"
 	"github.com/ductone/orrey/internal/telemetry"
 	"github.com/ductone/orrey/internal/web"
@@ -80,6 +81,10 @@ func realMain() int {
 		return export(ctx, rt, args)
 	case "eval", "benchmark":
 		return evaluate(ctx, rt, args)
+	case "rpc":
+		return serveRPC(ctx, rt, rpcserver.Native)
+	case "acp":
+		return serveRPC(ctx, rt, rpcserver.ACP)
 	case "help", "-h", "--help":
 		usage()
 		return 0
@@ -88,6 +93,15 @@ func realMain() int {
 		usage()
 		return 2
 	}
+}
+
+func serveRPC(ctx context.Context, rt *runtime, mode rpcserver.Mode) int {
+	server := &rpcserver.Server{Engine: rt.engine, Mode: mode, Version: version}
+	if err := server.Serve(ctx, os.Stdin, os.Stdout); err != nil {
+		slog.Error("stdio transport", "mode", mode, "error", err)
+		return 1
+	}
+	return 0
 }
 func openRuntime(ctx context.Context, path string) (*runtime, error) {
 	cfg, err := config.Load(path)

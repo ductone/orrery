@@ -204,3 +204,28 @@ func TestCheckpointRestoreAndFork(t *testing.T) {
 		t.Fatalf("fork=%+v messages=%+v", fork, forkMessages)
 	}
 }
+
+func TestPendingInputValidation(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(t.TempDir() + "/db.sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err = s.CreateSession(ctx, Session{ID: "s", Spec: "task", BudgetUSD: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.CreatePendingInput(ctx, PendingInput{ID: "i", SessionID: "s", Question: "Choose", Choices: []string{"a", "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.ResolvePendingInput(ctx, "s", "c"); err == nil {
+		t.Fatal("accepted invalid choice")
+	}
+	x, err := s.ResolvePendingInput(ctx, "s", "b")
+	if err != nil || x.Answer != "b" {
+		t.Fatalf("input=%+v err=%v", x, err)
+	}
+	if _, err = s.PendingInput(ctx, "s"); err != sql.ErrNoRows {
+		t.Fatalf("pending err=%v", err)
+	}
+}

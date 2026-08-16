@@ -9,7 +9,15 @@ const (
 	Fail            Status = "fail"
 	BudgetExhausted Status = "budget_exhausted"
 	Cancelled       Status = "cancelled"
+	InputRequired   Status = "input_required"
 )
+
+type InputRequest struct {
+	ID            string   `json:"id"`
+	Question      string   `json:"question"`
+	Choices       []string `json:"choices,omitempty"`
+	AllowFreeform bool     `json:"allow_freeform"`
+}
 
 type Budget struct {
 	MaxTokens    int           `json:"max_tokens"`

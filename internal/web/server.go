@@ -67,6 +67,8 @@ func newServer(addr string, e *core.Engine, viewOnly bool, version ...string) *S
 	mux.HandleFunc("GET /api/v1/sessions/{id}/events", s.events)
 	mux.HandleFunc("GET /api/v1/sessions/{id}/log", s.log)
 	mux.HandleFunc("GET /api/v1/sessions/{id}/jobs", s.jobs)
+	mux.HandleFunc("GET /api/v1/sessions/{id}/checkpoints", s.checkpoints)
+	mux.HandleFunc("GET /api/v1/sessions/{id}/input", s.pendingInput)
 	mux.HandleFunc("GET /api/v1/active-turns", s.activeTurns)
 	if !viewOnly {
 		mux.HandleFunc("POST /sessions", s.create)
@@ -77,6 +79,10 @@ func newServer(addr string, e *core.Engine, viewOnly bool, version ...string) *S
 		mux.HandleFunc("POST /api/v1/sessions/{id}/cancel", s.cancelTurn)
 		mux.HandleFunc("POST /api/v1/sessions/{id}/terminate", s.terminate)
 		mux.HandleFunc("POST /api/v1/sessions/{id}/resume", s.resumeV1)
+		mux.HandleFunc("POST /api/v1/sessions/{id}/checkpoint", s.createCheckpoint)
+		mux.HandleFunc("POST /api/v1/sessions/{id}/restore", s.restoreCheckpoint)
+		mux.HandleFunc("POST /api/v1/sessions/{id}/fork", s.forkSession)
+		mux.HandleFunc("POST /api/v1/sessions/{id}/compact", s.compactSession)
 		mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.deleteSession)
 		mux.HandleFunc("POST /api/v1/drain", s.drain)
 		mux.HandleFunc("POST /api/v1/runtime-config/reload", s.reloadRuntime)
@@ -108,8 +114,9 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
 	write(w, map[string]any{
 		"api_version": 1, "event_schema": 1,
-		"surfaces": []string{"web", "structured_chat"},
+		"surfaces": []string{"web", "structured_chat", "jsonrpc_stdio", "acp_stdio"},
 		"resume":   true, "attachments": true, "attachment_transport": "local_exact_path", "dynamic_model_routing": true,
+		"input_required": true, "checkpoints": true, "fork": true, "context_compaction": true,
 		"runtime_config_reload": true, "runtime_config_boundary": "phase", "idempotent_mutations": true,
 		"external_workspaces": true, "last_event_id": true,
 		"config_schema_version": 1, "env_indirection": "string_prefix_v1",
@@ -125,6 +132,52 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, x, err)
+}
+func (s *Server) checkpoints(w http.ResponseWriter, r *http.Request) {
+	x, err := s.engine.Store().Checkpoints(r.Context(), r.PathValue("id"))
+	write(w, x, err)
+}
+func (s *Server) pendingInput(w http.ResponseWriter, r *http.Request) {
+	x, err := s.engine.Store().PendingInput(r.Context(), r.PathValue("id"))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeStatus(w, http.StatusNoContent, nil, nil)
+		return
+	}
+	write(w, x, err)
+}
+func (s *Server) createCheckpoint(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Label string `json:"label"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeStatus(w, 400, nil, err)
+		return
+	}
+	x, err := s.engine.Checkpoint(r.Context(), r.PathValue("id"), in.Label)
+	write(w, x, err)
+}
+func (s *Server) restoreCheckpoint(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		CheckpointID string `json:"checkpoint_id"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeStatus(w, 400, nil, err)
+		return
+	}
+	err := s.engine.RestoreCheckpoint(r.Context(), r.PathValue("id"), in.CheckpointID, nil)
+	write(w, map[string]bool{"restored": err == nil}, err)
+}
+func (s *Server) forkSession(w http.ResponseWriter, r *http.Request) {
+	x, err := s.engine.Fork(r.Context(), r.PathValue("id"), nil)
+	if err != nil {
+		writeStatus(w, 400, nil, err)
+		return
+	}
+	writeStatus(w, http.StatusCreated, map[string]any{"id": x.ID}, nil)
+}
+func (s *Server) compactSession(w http.ResponseWriter, r *http.Request) {
+	err := s.engine.Compact(r.Context(), r.PathValue("id"), "manual", nil)
+	write(w, map[string]bool{"compacted": err == nil}, err)
 }
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	var in struct {
