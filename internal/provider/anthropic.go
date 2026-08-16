@@ -76,7 +76,7 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 	if len(r.Tools) > 0 {
 		var ts []any
 		for _, t := range r.Tools {
-			ts = append(ts, map[string]any{"name": toWire[t.Name], "description": t.Description, "input_schema": t.InputSchema})
+			ts = append(ts, map[string]any{"name": toWire[t.Name], "description": t.Description, "input_schema": toolInputSchema(t.InputSchema)})
 		}
 		body["tools"] = ts
 	}

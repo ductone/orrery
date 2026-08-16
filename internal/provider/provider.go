@@ -31,6 +31,17 @@ func toolNameMaps(tools []Tool) (map[string]string, map[string]string) {
 	return toWire, fromWire
 }
 
+func toolInputSchema(schema map[string]any) map[string]any {
+	if schema != nil {
+		return schema
+	}
+	return map[string]any{
+		"type":                 "object",
+		"properties":           map[string]any{},
+		"additionalProperties": false,
+	}
+}
+
 type ToolCall struct {
 	ID, Name  string
 	Arguments map[string]any

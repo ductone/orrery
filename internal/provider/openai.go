@@ -90,7 +90,7 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 	if len(r.Tools) > 0 {
 		var ts []any
 		for _, t := range r.Tools {
-			schema := t.InputSchema
+			schema := toolInputSchema(t.InputSchema)
 			if r.Strict && m.Compat.SupportsStrictTools {
 				schema = strictifySchema(schema)
 			}

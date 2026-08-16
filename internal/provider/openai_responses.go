@@ -61,7 +61,7 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 	if len(r.Tools) > 0 {
 		tools := []any{}
 		for _, t := range r.Tools {
-			schema := t.InputSchema
+			schema := toolInputSchema(t.InputSchema)
 			if r.Strict && m.Compat.SupportsStrictTools {
 				schema = strictifySchema(schema)
 			}

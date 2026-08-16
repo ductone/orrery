@@ -76,13 +76,17 @@ func TestOpenAIChatMapsNamespacedToolNames(t *testing.T) {
 	defer srv.Close()
 	m, _ := model.Get("xai/grok-4.6")
 	c := newOpenAI(srv.URL, []string{"key"}, false)
-	resp, err := c.Complete(context.Background(), m, Request{MaxOutput: 10, Tools: []Tool{{Name: "gateway.identity", InputSchema: map[string]any{"type": "object"}}}})
+	resp, err := c.Complete(context.Background(), m, Request{MaxOutput: 10, Tools: []Tool{{Name: "gateway.identity"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	wire := got["tools"].([]any)[0].(map[string]any)["function"].(map[string]any)["name"].(string)
+	parameters := got["tools"].([]any)[0].(map[string]any)["function"].(map[string]any)["parameters"]
 	if wire == "gateway.identity" || resp.Message.ToolCalls[0].Name != "gateway.identity" {
 		t.Fatalf("wire=%q response=%+v", wire, resp.Message.ToolCalls)
+	}
+	if parameters == nil {
+		t.Fatal("nil MCP schema must be sent as an object schema")
 	}
 }
 
@@ -142,7 +146,7 @@ func TestAnthropicMapsNamespacedToolNames(t *testing.T) {
 	defer srv.Close()
 	m, _ := model.Get("anthropic/claude-fable-5")
 	c := newAnthropic(srv.URL, []string{"key"})
-	resp, err := c.Complete(context.Background(), m, Request{MaxOutput: 10, Tools: []Tool{{Name: "gateway.identity", InputSchema: map[string]any{"type": "object"}}}})
+	resp, err := c.Complete(context.Background(), m, Request{MaxOutput: 10, Tools: []Tool{{Name: "gateway.identity"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
