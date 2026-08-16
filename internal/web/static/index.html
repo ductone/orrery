@@ -1,5 +1,382 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Orrery</title><style>
-:root{color-scheme:dark;--bg:#111216;--panel:#191b21;--line:#2a2d35;--text:#e8e6df;--muted:#9599a5;--gold:#e6b85c;--blue:#77a7d9}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 20% 0,#20232b 0,var(--bg) 38%);color:var(--text);font:14px ui-monospace,SFMono-Regular,Menlo,monospace;height:100vh;display:grid;grid-template-columns:270px 1fr}body.embed{grid-template-columns:1fr}body.embed .side{display:none}body.readonly form{display:none}.side{border-right:1px solid var(--line);padding:24px 16px;overflow:auto}.brand{font:600 25px Georgia,serif;letter-spacing:.12em;color:var(--gold);margin-bottom:24px}.new{width:100%;background:var(--gold);color:#18140c;border:0;border-radius:6px;padding:10px;font-weight:700}.session{padding:10px;border-bottom:1px solid var(--line);cursor:pointer;color:var(--muted)}.session:hover{color:var(--text)}main{display:grid;grid-template-rows:auto 1fr auto;min-width:0}.top{padding:17px 24px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}.meter{color:var(--gold)}#managed{color:var(--muted);margin-left:12px}#events{overflow:auto;padding:22px;display:flex;flex-direction:column;gap:12px}.card{background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:13px;white-space:pre-wrap;overflow-wrap:anywhere}.routing{border-left:3px solid var(--gold)}.tool{border-left:3px solid var(--blue)}.muted{color:var(--muted)}form{padding:16px 22px;border-top:1px solid var(--line);display:flex;gap:10px}textarea{flex:1;resize:none;background:var(--panel);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:12px}button{cursor:pointer}form button{background:#303746;color:var(--text);border:1px solid #465064;border-radius:6px;padding:0 18px}@media(max-width:720px){body{grid-template-columns:1fr}.side{display:none}}
-</style></head><body><aside class="side"><div class="brand">ORRERY</div><button class="new" onclick="newSession()">New session</button><div id="sessions"></div></aside><main><header class="top"><span><span id="title">Select a session</span><span id="managed"></span></span><span class="meter" id="meter">$0.0000</span></header><section id="events"></section><form onsubmit="send(event)"><textarea id="prompt" rows="3" placeholder="Give Orrery a task…"></textarea><button>Send</button></form></main><script>
-let current=null,es=null,cost=0;const $=s=>document.querySelector(s),params=new URLSearchParams(location.search);if(params.get('embed')==='1')document.body.classList.add('embed');if(params.get('readonly')==='1')document.body.classList.add('readonly');if(params.get('managed')==='squire')$('#managed').textContent='managed by Squire';async function load(){let xs=await(await fetch('/api/sessions')).json();$('#sessions').innerHTML=xs.map(x=>`<div class=session onclick="openSession('${x.ID||x.id}')">${esc(x.Spec||x.spec).slice(0,50)}<br><small>${x.Status||x.status} · ${x.Phase||x.phase}</small></div>`).join('')}function esc(s=''){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}async function newSession(){let p=prompt('Task for Orrery');if(!p)return;let x=await(await fetch('/sessions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({prompt:p})})).json();load();openSession(x.id)}function openSession(id){current=id;cost=0;$('#events').innerHTML='';$('#title').textContent=id;es?.close();es=new EventSource(`/api/v1/sessions/${id}/events`);es.onmessage=render;['routing.decision','routing.fallback','assistant.message','tool.started','tool.finished','todo.changed','job.started','job.terminal','usage.reported','artifact.created','link.created','session.terminal','context.compacted'].forEach(t=>es.addEventListener(t,render))}function render(ev){let x=JSON.parse(ev.data),type=x.type||ev.type,data=x.data;if(type==='usage.reported'&&data.cost_usd){cost+=data.cost_usd;$('#meter').textContent='$'+cost.toFixed(4)}let c=document.createElement('div');c.className='card '+(type.startsWith('routing')?'routing':type.startsWith('tool')?'tool':'');c.innerHTML=`<div class=muted>${esc(type)}</div>${esc(JSON.stringify(data,null,2))}`;$('#events').append(c);c.scrollIntoView()}async function send(e){e.preventDefault();let p=$('#prompt').value.trim();if(!p)return;if(!current){let x=await(await fetch('/sessions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({prompt:p})})).json();openSession(x.id)}else await fetch(`/sessions/${current}/messages`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({content:p})});$('#prompt').value='';load()}load().then(()=>{let direct=params.get('session');if(direct)openSession(direct)});
-</script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Orrery</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --void: #0a0a0a;
+      --terminal: #16181c;
+      --circuit: #2a2e35;
+      --signal: #9aa0a6;
+      --bright: #e6e8eb;
+      --electric: #00ffcc;
+      --electric-light: #33ffd6;
+      --electric-dark: #00cc99;
+      --conductor: #5b39f5;
+      --conductor-light: #9b80f8;
+      --danger: #ff7a85;
+      --warning: #f6d86b;
+      --panel: rgba(22, 24, 28, .92);
+      --shadow: 0 18px 60px rgba(0, 0, 0, .38);
+      font-family: Inter, "Public Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      overflow: hidden;
+      color: var(--bright);
+      background:
+        radial-gradient(circle at 72% -20%, rgba(91, 57, 245, .19), transparent 42%),
+        radial-gradient(circle at 0 100%, rgba(0, 255, 204, .07), transparent 34%),
+        var(--void);
+      display: grid;
+      grid-template-columns: 292px minmax(0, 1fr);
+      letter-spacing: -.006em;
+    }
+    button, textarea { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .45; }
+    .sidebar {
+      min-width: 0;
+      background: rgba(10, 10, 10, .78);
+      border-right: 1px solid var(--circuit);
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr) auto;
+      backdrop-filter: blur(20px);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; padding: 24px 20px 18px; }
+    .mark {
+      width: 34px; height: 34px; border: 1px solid rgba(0, 255, 204, .5); border-radius: 50%;
+      display: grid; place-items: center; box-shadow: 0 0 22px rgba(0, 255, 204, .14); position: relative;
+    }
+    .mark::before { content: ""; width: 14px; height: 14px; border: 1px solid var(--conductor-light); border-radius: 50%; }
+    .mark::after { content: ""; position: absolute; width: 4px; height: 4px; border-radius: 50%; background: var(--electric); transform: translate(13px, -5px); box-shadow: 0 0 8px var(--electric); }
+    .wordmark { font-size: 17px; font-weight: 720; letter-spacing: .18em; }
+    .eyebrow { color: var(--signal); font: 10px/1.3 ui-monospace, monospace; letter-spacing: .12em; text-transform: uppercase; }
+    .new-session {
+      margin: 0 16px 14px; min-height: 42px; border: 1px solid rgba(0, 255, 204, .45); border-radius: 10px;
+      color: var(--void); background: var(--electric); font-weight: 700; transition: transform .15s, box-shadow .15s;
+    }
+    .new-session:hover { transform: translateY(-1px); box-shadow: 0 0 24px rgba(0, 255, 204, .18); }
+    #sessions { overflow: auto; padding: 0 10px 18px; }
+    .session {
+      width: 100%; border: 1px solid transparent; border-radius: 10px; padding: 11px 10px; margin: 3px 0;
+      background: transparent; color: inherit; text-align: left; display: grid; gap: 7px;
+    }
+    .session:hover { background: rgba(42, 46, 53, .45); }
+    .session.active { background: rgba(91, 57, 245, .13); border-color: rgba(155, 128, 248, .34); }
+    .session-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
+    .session-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--signal); font: 10px ui-monospace, monospace; text-transform: uppercase; letter-spacing: .05em; }
+    .dot { width: 6px; height: 6px; display: inline-block; border-radius: 50%; margin-right: 6px; background: var(--signal); }
+    .dot.running { background: var(--electric); box-shadow: 0 0 8px rgba(0, 255, 204, .6); }
+    .dot.pass { background: var(--electric-dark); }
+    .dot.fail, .dot.cancelled, .dot.budget_exhausted { background: var(--danger); }
+    .sidebar-foot { border-top: 1px solid var(--circuit); padding: 13px 18px; color: var(--signal); font-size: 11px; display: flex; justify-content: space-between; }
+    main { min-width: 0; display: grid; grid-template-rows: 68px minmax(0, 1fr) auto; }
+    .topbar {
+      border-bottom: 1px solid var(--circuit); padding: 0 24px; display: flex; align-items: center; justify-content: space-between; gap: 20px;
+      background: rgba(10, 10, 10, .35); backdrop-filter: blur(18px);
+    }
+    .task-heading { min-width: 0; display: flex; align-items: center; gap: 12px; }
+    #title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; font-weight: 650; }
+    .pill { border: 1px solid var(--circuit); border-radius: 999px; padding: 4px 8px; color: var(--signal); font: 10px ui-monospace, monospace; text-transform: uppercase; letter-spacing: .06em; }
+    .metrics { display: flex; align-items: center; gap: 18px; color: var(--signal); font: 11px ui-monospace, monospace; white-space: nowrap; }
+    .metric strong { display: block; color: var(--bright); font-size: 12px; font-weight: 600; margin-top: 2px; }
+    .metric.cost strong { color: var(--electric); }
+    .cancel { border: 1px solid rgba(255, 122, 133, .35); background: transparent; color: var(--danger); padding: 7px 10px; border-radius: 8px; }
+    #events { overflow: auto; padding: 30px max(24px, calc((100% - 920px) / 2)); scroll-behavior: smooth; }
+    .empty { min-height: 100%; display: grid; place-items: center; text-align: center; color: var(--signal); }
+    .empty-inner { max-width: 460px; }
+    .empty .mark { width: 54px; height: 54px; margin: 0 auto 20px; }
+    .empty h1 { margin: 0 0 10px; color: var(--bright); font-size: 24px; letter-spacing: -.03em; }
+    .empty p { margin: 0; line-height: 1.6; }
+    .event { margin: 0 0 14px; animation: rise .2s ease-out; }
+    @keyframes rise { from { opacity: 0; transform: translateY(4px); } }
+    .event-label { color: var(--signal); font: 10px ui-monospace, monospace; text-transform: uppercase; letter-spacing: .08em; margin: 0 0 6px 3px; }
+    .bubble, .card { border: 1px solid var(--circuit); border-radius: 12px; background: var(--panel); box-shadow: 0 5px 24px rgba(0, 0, 0, .12); }
+    .bubble { padding: 15px 17px; line-height: 1.58; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .assistant .bubble { border-left: 2px solid var(--electric-dark); }
+    .user .bubble { border-left: 2px solid var(--conductor-light); }
+    .card { overflow: hidden; }
+    .card-head { min-height: 42px; padding: 10px 13px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .card-title { display: flex; align-items: center; gap: 9px; font-size: 12px; font-weight: 650; }
+    .icon { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; color: var(--electric); background: rgba(0, 255, 204, .08); font: 11px ui-monospace, monospace; }
+    .card-meta { color: var(--signal); font: 10px ui-monospace, monospace; }
+    details > summary { list-style: none; cursor: pointer; }
+    details > summary::-webkit-details-marker { display: none; }
+    .detail-body { border-top: 1px solid var(--circuit); padding: 12px 14px; color: #c8ccd1; background: rgba(10, 10, 10, .32); white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.55 ui-monospace, monospace; max-height: 360px; overflow: auto; }
+    .routing-card { border-color: rgba(155, 128, 248, .27); }
+    .routing-card .icon { color: var(--conductor-light); background: rgba(91, 57, 245, .14); }
+    .todo-list { display: grid; gap: 8px; padding: 13px 14px; border-top: 1px solid var(--circuit); }
+    .todo-row { display: grid; grid-template-columns: 16px 74px 1fr; gap: 9px; align-items: baseline; font-size: 12px; }
+    .todo-check { color: var(--signal); font-family: ui-monospace, monospace; }
+    .todo-row.completed { color: var(--signal); }
+    .todo-row.completed .todo-check { color: var(--electric-dark); }
+    .todo-row.in_progress .todo-check { color: var(--electric); }
+    .phase { color: var(--conductor-light); font: 9px ui-monospace, monospace; text-transform: uppercase; letter-spacing: .06em; }
+    .terminal { border-color: rgba(0, 255, 204, .32); }
+    .terminal.fail { border-color: rgba(255, 122, 133, .4); }
+    code { background: rgba(42, 46, 53, .7); border-radius: 4px; padding: 1px 4px; font: .91em ui-monospace, monospace; color: var(--electric-light); }
+    pre { margin: 10px 0 0; padding: 12px; overflow: auto; border-radius: 8px; background: var(--void); border: 1px solid var(--circuit); }
+    pre code { padding: 0; background: none; color: #d6d9dd; }
+    .composer-wrap { padding: 14px max(20px, calc((100% - 920px) / 2)) 20px; background: linear-gradient(transparent, rgba(10, 10, 10, .92) 24%); }
+    .composer { border: 1px solid var(--circuit); background: rgba(22, 24, 28, .96); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; transition: border-color .15s, box-shadow .15s; }
+    .composer:focus-within { border-color: rgba(0, 255, 204, .46); box-shadow: 0 0 0 3px rgba(0, 255, 204, .06), var(--shadow); }
+    textarea { display: block; width: 100%; min-height: 76px; max-height: 240px; resize: none; border: 0; outline: 0; background: transparent; color: var(--bright); padding: 15px 16px 8px; line-height: 1.5; }
+    textarea::placeholder { color: #6f757d; }
+    .composer-foot { display: flex; align-items: center; justify-content: space-between; padding: 7px 8px 8px 14px; color: var(--signal); font-size: 10px; }
+    .send { min-width: 88px; border: 0; border-radius: 8px; padding: 9px 13px; color: var(--void); background: var(--electric); font-weight: 750; }
+    .error-banner { margin-bottom: 10px; padding: 10px 12px; border: 1px solid rgba(255, 122, 133, .4); border-radius: 9px; color: var(--danger); background: rgba(255, 122, 133, .08); font-size: 12px; }
+    body.embed { grid-template-columns: 1fr; }
+    body.embed .sidebar { display: none; }
+    body.readonly .composer-wrap, body.readonly .cancel { display: none; }
+    @media (max-width: 760px) {
+      body { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .metrics .metric:not(.cost) { display: none; }
+      .topbar { padding: 0 15px; }
+      #events { padding: 20px 14px; }
+      .composer-wrap { padding: 10px 12px 14px; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; } }
+  </style>
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand"><div class="mark"></div><div><div class="wordmark">ORRERY</div><div class="eyebrow">agent control</div></div></div>
+    <button class="new-session" id="new-session">+ New session</button>
+    <nav id="sessions" aria-label="Sessions"></nav>
+    <footer class="sidebar-foot"><span id="managed">local</span><span id="connection">offline</span></footer>
+  </aside>
+  <main>
+    <header class="topbar">
+      <div class="task-heading"><span id="title">New task</span><span class="pill" id="phase">idle</span></div>
+      <div class="metrics">
+        <span class="metric"><span>model</span><strong id="model">—</strong></span>
+        <span class="metric cost"><span>cost</span><strong id="meter">$0.0000</strong></span>
+        <button class="cancel" id="cancel" hidden>Stop</button>
+      </div>
+    </header>
+    <section id="events" aria-live="polite"></section>
+    <div class="composer-wrap">
+      <div id="error"></div>
+      <form class="composer" id="composer">
+        <textarea id="prompt" rows="3" placeholder="Ask Orrery to build, investigate, or review…" aria-label="Message"></textarea>
+        <div class="composer-foot"><span>Enter for newline · <span id="shortcut">⌘</span> Enter to send</span><button class="send" id="send">Start task</button></div>
+      </form>
+    </div>
+  </main>
+  <script>
+    const state = { current: null, stream: null, sessions: [], cost: 0, model: "—", phase: "idle", status: "", pending: false };
+    const params = new URLSearchParams(location.search);
+    const $ = selector => document.querySelector(selector);
+    if (params.get("embed") === "1") document.body.classList.add("embed");
+    if (params.get("readonly") === "1") document.body.classList.add("readonly");
+    if (params.get("managed") === "squire") $("#managed").textContent = "managed by Squire";
+    if (!/Mac|iPhone|iPad/.test(navigator.platform)) $("#shortcut").textContent = "Ctrl +";
+
+    const escapeHTML = (value = "") => String(value).replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
+    const pick = (object, ...keys) => keys.find(key => object && object[key] !== undefined) ? object[keys.find(key => object && object[key] !== undefined)] : undefined;
+    const pretty = value => JSON.stringify(value ?? {}, null, 2);
+    const shortID = value => value ? String(value).slice(0, 8) : "—";
+    const statusClass = value => String(value || "").toLowerCase().replace(/[^a-z_]/g, "");
+
+    function markdown(text = "") {
+      let safe = escapeHTML(text);
+      safe = safe.replace(/```([\w-]*)\n([\s\S]*?)```/g, (_, lang, code) => `<pre><code>${code}</code></pre>`);
+      safe = safe.replace(/`([^`]+)`/g, "<code>$1</code>");
+      safe = safe.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      safe = safe.replace(/^### (.+)$/gm, "<strong>$1</strong>");
+      safe = safe.replace(/^[-*] (.+)$/gm, "• $1");
+      return safe;
+    }
+
+    async function request(path, options) {
+      const response = await fetch(path, options);
+      const text = await response.text();
+      let body;
+      try { body = text ? JSON.parse(text) : {}; } catch { body = { error: text }; }
+      if (!response.ok) throw new Error(body.error || body.detail || text || `HTTP ${response.status}`);
+      return body;
+    }
+
+    function showError(error) {
+      $("#error").innerHTML = error ? `<div class="error-banner">${escapeHTML(error.message || error)}</div>` : "";
+    }
+
+    function syncHeader() {
+      $("#meter").textContent = `$${state.cost.toFixed(4)}`;
+      $("#model").textContent = state.model;
+      $("#phase").textContent = state.phase || "idle";
+      $("#send").textContent = state.pending ? "Working…" : (state.current ? "Send" : "Start task");
+      $("#send").disabled = state.pending;
+      $("#cancel").hidden = !state.current || state.status !== "running";
+    }
+
+    function emptyState() {
+      $("#events").innerHTML = `<div class="empty"><div class="empty-inner"><div class="mark"></div><h1>What are we working on?</h1><p>Orrery plans, routes, edits, verifies, and explains each model decision as it works.</p></div></div>`;
+    }
+
+    async function loadSessions() {
+      try {
+        const sessions = await request("/api/v1/sessions");
+        state.sessions = Array.isArray(sessions) ? sessions : [];
+        $("#connection").textContent = "connected";
+        $("#sessions").innerHTML = state.sessions.map(session => {
+          const id = pick(session, "ID", "id"), spec = pick(session, "Spec", "spec") || "Untitled task";
+          const status = pick(session, "Status", "status") || "unknown", phase = pick(session, "Phase", "phase") || "—";
+          return `<button class="session ${id === state.current ? "active" : ""}" data-id="${escapeHTML(id)}"><span class="session-title">${escapeHTML(spec)}</span><span class="session-meta"><span><i class="dot ${statusClass(status)}"></i>${escapeHTML(status)}</span><span>${escapeHTML(phase)}</span></span></button>`;
+        }).join("");
+        document.querySelectorAll(".session").forEach(button => button.addEventListener("click", () => openSession(button.dataset.id)));
+      } catch (error) {
+        $("#connection").textContent = "offline";
+        showError(error);
+      }
+    }
+
+    function addEvent(className, label, body) {
+      const node = document.createElement("article");
+      node.className = `event ${className}`;
+      node.innerHTML = `<div class="event-label">${escapeHTML(label)}</div>${body}`;
+      $("#events").append(node);
+      node.scrollIntoView({ block: "end" });
+      return node;
+    }
+
+    function renderEvent(event) {
+      const envelope = JSON.parse(event.data), type = envelope.type || event.type, data = envelope.data || {};
+      if (type === "session.created" || type === "session.started") return;
+      if (type === "usage.reported") {
+        state.cost += Number(data.cost_usd || 0);
+        if (data.model) state.model = data.model.split("/").pop();
+        syncHeader();
+        return;
+      }
+      if (type === "routing.decision" || type === "routing.fallback") {
+        const decision = data.decision || {}, model = decision.model || {};
+        if (model.ID) state.model = model.ID.split("/").pop();
+        const explanation = data.explanation || "Routing decision";
+        addEvent("routing", type === "routing.fallback" ? "fallback" : "routing", `<div class="card routing-card"><div class="card-head"><div class="card-title"><span class="icon">↗</span>${escapeHTML(explanation)}</div><span class="card-meta">${escapeHTML(decision.effort || "default")} effort</span></div></div>`);
+        syncHeader();
+        return;
+      }
+      if (type === "assistant.message") {
+        const message = data.message || {}, content = message.content || "";
+        if (content) addEvent("assistant", state.model, `<div class="bubble">${markdown(content)}</div>`);
+        return;
+      }
+      if (type === "tool.started") {
+        const name = data.name || "tool", id = data.id || crypto.randomUUID();
+        const node = addEvent("tool", "tool", `<details class="card" data-call="${escapeHTML(id)}"><summary class="card-head"><div class="card-title"><span class="icon">›_</span>${escapeHTML(name)}</div><span class="card-meta tool-state">running</span></summary><div class="detail-body">${escapeHTML(pretty(data.arguments))}</div></details>`);
+        node.dataset.call = id;
+        return;
+      }
+      if (type === "tool.finished") {
+        const call = data.call || {}, existing = document.querySelector(`[data-call="${CSS.escape(call.id || "")}"]`);
+        if (existing) {
+          const status = existing.querySelector(".tool-state");
+          if (status) status.textContent = data.result && data.result.error ? "error" : "done";
+          return;
+        }
+        addEvent("tool", "tool result", `<details class="card"><summary class="card-head"><div class="card-title"><span class="icon">✓</span>${escapeHTML(call.name || "tool")}</div><span class="card-meta">done</span></summary><div class="detail-body">${escapeHTML(pretty(data.result))}</div></details>`);
+        return;
+      }
+      if (type === "todo.changed") {
+        const items = Array.isArray(data) ? data : (data.items || []);
+        const next = items.find(item => item.status !== "completed");
+        if (next && next.phase) state.phase = next.phase;
+        const rows = items.map(item => `<div class="todo-row ${escapeHTML(item.status)}"><span class="todo-check">${item.status === "completed" ? "✓" : item.status === "in_progress" ? "◆" : "○"}</span><span class="phase">${escapeHTML(item.phase)}</span><span>${escapeHTML(item.text)}</span></div>`).join("");
+        addEvent("todo", "plan", `<details class="card" open><summary class="card-head"><div class="card-title"><span class="icon">☷</span>Task plan</div><span class="card-meta">${items.filter(item => item.status === "completed").length}/${items.length}</span></summary><div class="todo-list">${rows}</div></details>`);
+        syncHeader();
+        return;
+      }
+      if (type === "job.started" || type === "job.terminal") {
+        const terminal = type.endsWith("terminal"), model = data.model || data.result?.outcome?.model || "worker";
+        addEvent("job", terminal ? "worker completed" : "worker started", `<details class="card"><summary class="card-head"><div class="card-title"><span class="icon">◇</span>${escapeHTML(model)}</div><span class="card-meta">${terminal ? escapeHTML(data.result?.status || "done") : shortID(data.id)}</span></summary><div class="detail-body">${escapeHTML(pretty(terminal ? data.result : { spec: data.spec, explanation: data.explanation }))}</div></details>`);
+        return;
+      }
+      if (type === "context.compacted") {
+        addEvent("context", "context", `<div class="card"><div class="card-head"><div class="card-title"><span class="icon">↺</span>Context compacted</div><span class="card-meta">${escapeHTML(data.kept_turns || "")} turns retained</span></div></div>`);
+        return;
+      }
+      if (type === "session.terminal" || type === "terminal") {
+        const result = data.status ? data : (data.terminal || data);
+        state.status = result.status || "complete";
+        state.pending = false;
+        addEvent(`terminal ${statusClass(state.status)}`, "complete", `<details class="card terminal ${statusClass(state.status)}" open><summary class="card-head"><div class="card-title"><span class="icon">${state.status === "pass" ? "✓" : "!"}</span>${escapeHTML(state.status)}</div><span class="card-meta">${result.outcome?.cost_usd ? `$${Number(result.outcome.cost_usd).toFixed(4)}` : ""}</span></summary><div class="detail-body">${escapeHTML(result.error || pretty(result.result || {}))}</div></details>`);
+        syncHeader(); loadSessions();
+        return;
+      }
+      if (["artifact.created", "link.created", "progress.intervention", "completion.rejected", "provider.error"].includes(type)) {
+        addEvent("notice", type.replaceAll(".", " "), `<details class="card"><summary class="card-head"><div class="card-title"><span class="icon">·</span>${escapeHTML(type.replaceAll(".", " "))}</div></summary><div class="detail-body">${escapeHTML(pretty(data))}</div></details>`);
+      }
+    }
+
+    async function openSession(id) {
+      state.current = id; state.cost = 0; state.model = "—"; state.pending = false;
+      state.stream?.close(); $("#events").innerHTML = ""; showError();
+      try {
+        const session = await request(`/api/v1/sessions/${encodeURIComponent(id)}`);
+        state.phase = pick(session, "Phase", "phase") || "idle";
+        state.status = pick(session, "Status", "status") || "";
+        state.model = (pick(session, "Model", "model") || "—").split("/").pop();
+        state.cost = Number(pick(session, "SpentUSD", "spent_usd") || 0);
+        $("#title").textContent = pick(session, "Spec", "spec") || shortID(id);
+      } catch (error) { showError(error); }
+      state.stream = new EventSource(`/api/v1/sessions/${encodeURIComponent(id)}/events`);
+      state.stream.onopen = () => { $("#connection").textContent = "live"; };
+      state.stream.onerror = () => { $("#connection").textContent = "reconnecting"; };
+      ["routing.decision","routing.fallback","assistant.message","tool.started","tool.finished","todo.changed","job.started","job.terminal","usage.reported","artifact.created","link.created","session.terminal","context.compacted","progress.intervention","completion.rejected","provider.error"].forEach(type => state.stream.addEventListener(type, renderEvent));
+      syncHeader(); loadSessions();
+    }
+
+    function resetComposer() {
+      state.stream?.close(); state.current = null; state.cost = 0; state.model = "—"; state.phase = "idle"; state.status = ""; state.pending = false;
+      $("#title").textContent = "New task"; $("#prompt").value = ""; autoSize(); emptyState(); syncHeader(); loadSessions(); $("#prompt").focus();
+    }
+
+    async function send(event) {
+      event?.preventDefault();
+      const content = $("#prompt").value.trim();
+      if (!content || state.pending) return;
+      showError(); state.pending = true; syncHeader();
+      try {
+        if (!state.current) {
+          const created = await request("/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt: content }) });
+          $("#prompt").value = ""; autoSize(); await openSession(created.id);
+        } else {
+          addEvent("user", "you", `<div class="bubble">${markdown(content)}</div>`);
+          await request(`/sessions/${encodeURIComponent(state.current)}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content }) });
+          $("#prompt").value = ""; autoSize();
+        }
+      } catch (error) { state.pending = false; showError(error); }
+      syncHeader();
+    }
+
+    function autoSize() {
+      const input = $("#prompt"); input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 240)}px`;
+    }
+
+    $("#composer").addEventListener("submit", send);
+    $("#prompt").addEventListener("input", autoSize);
+    $("#prompt").addEventListener("keydown", event => {
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); send(); }
+    });
+    $("#new-session").addEventListener("click", resetComposer);
+    $("#cancel").addEventListener("click", async () => {
+      if (!state.current) return;
+      try { await request(`/api/v1/sessions/${encodeURIComponent(state.current)}/cancel`, { method: "POST" }); } catch (error) { showError(error); }
+    });
+
+    emptyState(); syncHeader(); loadSessions().then(() => {
+      const direct = params.get("session");
+      if (direct) openSession(direct);
+    });
+  </script>
+</body>
+</html>

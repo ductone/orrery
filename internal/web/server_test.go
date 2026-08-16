@@ -53,6 +53,27 @@ func TestVersionedCapabilitiesAndOriginCheck(t *testing.T) {
 	}
 }
 
+func TestWebUIUsesDarkBrandPaletteAndCommandEnterComposer(t *testing.T) {
+	ts, st := testServer(t)
+	defer ts.Close()
+	defer st.Close()
+	res, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	html := string(body)
+	for _, expected := range []string{"--electric: #00ffcc", "--conductor: #5b39f5", "color-scheme: dark", "event.metaKey || event.ctrlKey", "Enter for newline"} {
+		if !strings.Contains(html, expected) {
+			t.Fatalf("UI missing %q", expected)
+		}
+	}
+	if strings.Contains(html, "prompt('Task for Orrery')") {
+		t.Fatal("legacy prompt-based session creation is still present")
+	}
+}
+
 func TestSSELastEventID(t *testing.T) {
 	ts, st := testServer(t)
 	defer ts.Close()
