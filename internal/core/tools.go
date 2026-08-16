@@ -32,6 +32,13 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 	if req.Workspace.Isolation == "shared-ro" {
 		r = builtin.NewReadOnly(root)
 	}
+	if len(req.Attachments) > 0 {
+		attachments := make(map[string]string, len(req.Attachments))
+		for _, attachment := range req.Attachments {
+			attachments[attachment.ID] = attachment.Path
+		}
+		r.AddFileScheme("attachment", attachments)
+	}
 	r.Add("todo", "Replace the ordered todo plan. Phase is explore, plan, implement, diagnose, review, or wrap-up.", obj(map[string]any{"items": map[string]any{"type": "array", "items": obj(map[string]any{"text": str(), "phase": str(), "status": map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "completed"}}}, "text", "phase", "status")}}, "items"), func(ctx context.Context, a map[string]any) (any, error) {
 		b, _ := json.Marshal(a["items"])
 		var ts []store.Todo

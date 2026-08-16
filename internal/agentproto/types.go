@@ -28,13 +28,20 @@ type RoutingHints struct {
 	Review            bool     `json:"review,omitempty"`
 	ImplementerFamily string   `json:"implementer_family,omitempty"`
 }
+type AttachmentRef struct {
+	ID        string `json:"id"`
+	Path      string `json:"path"`
+	MediaType string `json:"media_type,omitempty"`
+	Filename  string `json:"filename,omitempty"`
+}
 type TaskRequest struct {
-	Spec         string         `json:"spec"`
-	ResultSchema map[string]any `json:"result_schema,omitempty"`
-	Budget       Budget         `json:"budget"`
-	Workspace    Workspace      `json:"workspace"`
-	Hints        RoutingHints   `json:"hints,omitempty"`
-	Depth        uint32         `json:"depth"`
+	Spec         string          `json:"spec"`
+	ResultSchema map[string]any  `json:"result_schema,omitempty"`
+	Budget       Budget          `json:"budget"`
+	Workspace    Workspace       `json:"workspace"`
+	Hints        RoutingHints    `json:"hints,omitempty"`
+	Depth        uint32          `json:"depth"`
+	Attachments  []AttachmentRef `json:"attachments,omitempty"`
 }
 type Outcome struct {
 	Tokens                int           `json:"tokens"`

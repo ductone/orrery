@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 type Handler func(context.Context, map[string]any) (any, error)
@@ -56,7 +58,44 @@ func (r *Registry) add(n, d string, s map[string]any, h Handler) {
 }
 func (r *Registry) Add(n, d string, s map[string]any, h Handler) { r.add(n, d, s, h) }
 func (r *Registry) AddScheme(name string, h Handler)             { r.schemes[name] = h }
-func (r *Registry) Definitions() []provider.Tool                 { return append([]provider.Tool(nil), r.defs...) }
+
+// AddFileScheme exposes an exact, read-only set of supervisor-provided files
+// without widening the workspace boundary. Keys become <name>://<key>.
+func (r *Registry) AddFileScheme(name string, files map[string]string) {
+	allowed := make(map[string]string, len(files))
+	for key, value := range files {
+		allowed[key] = value
+	}
+	r.AddScheme(name, func(_ context.Context, args map[string]any) (any, error) {
+		key := asString(args["path"])
+		path, ok := allowed[key]
+		if !ok || key == "" {
+			return nil, errors.New("unknown attachment")
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, errors.New("attachment is not a regular file")
+		}
+		if info.Size() > 25<<20 {
+			return nil, errors.New("attachment exceeds 25 MiB")
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		if utf8.Valid(data) {
+			return map[string]any{"text": string(data), "bytes": len(data)}, nil
+		}
+		if len(data) > 10<<20 {
+			return map[string]any{"binary": true, "bytes": len(data), "error": "binary attachment exceeds inline limit"}, nil
+		}
+		return map[string]any{"binary": true, "bytes": len(data), "base64": base64.StdEncoding.EncodeToString(data)}, nil
+	})
+}
+func (r *Registry) Definitions() []provider.Tool { return append([]provider.Tool(nil), r.defs...) }
 func (r *Registry) DefinitionsExcept(names ...string) []provider.Tool {
 	excluded := map[string]bool{}
 	for _, name := range names {

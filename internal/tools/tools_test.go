@@ -42,6 +42,25 @@ func TestDefinitionsOnly(t *testing.T) {
 	}
 }
 
+func TestAttachmentSchemeAllowsOnlyExactRegularFiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evidence.txt")
+	if err := os.WriteFile(path, []byte("bounded evidence"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := NewReadOnly(t.TempDir())
+	r.AddFileScheme("attachment", map[string]string{"a-1": path})
+	value, err := r.Call(context.Background(), "read", map[string]any{"path": "attachment://a-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.(map[string]any)["text"] != "bounded evidence" {
+		t.Fatalf("value = %#v", value)
+	}
+	if _, err := r.Call(context.Background(), "read", map[string]any{"path": "attachment://../evidence.txt"}); err == nil {
+		t.Fatal("attachment scheme accepted a non-allowlisted path")
+	}
+}
+
 func TestSearchGlobMatchesWorkspaceRelativePathRecursively(t *testing.T) {
 	root := t.TempDir()
 	p := filepath.Join(root, "frontend", "components", "core", "view.tsx")

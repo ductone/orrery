@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -90,6 +93,9 @@ func (e *Engine) Start(ctx context.Context, req agentproto.TaskRequest, emit Emi
 	if req.Spec == "" {
 		return "", nil, errors.New("task spec required")
 	}
+	if err := validateAttachments(&req); err != nil {
+		return "", nil, err
+	}
 	cfg, _, _, _, _ := e.runtimeSnapshot()
 	applyBudgetDefaults(&req, cfg)
 	id := uuid.NewString()
@@ -107,6 +113,9 @@ func (e *Engine) StartIntegrated(ctx context.Context, req agentproto.TaskRequest
 	}
 	if opts.RequestID == "" || opts.Integration == "" || opts.ExternalID == "" {
 		return StartInfo{}, errors.New("integration, external_id, and request_id are required")
+	}
+	if err := validateAttachments(&req); err != nil {
+		return StartInfo{}, err
 	}
 	cfg, _, _, _, _ := e.runtimeSnapshot()
 	applyBudgetDefaults(&req, cfg)
@@ -164,6 +173,10 @@ func (e *Engine) Continue(ctx context.Context, id, instruction string, emit Emit
 }
 
 func (e *Engine) ContinueIntegrated(ctx context.Context, id, instruction, requestID, source string, emit EmitFunc) (StartInfo, error) {
+	return e.ContinueIntegratedWithAttachments(ctx, id, instruction, requestID, source, nil, emit)
+}
+
+func (e *Engine) ContinueIntegratedWithAttachments(ctx context.Context, id, instruction, requestID, source string, attachments []agentproto.AttachmentRef, emit EmitFunc) (StartInfo, error) {
 	s, err := e.store.Session(ctx, id)
 	if err != nil {
 		return StartInfo{}, err
@@ -171,7 +184,15 @@ func (e *Engine) ContinueIntegrated(ctx context.Context, id, instruction, reques
 	if strings.TrimSpace(instruction) == "" {
 		return StartInfo{}, errors.New("message content required")
 	}
-	payloadHash := hashPayload(map[string]any{"content": instruction, "source": source})
+	req := agentproto.TaskRequest{}
+	if json.Unmarshal([]byte(s.RequestJSON), &req) != nil {
+		req = agentproto.TaskRequest{Spec: s.Spec, Budget: agentproto.Budget{MaxUSD: s.BudgetUSD - s.SpentUSD, MaxTokens: 1_000_000, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: s.WorkspacePath, Isolation: "shared", Ownership: s.WorkspaceOwnership}, Depth: 4}
+	}
+	req.Attachments = append(req.Attachments, attachments...)
+	if err := validateAttachments(&req); err != nil {
+		return StartInfo{}, err
+	}
+	payloadHash := hashPayload(map[string]any{"content": instruction, "source": source, "attachments": attachments})
 	if existing, receiptErr := e.store.RequestReceipt(ctx, id, requestID); receiptErr == nil {
 		if existing.PayloadHash != payloadHash {
 			return StartInfo{}, fmt.Errorf("request_id %q was already used with a different payload", requestID)
@@ -184,12 +205,18 @@ func (e *Engine) ContinueIntegrated(ctx context.Context, id, instruction, reques
 		return StartInfo{}, errors.New("session already has an active turn")
 	}
 	turnID := uuid.NewString()
-	receipt, err := e.store.AcceptMessage(ctx, id, requestID, turnID, source, payloadHash, provider.Message{Role: "user", Content: instruction})
+	receipt, err := e.store.AcceptMessage(ctx, id, requestID, turnID, source, payloadHash, provider.Message{Role: "user", Content: instruction}, req)
 	if err != nil {
 		e.mu.Unlock()
 		return StartInfo{}, err
 	}
-	req := agentproto.TaskRequest{Spec: s.Spec, Budget: agentproto.Budget{MaxUSD: s.BudgetUSD - s.SpentUSD, MaxTokens: 1_000_000, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: s.WorkspacePath, Isolation: "shared", Ownership: s.WorkspaceOwnership}, Depth: 4}
+	req.Budget.MaxUSD = s.BudgetUSD - s.SpentUSD
+	if req.Budget.MaxTokens <= 0 {
+		req.Budget.MaxTokens = 1_000_000
+	}
+	if req.Budget.MaxWallClock <= 0 {
+		req.Budget.MaxWallClock = 2 * time.Hour
+	}
 	if req.Workspace.Path == "" {
 		cfg, _, _, _, _ := e.runtimeSnapshot()
 		req.Workspace.Path = cfg.WorkspaceRoot
@@ -204,6 +231,37 @@ func (e *Engine) ContinueIntegrated(ctx context.Context, id, instruction, reques
 	e.mu.Unlock()
 	out := e.launchExisting(turnCtx, cancel, id, req, emit)
 	return StartInfo{SessionID: id, TurnID: receipt.TurnID, Accepted: true, Duplicate: receipt.Duplicate, Result: out}, nil
+}
+
+var attachmentIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+
+func validateAttachments(req *agentproto.TaskRequest) error {
+	if len(req.Attachments) > 20 {
+		return errors.New("at most 20 attachments are allowed")
+	}
+	seen := make(map[string]bool, len(req.Attachments))
+	for i := range req.Attachments {
+		attachment := &req.Attachments[i]
+		if !attachmentIDPattern.MatchString(attachment.ID) || seen[attachment.ID] {
+			return fmt.Errorf("invalid or duplicate attachment id %q", attachment.ID)
+		}
+		seen[attachment.ID] = true
+		if !filepath.IsAbs(attachment.Path) {
+			return fmt.Errorf("attachment %q path must be absolute", attachment.ID)
+		}
+		attachment.Path = filepath.Clean(attachment.Path)
+		info, err := os.Lstat(attachment.Path)
+		if err != nil {
+			return fmt.Errorf("attachment %q: %w", attachment.ID, err)
+		}
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("attachment %q is not a regular file", attachment.ID)
+		}
+		if info.Size() > 25<<20 {
+			return fmt.Errorf("attachment %q exceeds 25 MiB", attachment.ID)
+		}
+	}
+	return nil
 }
 
 func (e *Engine) launchExisting(ctx context.Context, cancel context.CancelFunc, id string, req agentproto.TaskRequest, emit EmitFunc) <-chan agentproto.TaskResult {

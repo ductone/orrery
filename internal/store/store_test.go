@@ -61,15 +61,15 @@ func TestIntegratedSessionAndMessageIdempotency(t *testing.T) {
 	if err != nil || fresh || retried.ID != "native" {
 		t.Fatalf("retry session: fresh=%v session=%+v err=%v", fresh, retried, err)
 	}
-	receipt, err := s.AcceptMessage(ctx, "native", "msg-1", "turn-2", "squire", "message-hash", map[string]string{"content": "continue"})
+	receipt, err := s.AcceptMessage(ctx, "native", "msg-1", "turn-2", "squire", "message-hash", map[string]string{"content": "continue"}, nil)
 	if err != nil || receipt.Duplicate {
 		t.Fatalf("accept message: %+v err=%v", receipt, err)
 	}
-	receipt, err = s.AcceptMessage(ctx, "native", "msg-1", "ignored", "squire", "message-hash", map[string]string{"content": "continue"})
+	receipt, err = s.AcceptMessage(ctx, "native", "msg-1", "ignored", "squire", "message-hash", map[string]string{"content": "continue"}, nil)
 	if err != nil || !receipt.Duplicate || receipt.TurnID != "turn-2" {
 		t.Fatalf("retry message: %+v err=%v", receipt, err)
 	}
-	if _, err = s.AcceptMessage(ctx, "native", "msg-1", "turn-3", "squire", "different", map[string]string{"content": "changed"}); err == nil {
+	if _, err = s.AcceptMessage(ctx, "native", "msg-1", "turn-3", "squire", "different", map[string]string{"content": "changed"}, nil); err == nil {
 		t.Fatal("expected request ID payload conflict")
 	}
 	events, err := s.EventsAfter(ctx, "native", 0)

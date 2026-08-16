@@ -109,7 +109,7 @@ func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
 	write(w, map[string]any{
 		"api_version": 1, "event_schema": 1,
 		"surfaces": []string{"web", "structured_chat"},
-		"resume":   true, "attachments": false, "dynamic_model_routing": true,
+		"resume":   true, "attachments": true, "attachment_transport": "local_exact_path", "dynamic_model_routing": true,
 		"runtime_config_reload": true, "runtime_config_boundary": "phase", "idempotent_mutations": true,
 		"external_workspaces": true, "last_event_id": true,
 	}, nil)
@@ -164,6 +164,22 @@ type createInput struct {
 	Context             map[string]any          `json:"context"`
 	Budget              budgetInput             `json:"budget"`
 	Routing             agentproto.RoutingHints `json:"routing"`
+	Attachments         []attachmentInput       `json:"attachments"`
+}
+
+type attachmentInput struct {
+	ID        string `json:"id"`
+	Path      string `json:"path"`
+	MediaType string `json:"media_type"`
+	Filename  string `json:"filename"`
+}
+
+func attachmentRefs(input []attachmentInput) []agentproto.AttachmentRef {
+	out := make([]agentproto.AttachmentRef, 0, len(input))
+	for _, attachment := range input {
+		out = append(out, agentproto.AttachmentRef{ID: attachment.ID, Path: attachment.Path, MediaType: attachment.MediaType, Filename: attachment.Filename})
+	}
+	return out
 }
 
 func (s *Server) createV1(w http.ResponseWriter, r *http.Request) {
@@ -185,7 +201,7 @@ func (s *Server) createV1(w http.ResponseWriter, r *http.Request) {
 		Spec:      in.Prompt,
 		Budget:    agentproto.Budget{MaxTokens: in.Budget.MaxTokens, MaxUSD: in.Budget.MaxUSD, MaxWallClock: time.Duration(in.Budget.MaxWallclockSeconds) * time.Second, MaxDepth: in.Budget.MaxDepth},
 		Workspace: agentproto.Workspace{Path: in.Workspace.Path, Isolation: in.Workspace.Isolation, Ownership: in.Workspace.Ownership},
-		Hints:     in.Routing, Depth: in.Budget.MaxDepth,
+		Hints:     in.Routing, Depth: in.Budget.MaxDepth, Attachments: attachmentRefs(in.Attachments),
 	}
 	info, err := s.engine.StartIntegrated(context.Background(), req, core.SessionOptions{Integration: in.Integration, ExternalID: in.ExternalID, ExternalIncarnation: in.ExternalIncarnation, RequestID: in.RequestID, WorkspaceOwnership: in.Workspace.Ownership, Context: in.Context}, nil)
 	if err != nil {
@@ -211,8 +227,9 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 }
 
 type messageInput struct {
-	RequestID string `json:"request_id"`
-	Content   string `json:"content"`
+	RequestID   string            `json:"request_id"`
+	Content     string            `json:"content"`
+	Attachments []attachmentInput `json:"attachments"`
 }
 
 func (s *Server) messageV1(w http.ResponseWriter, r *http.Request) {
@@ -224,7 +241,7 @@ func (s *Server) messageV1(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, nil, err)
 		return
 	}
-	info, err := s.engine.ContinueIntegrated(context.Background(), r.PathValue("id"), in.Content, in.RequestID, "squire", nil)
+	info, err := s.engine.ContinueIntegratedWithAttachments(context.Background(), r.PathValue("id"), in.Content, in.RequestID, "squire", attachmentRefs(in.Attachments), nil)
 	if err != nil {
 		status := http.StatusBadRequest
 		if strings.Contains(err.Error(), "active turn") {

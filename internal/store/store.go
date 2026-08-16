@@ -503,7 +503,7 @@ func (s *Store) RequestReceipt(ctx context.Context, sid, requestID string) (Requ
 // AcceptMessage atomically records an idempotency receipt, the user message,
 // and the acceptance event. A retry with the same request ID and payload is a
 // successful no-op; reusing an ID for different content is rejected.
-func (s *Store) AcceptMessage(ctx context.Context, sid, requestID, turnID, kind, payloadHash string, content any) (RequestReceipt, error) {
+func (s *Store) AcceptMessage(ctx context.Context, sid, requestID, turnID, kind, payloadHash string, content, request any) (RequestReceipt, error) {
 	if requestID == "" {
 		return RequestReceipt{}, errors.New("request_id required")
 	}
@@ -530,6 +530,11 @@ func (s *Store) AcceptMessage(ctx context.Context, sid, requestID, turnID, kind,
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO messages(session_id,role,content_json,created_at) VALUES(?,?,?,?)`, sid, "user", JSON(content), now.Format(time.RFC3339Nano)); err != nil {
 		return RequestReceipt{}, err
+	}
+	if request != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE sessions SET request_json=?,updated_at=? WHERE id=?`, JSON(request), now.Format(time.RFC3339Nano), sid); err != nil {
+			return RequestReceipt{}, err
+		}
 	}
 	var seq int
 	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq),0)+1 FROM events WHERE session_id=?`, sid).Scan(&seq); err != nil {
