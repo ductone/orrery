@@ -140,7 +140,7 @@ func (s *Server) dispatch(ctx context.Context, req request) (any, error) {
 		}
 		items := make([]map[string]any, 0, len(xs))
 		for _, x := range xs {
-			items = append(items, map[string]any{"sessionId": x.ID, "cwd": x.WorkspacePath, "title": x.Spec, "updatedAt": x.UpdatedAt.Format(time.RFC3339), "_meta": map[string]any{"status": x.Status, "phase": x.Phase, "spentUsd": x.SpentUSD}})
+			items = append(items, map[string]any{"sessionId": x.ID, "cwd": x.WorkspacePath, "title": x.DisplayTitle(), "updatedAt": x.UpdatedAt.Format(time.RFC3339), "_meta": map[string]any{"status": x.Status, "phase": x.Phase, "spentUsd": x.SpentUSD}})
 		}
 		return map[string]any{"sessions": items}, nil
 	case "session/fork", "orrery/session/fork":

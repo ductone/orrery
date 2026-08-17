@@ -38,13 +38,14 @@ func Open(path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) DB() *sql.DB  { return s.db }
 func (s *Store) migrate() error {
-	_, err := s.db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, spec TEXT NOT NULL, durable_summary TEXT NOT NULL DEFAULT '', phase TEXT NOT NULL DEFAULT 'plan', model TEXT NOT NULL DEFAULT '', turn INTEGER NOT NULL DEFAULT 0, spent_usd REAL NOT NULL DEFAULT 0, budget_usd REAL NOT NULL, status TEXT NOT NULL DEFAULT 'running', integration TEXT NOT NULL DEFAULT '', external_id TEXT NOT NULL DEFAULT '', external_incarnation TEXT NOT NULL DEFAULT '', workspace_path TEXT NOT NULL DEFAULT '', workspace_ownership TEXT NOT NULL DEFAULT 'orrery', integration_context_json TEXT NOT NULL DEFAULT '{}', request_json TEXT NOT NULL DEFAULT '{}', parent_session_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), seq INTEGER NOT NULL, turn_id TEXT NOT NULL DEFAULT '', type TEXT NOT NULL, data_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(session_id,seq)); CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), role TEXT NOT NULL, content_json TEXT NOT NULL, created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS request_receipts(session_id TEXT NOT NULL REFERENCES sessions(id), request_id TEXT NOT NULL, kind TEXT NOT NULL, turn_id TEXT NOT NULL, payload_hash TEXT NOT NULL, accepted_at TEXT NOT NULL, PRIMARY KEY(session_id,request_id)); CREATE TABLE IF NOT EXISTS todos(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), position INTEGER NOT NULL, text TEXT NOT NULL, phase TEXT NOT NULL, status TEXT NOT NULL, UNIQUE(session_id,position)); CREATE TABLE IF NOT EXISTS cache_ledger(session_id TEXT NOT NULL, model TEXT NOT NULL, warm_prefix_tokens INTEGER NOT NULL DEFAULT 0, last_hit TEXT, ttl_seconds INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(session_id,model)); CREATE TABLE IF NOT EXISTS routing_records(id TEXT PRIMARY KEY, session_id TEXT NOT NULL, turn INTEGER NOT NULL, decision_point TEXT NOT NULL, state_json TEXT NOT NULL, candidates_json TEXT NOT NULL, chosen_model TEXT NOT NULL, chosen_effort TEXT NOT NULL, was_switch INTEGER NOT NULL, cache_est_json TEXT NOT NULL, explanation TEXT NOT NULL, turn_outcome_json TEXT, job_outcome_json TEXT, session_outcome_json TEXT, created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), parent_job_id TEXT, spec TEXT NOT NULL, result_schema_json TEXT NOT NULL, budget_json TEXT NOT NULL, workspace_json TEXT NOT NULL, hints_json TEXT NOT NULL, depth INTEGER NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL, result_json TEXT, outcome_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS checkpoints(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), label TEXT NOT NULL, reason TEXT NOT NULL, session_json TEXT NOT NULL, messages_json TEXT NOT NULL, todos_json TEXT NOT NULL, created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS pending_inputs(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), question TEXT NOT NULL, choices_json TEXT NOT NULL, allow_freeform INTEGER NOT NULL, status TEXT NOT NULL, answer TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, answered_at TEXT); CREATE TABLE IF NOT EXISTS queued_messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), request_id TEXT NOT NULL, content TEXT NOT NULL, attachments_json TEXT NOT NULL DEFAULT '[]', source TEXT NOT NULL DEFAULT 'web', payload_hash TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, UNIQUE(session_id,request_id)); CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id,seq); CREATE INDEX IF NOT EXISTS idx_routing_session_turn ON routing_records(session_id,turn); CREATE INDEX IF NOT EXISTS idx_jobs_session ON jobs(session_id); CREATE INDEX IF NOT EXISTS idx_queued_messages_session ON queued_messages(session_id);`)
+	_, err := s.db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, spec TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', durable_summary TEXT NOT NULL DEFAULT '', phase TEXT NOT NULL DEFAULT 'plan', model TEXT NOT NULL DEFAULT '', turn INTEGER NOT NULL DEFAULT 0, spent_usd REAL NOT NULL DEFAULT 0, budget_usd REAL NOT NULL, status TEXT NOT NULL DEFAULT 'running', integration TEXT NOT NULL DEFAULT '', external_id TEXT NOT NULL DEFAULT '', external_incarnation TEXT NOT NULL DEFAULT '', workspace_path TEXT NOT NULL DEFAULT '', workspace_ownership TEXT NOT NULL DEFAULT 'orrery', integration_context_json TEXT NOT NULL DEFAULT '{}', request_json TEXT NOT NULL DEFAULT '{}', parent_session_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), seq INTEGER NOT NULL, turn_id TEXT NOT NULL DEFAULT '', type TEXT NOT NULL, data_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(session_id,seq)); CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), role TEXT NOT NULL, content_json TEXT NOT NULL, created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS request_receipts(session_id TEXT NOT NULL REFERENCES sessions(id), request_id TEXT NOT NULL, kind TEXT NOT NULL, turn_id TEXT NOT NULL, payload_hash TEXT NOT NULL, accepted_at TEXT NOT NULL, PRIMARY KEY(session_id,request_id)); CREATE TABLE IF NOT EXISTS todos(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), position INTEGER NOT NULL, text TEXT NOT NULL, phase TEXT NOT NULL, status TEXT NOT NULL, UNIQUE(session_id,position)); CREATE TABLE IF NOT EXISTS cache_ledger(session_id TEXT NOT NULL, model TEXT NOT NULL, warm_prefix_tokens INTEGER NOT NULL DEFAULT 0, last_hit TEXT, ttl_seconds INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(session_id,model)); CREATE TABLE IF NOT EXISTS routing_records(id TEXT PRIMARY KEY, session_id TEXT NOT NULL, turn INTEGER NOT NULL, decision_point TEXT NOT NULL, state_json TEXT NOT NULL, candidates_json TEXT NOT NULL, chosen_model TEXT NOT NULL, chosen_effort TEXT NOT NULL, was_switch INTEGER NOT NULL, cache_est_json TEXT NOT NULL, explanation TEXT NOT NULL, turn_outcome_json TEXT, job_outcome_json TEXT, session_outcome_json TEXT, created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), parent_job_id TEXT, spec TEXT NOT NULL, result_schema_json TEXT NOT NULL, budget_json TEXT NOT NULL, workspace_json TEXT NOT NULL, hints_json TEXT NOT NULL, depth INTEGER NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL, result_json TEXT, outcome_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS checkpoints(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), label TEXT NOT NULL, reason TEXT NOT NULL, session_json TEXT NOT NULL, messages_json TEXT NOT NULL, todos_json TEXT NOT NULL, created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS pending_inputs(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), question TEXT NOT NULL, choices_json TEXT NOT NULL, allow_freeform INTEGER NOT NULL, status TEXT NOT NULL, answer TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, answered_at TEXT); CREATE TABLE IF NOT EXISTS queued_messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), request_id TEXT NOT NULL, content TEXT NOT NULL, attachments_json TEXT NOT NULL DEFAULT '[]', source TEXT NOT NULL DEFAULT 'web', payload_hash TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, UNIQUE(session_id,request_id)); CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id,seq); CREATE INDEX IF NOT EXISTS idx_routing_session_turn ON routing_records(session_id,turn); CREATE INDEX IF NOT EXISTS idx_jobs_session ON jobs(session_id); CREATE INDEX IF NOT EXISTS idx_queued_messages_session ON queued_messages(session_id);`)
 	if err != nil {
 		return err
 	}
 	// Existing v0 databases are upgraded in place. SQLite has no portable
 	// ADD COLUMN IF NOT EXISTS, so inspect the schema before each addition.
 	for name, definition := range map[string]string{
+		"title":                    "TEXT NOT NULL DEFAULT ''",
 		"integration":              "TEXT NOT NULL DEFAULT ''",
 		"external_id":              "TEXT NOT NULL DEFAULT ''",
 		"external_incarnation":     "TEXT NOT NULL DEFAULT ''",
@@ -96,14 +97,14 @@ func (s *Store) ensureColumn(table, name, definition string) error {
 }
 
 type Session struct {
-	ID, Spec, DurableSummary, Phase, Model, Status string
-	Integration, ExternalID, ExternalIncarnation   string
-	WorkspacePath, WorkspaceOwnership              string
-	ParentSessionID                                string
-	IntegrationContextJSON, RequestJSON            string
-	Turn                                           int
-	SpentUSD, BudgetUSD                            float64
-	CreatedAt, UpdatedAt                           time.Time
+	ID, Spec, Title, DurableSummary, Phase, Model, Status string
+	Integration, ExternalID, ExternalIncarnation          string
+	WorkspacePath, WorkspaceOwnership                     string
+	ParentSessionID                                       string
+	IntegrationContextJSON, RequestJSON                   string
+	Turn                                                  int
+	SpentUSD, BudgetUSD                                   float64
+	CreatedAt, UpdatedAt                                  time.Time
 }
 
 func (s *Store) CreateSession(ctx context.Context, x Session) error {
@@ -123,13 +124,14 @@ func (s *Store) CreateSession(ctx context.Context, x Session) error {
 	if x.RequestJSON == "" {
 		x.RequestJSON = "{}"
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO sessions(id,spec,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.Spec, x.DurableSummary, x.Phase, x.Model, x.Turn, x.SpentUSD, x.BudgetUSD, x.Status, x.Integration, x.ExternalID, x.ExternalIncarnation, x.WorkspacePath, x.WorkspaceOwnership, x.IntegrationContextJSON, x.RequestJSON, x.ParentSessionID, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	if x.Title == "" {
+		x.Title = SessionTitle(x.Spec)
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO sessions(id,spec,title,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.Spec, x.Title, x.DurableSummary, x.Phase, x.Model, x.Turn, x.SpentUSD, x.BudgetUSD, x.Status, x.Integration, x.ExternalID, x.ExternalIncarnation, x.WorkspacePath, x.WorkspaceOwnership, x.IntegrationContextJSON, x.RequestJSON, x.ParentSessionID, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	return err
 }
 
 // CreateSessionAccepted atomically creates an integration-owned session and
-// records durable acceptance of its initial prompt. It returns the existing
-// session for the same external identity, making create safe to retry.
 func (s *Store) CreateSessionAccepted(ctx context.Context, x Session, requestID, turnID, payloadHash string) (Session, bool, error) {
 	if requestID == "" {
 		return Session{}, false, errors.New("request_id required")
@@ -171,7 +173,10 @@ func (s *Store) CreateSessionAccepted(ctx context.Context, x Session, requestID,
 		x.RequestJSON = "{}"
 	}
 	stamp := now.Format(time.RFC3339Nano)
-	_, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,spec,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.Spec, x.DurableSummary, x.Phase, x.Model, x.Turn, x.SpentUSD, x.BudgetUSD, x.Status, x.Integration, x.ExternalID, x.ExternalIncarnation, x.WorkspacePath, x.WorkspaceOwnership, x.IntegrationContextJSON, x.RequestJSON, x.ParentSessionID, stamp, stamp)
+	if x.Title == "" {
+		x.Title = SessionTitle(x.Spec)
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,spec,title,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.Spec, x.Title, x.DurableSummary, x.Phase, x.Model, x.Turn, x.SpentUSD, x.BudgetUSD, x.Status, x.Integration, x.ExternalID, x.ExternalIncarnation, x.WorkspacePath, x.WorkspaceOwnership, x.IntegrationContextJSON, x.RequestJSON, x.ParentSessionID, stamp, stamp)
 	if err != nil {
 		return Session{}, false, err
 	}
@@ -192,7 +197,7 @@ func (s *Store) CreateSessionAccepted(ctx context.Context, x Session, requestID,
 func (s *Store) Session(ctx context.Context, id string) (Session, error) {
 	var x Session
 	var ca, ua string
-	err := s.db.QueryRowContext(ctx, `SELECT id,spec,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at FROM sessions WHERE id=?`, id).Scan(&x.ID, &x.Spec, &x.DurableSummary, &x.Phase, &x.Model, &x.Turn, &x.SpentUSD, &x.BudgetUSD, &x.Status, &x.Integration, &x.ExternalID, &x.ExternalIncarnation, &x.WorkspacePath, &x.WorkspaceOwnership, &x.IntegrationContextJSON, &x.RequestJSON, &x.ParentSessionID, &ca, &ua)
+	err := s.db.QueryRowContext(ctx, `SELECT id,spec,title,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at FROM sessions WHERE id=?`, id).Scan(&x.ID, &x.Spec, &x.Title, &x.DurableSummary, &x.Phase, &x.Model, &x.Turn, &x.SpentUSD, &x.BudgetUSD, &x.Status, &x.Integration, &x.ExternalID, &x.ExternalIncarnation, &x.WorkspacePath, &x.WorkspaceOwnership, &x.IntegrationContextJSON, &x.RequestJSON, &x.ParentSessionID, &ca, &ua)
 	x.CreatedAt, _ = time.Parse(time.RFC3339Nano, ca)
 	x.UpdatedAt, _ = time.Parse(time.RFC3339Nano, ua)
 	return x, err
@@ -234,6 +239,13 @@ func (s *Store) Sessions(ctx context.Context) ([]Session, error) {
 }
 func (s *Store) UpdateSession(ctx context.Context, x Session) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET durable_summary=?,phase=?,model=?,turn=?,status=?,updated_at=? WHERE id=?`, x.DurableSummary, x.Phase, x.Model, x.Turn, x.Status, time.Now().UTC().Format(time.RFC3339Nano), x.ID)
+	return err
+}
+
+// UpdateSessionTitle updates the user-facing title for a session. It is a narrow, best-effort
+// operation used by asynchronous title generation so the whole session struct does not need to be read first.
+func (s *Store) UpdateSessionTitle(ctx context.Context, id, title string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET title=?,updated_at=? WHERE id=?`, title, time.Now().UTC().Format(time.RFC3339Nano), id)
 	return err
 }
 func (s *Store) SetSessionStatus(ctx context.Context, id, status string) error {
@@ -601,7 +613,10 @@ func (s *Store) ForkSession(ctx context.Context, sourceID, newID string) (Sessio
 	}
 	defer tx.Rollback()
 	stamp := now.Format(time.RFC3339Nano)
-	if _, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,spec,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, fork.ID, fork.Spec, fork.DurableSummary, fork.Phase, fork.Model, fork.Turn, fork.SpentUSD, fork.BudgetUSD, fork.Status, fork.Integration, fork.ExternalID, fork.ExternalIncarnation, fork.WorkspacePath, fork.WorkspaceOwnership, fork.IntegrationContextJSON, fork.RequestJSON, fork.ParentSessionID, stamp, stamp); err != nil {
+	if fork.Title == "" {
+		fork.Title = SessionTitle(fork.Spec)
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,spec,title,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, fork.ID, fork.Spec, fork.Title, fork.DurableSummary, fork.Phase, fork.Model, fork.Turn, fork.SpentUSD, fork.BudgetUSD, fork.Status, fork.Integration, fork.ExternalID, fork.ExternalIncarnation, fork.WorkspacePath, fork.WorkspaceOwnership, fork.IntegrationContextJSON, fork.RequestJSON, fork.ParentSessionID, stamp, stamp); err != nil {
 		return Session{}, err
 	}
 	for _, m := range messages {

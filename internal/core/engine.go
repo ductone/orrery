@@ -106,6 +106,7 @@ func (e *Engine) Fork(ctx context.Context, id string, emit EmitFunc) (store.Sess
 	}
 	fork, err := e.store.ForkSession(ctx, id, uuid.NewString())
 	if err == nil {
+		e.generateSessionTitle(ctx, fork.ID, fork.Spec)
 		e.emit(ctx, fork.ID, "session.forked", map[string]any{"source_session_id": id}, emit)
 	}
 	return fork, err
@@ -178,6 +179,7 @@ func (e *Engine) Start(ctx context.Context, req agentproto.TaskRequest, emit Emi
 	if err := e.store.CreateSession(ctx, store.Session{ID: id, Spec: req.Spec, Phase: "plan", BudgetUSD: req.Budget.MaxUSD, WorkspacePath: req.Workspace.Path, WorkspaceOwnership: req.Workspace.Ownership, RequestJSON: store.JSON(req)}); err != nil {
 		return "", nil, err
 	}
+	e.generateSessionTitle(ctx, id, req.Spec)
 	e.emit(withTurnID(ctx, turnID), id, "session.created", map[string]any{"workspace_ownership": req.Workspace.Ownership}, emit)
 	return id, e.startExisting(ctx, id, turnID, req, emit), nil
 }
@@ -218,6 +220,7 @@ func (e *Engine) StartIntegrated(ctx context.Context, req agentproto.TaskRequest
 		}
 		return StartInfo{SessionID: session.ID, TurnID: receipt.TurnID, Accepted: true, Duplicate: true}, nil
 	}
+	e.generateSessionTitle(ctx, session.ID, req.Spec)
 	return StartInfo{SessionID: session.ID, TurnID: turnID, Accepted: true, Result: e.startExisting(ctx, session.ID, turnID, req, emit)}, nil
 }
 
@@ -265,6 +268,7 @@ func (e *Engine) CreateIdle(ctx context.Context, workspace string, budgetUSD flo
 	if err := e.store.CreateSession(ctx, s); err != nil {
 		return store.Session{}, err
 	}
+	e.generateSessionTitle(ctx, s.ID, s.Spec)
 	e.emit(ctx, s.ID, "session.created", map[string]any{"transport_owned": true}, nil)
 	return e.store.Session(ctx, s.ID)
 }

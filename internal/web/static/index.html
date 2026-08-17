@@ -260,9 +260,9 @@
         state.sessions = Array.isArray(sessions) ? sessions : [];
         $("#connection").textContent = "connected";
         $("#sessions").innerHTML = state.sessions.map(session => {
-          const id = pick(session, "ID", "id"), spec = pick(session, "Spec", "spec") || "Untitled task";
+          const id = pick(session, "ID", "id"), title = pick(session, "Title", "title") || pick(session, "Spec", "spec") || "Untitled task";
           const status = pick(session, "Status", "status") || "unknown", phase = pick(session, "Phase", "phase") || "—";
-          return `<button class="session ${id === state.current ? "active" : ""}" data-id="${escapeHTML(id)}"><span class="session-title">${escapeHTML(spec)}</span><span class="session-meta"><span><i class="dot ${statusClass(status)}"></i>${escapeHTML(status)}</span><span>${escapeHTML(phase)}</span></span></button>`;
+          return `<button class="session ${id === state.current ? "active" : ""}" data-id="${escapeHTML(id)}"><span class="session-title">${escapeHTML(title)}</span><span class="session-meta"><span><i class="dot ${statusClass(status)}"></i>${escapeHTML(status)}</span><span>${escapeHTML(phase)}</span></span></button>`;
         }).join("");
         document.querySelectorAll(".session").forEach(button => button.addEventListener("click", () => openSession(button.dataset.id)));
       } catch (error) {
@@ -372,7 +372,7 @@
         state.status = pick(session, "Status", "status") || "";
         state.model = (pick(session, "Model", "model") || "—").split("/").pop();
         state.cost = Number(pick(session, "SpentUSD", "spent_usd") || 0);
-        $("#title").textContent = pick(session, "Spec", "spec") || shortID(id);
+        $("#title").textContent = pick(session, "Title", "title") || pick(session, "Spec", "spec") || shortID(id);
         if (state.status === "input_required") { try { const input = await request(`/api/v1/sessions/${encodeURIComponent(id)}/input`); if (input && input.ID) state.input = {id:input.ID,question:input.Question,choices:input.Choices || [],allow_freeform:input.AllowFreeform}; } catch {} }
       } catch (error) { showError(error); }
       state.stream = new EventSource(`/api/v1/sessions/${encodeURIComponent(id)}/events`);
