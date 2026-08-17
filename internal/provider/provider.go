@@ -299,8 +299,24 @@ func IsMalformedToolArguments(err error) bool {
 	var m *MalformedToolArgumentsError
 	return errors.As(err, &m)
 }
+
+// ResponseDecodeError reports a response body that could not be decoded
+// (usually a truncated or corrupted HTTP response). It is transient: the
+// provider stream hiccuped, so the request is safe to retry.
+type ResponseDecodeError struct {
+	Err error
+}
+
+func (e *ResponseDecodeError) Error() string { return "decode provider response: " + e.Err.Error() }
+func (e *ResponseDecodeError) Unwrap() error { return e.Err }
 func retryable(err error) bool {
 	if errors.Is(err, ErrCredentialsBackoff) {
+		return true
+	}
+	// A truncated/corrupted response body is transient; the same request can be
+	// retried against the same model.
+	var d *ResponseDecodeError
+	if errors.As(err, &d) {
 		return true
 	}
 	var h *HTTPError

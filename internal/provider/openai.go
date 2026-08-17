@@ -145,7 +145,7 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 		} `json:"usage"`
 	}
 	if err = json.Unmarshal(raw, &out); err != nil {
-		return Response{}, err
+		return Response{}, &ResponseDecodeError{Err: err}
 	}
 	if len(out.Choices) == 0 {
 		return Response{}, fmt.Errorf("provider returned no choices")

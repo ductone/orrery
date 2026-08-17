@@ -113,7 +113,7 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 		} `json:"usage"`
 	}
 	if err = json.Unmarshal(raw, &out); err != nil {
-		return Response{}, err
+		return Response{}, &ResponseDecodeError{Err: err}
 	}
 	msg := Message{Role: "assistant"}
 	for _, item := range out.Output {

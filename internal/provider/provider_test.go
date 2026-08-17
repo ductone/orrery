@@ -294,3 +294,13 @@ func TestCredentialPoolAvailabilityHonorsCooldown(t *testing.T) {
 		t.Fatal("provider should be unavailable while all credentials cool down")
 	}
 }
+
+func TestResponseDecodeErrorIsRetryable(t *testing.T) {
+	err := &ResponseDecodeError{Err: errors.New("unexpected end of JSON input")}
+	if !IsRetryable(err) {
+		t.Fatal("truncated response body should be retryable")
+	}
+	if IsMalformedToolArguments(err) {
+		t.Fatal("decode error is not a malformed-tool-arguments error")
+	}
+}
