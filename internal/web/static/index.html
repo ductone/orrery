@@ -157,17 +157,34 @@
     body.embed { grid-template-columns: 1fr; }
     body.embed .sidebar { display: none; }
     body.readonly .composer-wrap, body.readonly .cancel { display: none; }
+    .menu-toggle {
+      display: none; width: 36px; height: 36px; border: 1px solid var(--circuit);
+      border-radius: 8px; background: rgba(22,24,28,.75); color: var(--signal);
+      place-items: center; font-size: 18px; line-height: 1; flex-shrink: 0;
+    }
+    .menu-toggle:hover { color: var(--bright); border-color: rgba(155,128,248,.45); }
     @media (max-width: 1120px) {
       .topbar { padding: 0 15px; gap: 10px; }
       .actions { display: none; }
     }
     @media (max-width: 760px) {
       body { grid-template-columns: 1fr; }
-      .sidebar { display: none; }
       main { grid-column: 1; }
       .metrics .metric:not(.cost) { display: none; }
       #events { padding: 20px 14px; }
       .composer-wrap { padding: 10px 12px 14px; }
+      .menu-toggle { display: grid; }
+      .sidebar {
+        position: fixed; top: 0; left: 0; bottom: 0; width: 292px; max-width: 82vw;
+        z-index: 50; transform: translateX(-105%); transition: transform .22s ease;
+        display: grid; box-shadow: var(--shadow);
+      }
+      body.sessions-open .sidebar { transform: translateX(0); }
+      .sidebar-backdrop {
+        position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.55);
+        opacity: 0; pointer-events: none; transition: opacity .2s;
+      }
+      body.sessions-open .sidebar-backdrop { opacity: 1; pointer-events: auto; }
     }
     @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; } }
   </style>
@@ -179,9 +196,14 @@
     <nav id="sessions" aria-label="Sessions"></nav>
     <footer class="sidebar-foot"><span id="managed">local</span><span id="connection">offline</span></footer>
   </aside>
+  <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
   <main>
     <header class="topbar">
-      <div class="task-heading"><span id="title">New task</span><span class="pill" id="phase">idle</span></div>
+      <button class="menu-toggle" id="menu-toggle" aria-label="Open sessions" aria-expanded="false">☰</button>
+      <div class="task-heading">
+        <span id="title">New task</span>
+        <span class="pill" id="phase">idle</span>
+      </div>
       <div class="metrics">
         <span class="metric"><span>model</span><strong id="model">—</strong></span>
         <span class="metric cost"><span>cost</span><strong id="meter">$0.0000</strong></span>
@@ -384,7 +406,7 @@
       state.stream.onopen = () => { $("#connection").textContent = "live"; };
       state.stream.onerror = () => { $("#connection").textContent = "reconnecting"; };
       ["routing.decision","routing.fallback","assistant.message","tool.started","tool.finished","todo.changed","job.started","job.terminal","usage.reported","artifact.created","link.created","session.terminal","context.compacted","context.compaction_failed","input.required","input.answered","session.restored","progress.intervention","completion.rejected","provider.error"].forEach(type => state.stream.addEventListener(type, renderEvent));
-      syncHeader(); loadSessions();
+      syncHeader(); loadSessions(); closeDrawer();
     }
 
     function resetComposer() {
@@ -394,7 +416,7 @@
         history.pushState(null, "", url);
       }
       state.stream?.close(); state.current = null; state.cost = 0; state.model = "—"; state.phase = "idle"; state.status = ""; state.pending = false; state.input = null;
-      $("#title").textContent = "New task"; $("#prompt").value = ""; autoSize(); emptyState(); syncHeader(); loadSessions(); $("#prompt").focus();
+      $("#title").textContent = "New task"; $("#prompt").value = ""; autoSize(); emptyState(); syncHeader(); loadSessions(); $("#prompt").focus(); closeDrawer();
     }
 
     async function send(event) {
@@ -429,6 +451,12 @@
       if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); send(); }
     });
     $("#new-session").addEventListener("click", resetComposer);
+    const menuToggle = $("#menu-toggle"), backdrop = $("#sidebar-backdrop");
+    function openDrawer() { document.body.classList.add("sessions-open"); menuToggle?.setAttribute("aria-expanded","true"); }
+    function closeDrawer() { document.body.classList.remove("sessions-open"); menuToggle?.setAttribute("aria-expanded","false"); }
+    menuToggle?.addEventListener("click", () => { document.body.classList.contains("sessions-open") ? closeDrawer() : openDrawer(); });
+    backdrop?.addEventListener("click", closeDrawer);
+    document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
     $("#cancel").addEventListener("click", async () => {
       if (!state.current) return;
       try { await request(`/api/v1/sessions/${encodeURIComponent(state.current)}/cancel`, { method: "POST" }); } catch (error) { showError(error); }
