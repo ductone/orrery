@@ -91,7 +91,7 @@ func (p *progressTracker) observe(call provider.ToolCall, value any, callErr err
 			p.reviewed = false
 		case "exec":
 			cmd := strings.ToLower(stringArg(call.Arguments, "command"))
-			if containsAny(cmd, " test", "test ", "lint", "typecheck", "build", "check", "vet") {
+			if isVerificationCommand(cmd) {
 				p.turnProgress = true
 				p.turnVerified = true
 				p.verified = true
@@ -99,6 +99,22 @@ func (p *progressTracker) observe(call provider.ToolCall, value any, callErr err
 		}
 	}
 	return value
+}
+
+func isVerificationCommand(command string) bool {
+	command = strings.TrimSpace(strings.ToLower(command))
+	if command == "" || strings.Contains(command, "git diff --check") && !containsAny(command, "go test", "go vet", "go build", "cargo ", "pytest", "bazel ", "make ", "npm ", "pnpm ", "yarn ") {
+		return false
+	}
+	return containsAny(command,
+		"go test", "go vet", "go build",
+		"cargo test", "cargo check", "cargo clippy", "cargo build",
+		"pytest", "bazel test", "bazel build",
+		"make test", "make build", "make lint", "make typecheck", "make check",
+		"npm test", "npm run test", "npm run build", "npm run lint", "npm run typecheck",
+		"pnpm test", "pnpm build", "pnpm lint", "pnpm typecheck",
+		"yarn test", "yarn build", "yarn lint", "yarn typecheck",
+	)
 }
 
 func (p *progressTracker) endTurn() {

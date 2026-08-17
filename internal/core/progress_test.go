@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -35,6 +36,26 @@ func TestProgressRecognizesEditsAndVerification(t *testing.T) {
 	p.endTurn()
 	if !p.edited || !p.verified || p.noProgressTurns != 0 {
 		t.Fatalf("tracker=%+v", p)
+	}
+}
+
+func TestDiffWhitespaceCheckDoesNotClaimWorkspaceVerification(t *testing.T) {
+	p := newProgressTracker()
+	p.beginTurn("review")
+	p.observe(provider.ToolCall{Name: "exec", Arguments: map[string]any{"command": "git diff --check"}}, map[string]any{"ok": true}, nil)
+	p.endTurn()
+	if p.verified || p.turnVerified {
+		t.Fatalf("diff whitespace check marked workspace verified: %+v", p)
+	}
+}
+
+func TestFailedVerificationDoesNotClaimSuccess(t *testing.T) {
+	p := newProgressTracker()
+	p.beginTurn("review")
+	p.observe(provider.ToolCall{Name: "exec", Arguments: map[string]any{"command": "go test ./..."}}, nil, errors.New("exit status 1"))
+	p.endTurn()
+	if p.verified || p.turnVerified {
+		t.Fatalf("failed test marked workspace verified: %+v", p)
 	}
 }
 

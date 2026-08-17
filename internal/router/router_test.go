@@ -80,6 +80,28 @@ func TestFrontierFloor(t *testing.T) {
 	}
 }
 
+func TestPinnedDefaultBypassesFrontierFloor(t *testing.T) {
+	p := NewV1(config.RouterConfig{
+		LambdaCost:          .35,
+		DefaultModel:        "openai/gpt-5.6-luna",
+		DisableSwitch:       true,
+		FrontierFloorPhases: []string{"plan"},
+	}, &ledger{})
+	d, _, err := p.Decide(context.Background(), RoutingState{
+		SessionID:       "s",
+		Point:           TurnStart,
+		Phase:           Plan,
+		InputTokens:     1000,
+		AvailableModels: []string{"openai/gpt-5.6-sol", "openai/gpt-5.6-luna"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Model.ID != "openai/gpt-5.6-luna" {
+		t.Fatalf("pinned default chose %s", d.Model.ID)
+	}
+}
+
 func TestDefaultModelBreaksInitialScoreTie(t *testing.T) {
 	l := &ledger{}
 	p := NewV1(config.RouterConfig{LambdaCost: .35, DefaultModel: "xai/grok-4.6"}, l)

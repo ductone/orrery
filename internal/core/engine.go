@@ -729,7 +729,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			if err != nil {
 				return provider.Request{}, err
 			}
-			system := systemPrompt(d, req.Depth)
+			system := systemPrompt(d, req.Depth, req.Workspace.Path)
 			if len(runtimeCfg.Instructions) > 0 {
 				system += "\n\nDEPLOYMENT INSTRUCTIONS\n" + strings.Join(runtimeCfg.Instructions, "\n")
 			}
