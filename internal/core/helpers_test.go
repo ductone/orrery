@@ -41,7 +41,37 @@ func TestResultSchemaValidation(t *testing.T) {
 		t.Fatal("wrong type accepted")
 	}
 	if err := validateSchema(s, map[string]any{"ok": true, "extra": 1}); err == nil {
-		t.Fatal("extra accepted")
+	}
+}
+
+func TestSanitizeProviderMessages(t *testing.T) {
+	valid := []provider.Message{
+		{Role: "user", Content: "run it"},
+		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "call-1", Name: "read"}}},
+		{Role: "tool", ToolCallID: "call-1", Content: "ok"},
+	}
+	sanitized := sanitizeProviderMessages(valid)
+	if len(sanitized) != len(valid) {
+		t.Fatalf("well-formed history changed: got %d messages, want %d", len(sanitized), len(valid))
+	}
+	if len(sanitized[1].ToolCalls) != 1 || sanitized[2].ToolCallID != "call-1" {
+		t.Fatalf("well-formed tool exchange changed: %+v", sanitized)
+	}
+
+	withOrphan := append(append([]provider.Message{}, valid...), provider.Message{Role: "tool", ToolCallID: "orphan", Content: "bad"})
+	sanitized = sanitizeProviderMessages(withOrphan)
+	if len(sanitized) != len(valid) {
+		t.Fatalf("orphan was not removed: %+v", sanitized)
+	}
+	for _, message := range sanitized {
+		if message.ToolCallID == "orphan" {
+			t.Fatalf("orphan remained in history: %+v", sanitized)
+		}
+	}
+
+	dangling := sanitizeProviderMessages([]provider.Message{{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "unfinished", Name: "read"}}}})
+	if len(dangling) != 1 || len(dangling[0].ToolCalls) != 0 {
+		t.Fatalf("dangling tool call was not removed: %+v", dangling)
 	}
 }
 func TestPlanSnapshotReplaced(t *testing.T) {

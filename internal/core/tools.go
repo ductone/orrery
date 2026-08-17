@@ -270,7 +270,7 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 	e.emit(ctx, sid, "job.started", map[string]any{"id": id, "parent_session_id": sid, "parent_job_id": parent, "spec": spec, "model": jobDecision.Model.ID, "workspace_mode": workspaceMode, "explanation": jobWhy}, emit)
 	runJob := func(runCtx context.Context) agentproto.TaskResult {
 		childSID := uuid.NewString()
-		if err := e.store.CreateSession(runCtx, store.Session{ID: childSID, Spec: spec, Phase: string(phase), Model: jobDecision.Model.ID, BudgetUSD: child.Budget.MaxUSD, WorkspacePath: child.Workspace.Path, WorkspaceOwnership: child.Workspace.Ownership, RequestJSON: store.JSON(child)}); err != nil {
+		if err := e.store.CreateSession(runCtx, store.Session{ID: childSID, Spec: spec, Phase: string(phase), Model: jobDecision.Model.ID, BudgetUSD: child.Budget.MaxUSD, WorkspacePath: child.Workspace.Path, WorkspaceOwnership: child.Workspace.Ownership, ParentSessionID: sid, RequestJSON: store.JSON(child)}); err != nil {
 			return agentproto.TaskResult{Status: agentproto.Fail, Error: "create worker session: " + err.Error()}
 		}
 		jobCtx, cancel := context.WithTimeout(runCtx, child.Budget.MaxWallClock)

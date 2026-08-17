@@ -28,6 +28,34 @@ func TestLoadStrictAndSecrets(t *testing.T) {
 	}
 }
 
+func TestSessionTokenLimitOptional(t *testing.T) {
+	// Unset/zero falls back to the default.
+	if got := (BudgetConfig{}).SessionTokenLimit(); got != defaultSessionTokens {
+		t.Fatalf("default = %d, want %d", got, defaultSessionTokens)
+	}
+	if got := (BudgetConfig{SessionTokens: 250000}).SessionTokenLimit(); got != 250000 {
+		t.Fatalf("explicit = %d, want 250000", got)
+	}
+
+	dir := t.TempDir()
+	p := filepath.Join(dir, "c.yaml")
+	// session_tokens is optional and accepted when present.
+	if err := os.WriteFile(p, []byte("budget: {session_usd: 1, job_default_fraction: 0.2, session_tokens: 250000}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(p)
+	if err != nil || c.Budget.SessionTokens != 250000 {
+		t.Fatalf("load=%+v err=%v", c.Budget, err)
+	}
+	// A negative value is rejected.
+	if err := os.WriteFile(p, []byte("budget: {session_usd: 1, job_default_fraction: 0.2, session_tokens: -5}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = Load(p); err == nil {
+		t.Fatal("negative session_tokens accepted")
+	}
+}
+
 func TestLoadWithEnvOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "orrery.yaml")

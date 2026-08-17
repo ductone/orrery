@@ -103,3 +103,46 @@ func TestImplementRoutesEfficientAtDefaultWeight(t *testing.T) {
 		t.Fatalf("implement chose %s", d.Model.ID)
 	}
 }
+
+// A stall driven by repeated reads/searches should prefer a disciplined
+// efficient model over a much pricier frontier one.
+func TestReadStallPrefersEfficientEscalation(t *testing.T) {
+	l := &ledger{}
+	p := NewV1(config.RouterConfig{LambdaCost: 1.6}, l)
+	stall := StallSignals{RepeatedReads: 3, NoProgressTurns: 5, PhaseTurns: 6}
+	d, _, err := p.Decide(context.Background(), RoutingState{SessionID: "s", Point: Escalation, Phase: Explore, InputTokens: 40000, EstimatedOutput: 4000, Stall: stall, AvailableModels: []string{"openai/gpt-5.6-sol", "openai/gpt-5.6-terra"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Model.ID != "openai/gpt-5.6-terra" {
+		t.Fatalf("read-stall escalation chose %s, want efficient terra", d.Model.ID)
+	}
+}
+
+// Hard failures (failed commands / tests) still escalate to frontier.
+func TestHardStallPrefersFrontierEscalation(t *testing.T) {
+	l := &ledger{}
+	p := NewV1(config.RouterConfig{LambdaCost: 1.6}, l)
+	stall := StallSignals{FailedCommands: 3, TestFailStreak: 2}
+	d, _, err := p.Decide(context.Background(), RoutingState{SessionID: "s", Point: Escalation, Phase: Diagnose, InputTokens: 40000, EstimatedOutput: 4000, Stall: stall, AvailableModels: []string{"openai/gpt-5.6-sol", "openai/gpt-5.6-terra"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Model.Tier != model.Frontier {
+		t.Fatalf("hard-stall escalation chose %s, want frontier", d.Model.ID)
+	}
+}
+
+// With a cold prefix (post-compaction) there is no warm cache to preserve, so
+// stickiness must not keep an expensive incumbent ahead of a cheaper fit.
+func TestColdPrefixDropsStickiness(t *testing.T) {
+	l := &ledger{} // empty cache ledger => all cold
+	p := NewV1(config.RouterConfig{LambdaCost: 1.6}, l)
+	d, _, err := p.Decide(context.Background(), RoutingState{SessionID: "s", Point: TurnStart, Phase: Implement, CurrentModel: "openai/gpt-5.6-sol", InputTokens: 60000, EstimatedOutput: 4000, ToolContinuation: true, AvailableModels: []string{"openai/gpt-5.6-sol", "openai/gpt-5.6-terra"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Model.ID != "openai/gpt-5.6-terra" {
+		t.Fatalf("cold prefix kept incumbent %s, want cheaper terra", d.Model.ID)
+	}
+}

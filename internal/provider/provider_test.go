@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/ductone/orrey/internal/config"
 	"github.com/ductone/orrey/internal/model"
 	"github.com/ductone/orrey/internal/router"
 	"net/http"
@@ -41,6 +42,36 @@ func TestOpenAICompatAssembly(t *testing.T) {
 	}
 	if resp.Usage.CacheReadTokens != 40 || resp.Usage.CacheWriteTokens != 20 {
 		t.Fatalf("usage %+v", resp.Usage)
+	}
+}
+
+func TestFireworksRegistryUsesGatewayModelID(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("path %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer implicit" {
+			t.Errorf("auth %q", r.Header.Get("Authorization"))
+		}
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = w.Write([]byte(`{"model":"accounts/fireworks/models/qwen3p7-plus","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{}}`))
+	}))
+	defer srv.Close()
+
+	spec, ok := model.Get("fireworks/accounts/fireworks/models/qwen3p7-plus")
+	if !ok {
+		t.Fatal("Fireworks model missing from catalog")
+	}
+	r := New(config.Config{Providers: map[string]config.ProviderConfig{"fireworks": {APIKey: "implicit", BaseURL: srv.URL}}})
+	resp, err := r.CompleteOne(context.Background(), router.Decision{Model: spec, Effort: model.EffortHigh}, func(model.ModelSpec, router.Decision) (Request, error) {
+		return Request{MaxOutput: 16, Messages: []Message{{Role: "user", Content: "go"}}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["model"] != "accounts/fireworks/models/qwen3p7-plus" || resp.Message.Content != "ok" {
+		t.Fatalf("body=%+v response=%+v", got, resp)
 	}
 }
 
@@ -185,6 +216,22 @@ func TestOpenAIResponsesToolCall(t *testing.T) {
 	}
 	if len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].ID != "call_1" || resp.Usage.InputTokens != 10 {
 		t.Fatalf("response %+v", resp)
+	}
+}
+
+func TestOpenAIResponsesMalformedToolArguments(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"model":"gpt-5.6-sol","status":"completed","output":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{\"command\":\""}],"usage":{"input_tokens":10,"output_tokens":5}}`))
+	}))
+	defer srv.Close()
+	m, _ := model.Get("openai/gpt-5.6-sol")
+	c := newOpenAI(srv.URL, []string{"key"}, true)
+	_, err := c.Complete(context.Background(), m, Request{MaxOutput: 10, Messages: []Message{{Role: "user", Content: "go"}}})
+	if !IsMalformedToolArguments(err) {
+		t.Fatalf("err=%v, want malformed tool arguments", err)
+	}
+	if IsRetryable(err) {
+		t.Fatalf("malformed tool arguments should not be rerouted as retryable: %v", err)
 	}
 }
 

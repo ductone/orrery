@@ -297,14 +297,10 @@ func (s *Server) messageV1(w http.ResponseWriter, r *http.Request) {
 	}
 	info, err := s.engine.ContinueIntegratedWithAttachments(context.Background(), r.PathValue("id"), in.Content, in.RequestID, "squire", attachmentRefs(in.Attachments), nil)
 	if err != nil {
-		status := http.StatusBadRequest
-		if strings.Contains(err.Error(), "active turn") {
-			status = http.StatusConflict
-		}
-		writeStatus(w, status, nil, err)
+		writeStatus(w, http.StatusBadRequest, nil, err)
 		return
 	}
-	writeStatus(w, http.StatusAccepted, map[string]any{"id": info.SessionID, "turn_id": info.TurnID, "accepted": info.Accepted, "duplicate": info.Duplicate}, nil)
+	writeStatus(w, http.StatusAccepted, map[string]any{"id": info.SessionID, "turn_id": info.TurnID, "accepted": info.Accepted, "duplicate": info.Duplicate, "queued": info.Queued}, nil)
 }
 func (s *Server) resumeV1(w http.ResponseWriter, r *http.Request) { s.messageV1(w, r) }
 func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {

@@ -28,6 +28,7 @@
     html, body { height: 100%; }
     body {
       margin: 0;
+      width: 100%;
       overflow: hidden;
       color: var(--bright);
       background:
@@ -77,46 +78,47 @@
     .dot.pass { background: var(--electric-dark); }
     .dot.fail, .dot.cancelled, .dot.budget_exhausted { background: var(--danger); }
     .sidebar-foot { border-top: 1px solid var(--circuit); padding: 13px 18px; color: var(--signal); font-size: 11px; display: flex; justify-content: space-between; }
-    main { min-width: 0; display: grid; grid-template-rows: 68px minmax(0, 1fr) auto; }
+    main { grid-column: 2; grid-row: 1; min-width: 0; width: 100%; height: 100vh; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; }
     .topbar {
       border-bottom: 1px solid var(--circuit); padding: 0 24px; display: flex; align-items: center; justify-content: space-between; gap: 20px;
-      background: rgba(10, 10, 10, .35); backdrop-filter: blur(18px);
+      min-width: 0; background: rgba(10, 10, 10, .35); backdrop-filter: blur(18px);
     }
     .task-heading { min-width: 0; display: flex; align-items: center; gap: 12px; }
     #title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; font-weight: 650; }
     .pill { border: 1px solid var(--circuit); border-radius: 999px; padding: 4px 8px; color: var(--signal); font: 10px ui-monospace, monospace; text-transform: uppercase; letter-spacing: .06em; }
-    .metrics { display: flex; align-items: center; gap: 18px; color: var(--signal); font: 11px ui-monospace, monospace; white-space: nowrap; }
+    .metrics { min-width: 0; display: flex; align-items: center; gap: 18px; color: var(--signal); font: 11px ui-monospace, monospace; white-space: nowrap; }
     .metric strong { display: block; color: var(--bright); font-size: 12px; font-weight: 600; margin-top: 2px; }
     .metric.cost strong { color: var(--electric); }
     .cancel { border: 1px solid rgba(255, 122, 133, .35); background: transparent; color: var(--danger); padding: 7px 10px; border-radius: 8px; }
     .actions { display: flex; gap: 6px; }
     .action { border: 1px solid var(--circuit); background: rgba(22,24,28,.75); color: var(--signal); padding: 7px 9px; border-radius: 8px; }
     .action:hover { color: var(--bright); border-color: rgba(155,128,248,.45); }
-    #events { overflow: auto; padding: 30px max(24px, calc((100% - 920px) / 2)); scroll-behavior: smooth; }
+    #events { flex: 1 1 0; min-width: 0; width: 100%; overflow: auto; padding: 30px 24px; scroll-behavior: smooth; }
+    #events > * { max-width: 920px; margin-left: auto; margin-right: auto; }
     .empty { min-height: 100%; display: grid; place-items: center; text-align: center; color: var(--signal); }
     .empty-inner { max-width: 460px; }
     .empty .mark { width: 54px; height: 54px; margin: 0 auto 20px; }
     .empty h1 { margin: 0 0 10px; color: var(--bright); font-size: 24px; letter-spacing: -.03em; }
     .empty p { margin: 0; line-height: 1.6; }
-    .event { margin: 0 0 14px; animation: rise .2s ease-out; }
+    .event { min-width: 0; margin: 0 0 14px; animation: rise .2s ease-out; }
     @keyframes rise { from { opacity: 0; transform: translateY(4px); } }
     .event-label { color: var(--signal); font: 10px ui-monospace, monospace; text-transform: uppercase; letter-spacing: .08em; margin: 0 0 6px 3px; }
-    .bubble, .card { border: 1px solid var(--circuit); border-radius: 12px; background: var(--panel); box-shadow: 0 5px 24px rgba(0, 0, 0, .12); }
+    .bubble, .card { min-width: 0; border: 1px solid var(--circuit); border-radius: 12px; background: var(--panel); box-shadow: 0 5px 24px rgba(0, 0, 0, .12); }
     .bubble { padding: 15px 17px; line-height: 1.58; white-space: pre-wrap; overflow-wrap: anywhere; }
     .assistant .bubble { border-left: 2px solid var(--electric-dark); }
     .user .bubble { border-left: 2px solid var(--conductor-light); }
     .card { overflow: hidden; }
-    .card-head { min-height: 42px; padding: 10px 13px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    .card-title { display: flex; align-items: center; gap: 9px; font-size: 12px; font-weight: 650; }
-    .icon { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; color: var(--electric); background: rgba(0, 255, 204, .08); font: 11px ui-monospace, monospace; }
-    .card-meta { color: var(--signal); font: 10px ui-monospace, monospace; }
+    .card-head { min-width: 0; min-height: 42px; padding: 10px 13px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .card-title { min-width: 0; display: flex; align-items: center; gap: 9px; overflow-wrap: anywhere; font-size: 12px; font-weight: 650; }
+    .icon { width: 22px; min-width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; color: var(--electric); background: rgba(0, 255, 204, .08); font: 11px ui-monospace, monospace; }
+    .card-meta { min-width: 0; overflow-wrap: anywhere; color: var(--signal); font: 10px ui-monospace, monospace; }
     details > summary { list-style: none; cursor: pointer; }
     details > summary::-webkit-details-marker { display: none; }
     .detail-body { border-top: 1px solid var(--circuit); padding: 12px 14px; color: #c8ccd1; background: rgba(10, 10, 10, .32); white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.55 ui-monospace, monospace; max-height: 360px; overflow: auto; }
     .routing-card { border-color: rgba(155, 128, 248, .27); }
     .routing-card .icon { color: var(--conductor-light); background: rgba(91, 57, 245, .14); }
     .todo-list { display: grid; gap: 8px; padding: 13px 14px; border-top: 1px solid var(--circuit); }
-    .todo-row { display: grid; grid-template-columns: 16px 74px 1fr; gap: 9px; align-items: baseline; font-size: 12px; }
+    .todo-row { min-width: 0; display: grid; grid-template-columns: 16px 74px minmax(0, 1fr); gap: 9px; align-items: baseline; overflow-wrap: anywhere; font-size: 12px; }
     .todo-check { color: var(--signal); font-family: ui-monospace, monospace; }
     .todo-row.completed { color: var(--signal); }
     .todo-row.completed .todo-check { color: var(--electric-dark); }
@@ -125,10 +127,10 @@
     .terminal { border-color: rgba(0, 255, 204, .32); }
     .terminal.fail { border-color: rgba(255, 122, 133, .4); }
     code { background: rgba(42, 46, 53, .7); border-radius: 4px; padding: 1px 4px; font: .91em ui-monospace, monospace; color: var(--electric-light); }
-    pre { margin: 10px 0 0; padding: 12px; overflow: auto; border-radius: 8px; background: var(--void); border: 1px solid var(--circuit); }
+    pre { min-width: 0; max-width: 100%; margin: 10px 0 0; padding: 12px; overflow: auto; border-radius: 8px; background: var(--void); border: 1px solid var(--circuit); }
     pre code { padding: 0; background: none; color: #d6d9dd; }
-    .composer-wrap { padding: 14px max(20px, calc((100% - 920px) / 2)) 20px; background: linear-gradient(transparent, rgba(10, 10, 10, .92) 24%); }
-    .composer { border: 1px solid var(--circuit); background: rgba(22, 24, 28, .96); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; transition: border-color .15s, box-shadow .15s; }
+    .composer-wrap { flex: 0 0 auto; min-width: 0; width: 100%; padding: 14px 20px 20px; background: linear-gradient(transparent, rgba(10, 10, 10, .92) 24%); }
+    .composer { max-width: 920px; margin: 0 auto; border: 1px solid var(--circuit); background: rgba(22, 24, 28, .96); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; transition: border-color .15s, box-shadow .15s; }
     .composer:focus-within { border-color: rgba(0, 255, 204, .46); box-shadow: 0 0 0 3px rgba(0, 255, 204, .06), var(--shadow); }
     textarea { display: block; width: 100%; min-height: 76px; max-height: 240px; resize: none; border: 0; outline: 0; background: transparent; color: var(--bright); padding: 15px 16px 8px; line-height: 1.5; }
     textarea::placeholder { color: #6f757d; }
@@ -136,6 +138,10 @@
     .send { min-width: 88px; border: 0; border-radius: 8px; padding: 9px 13px; color: var(--void); background: var(--electric); font-weight: 750; }
     .error-banner { margin-bottom: 10px; padding: 10px 12px; border: 1px solid rgba(255, 122, 133, .4); border-radius: 9px; color: var(--danger); background: rgba(255, 122, 133, .08); font-size: 12px; }
     .input-card { border-color: rgba(246,216,107,.4); }
+    .working-banner { display: flex; align-items: center; gap: 10px; padding: 10px 20px; border-top: 1px solid rgba(0, 255, 204, .15); color: var(--electric); background: rgba(0, 255, 204, .06); font-size: 12px; font-weight: 650; }
+    .working-banner[hidden] { display: none; }
+    .working-spinner { width: 12px; height: 12px; border: 2px solid rgba(0, 255, 204, .25); border-top-color: var(--electric); border-radius: 50%; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
     .choices { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 13px 13px; }
     .choice { border: 1px solid rgba(246,216,107,.35); background: rgba(246,216,107,.08); color: var(--warning); border-radius: 8px; padding: 8px 11px; }
     dialog { width: min(620px, calc(100vw - 28px)); border: 1px solid var(--circuit); border-radius: 14px; color: var(--bright); background: var(--terminal); box-shadow: var(--shadow); }
@@ -147,11 +153,15 @@
     body.embed { grid-template-columns: 1fr; }
     body.embed .sidebar { display: none; }
     body.readonly .composer-wrap, body.readonly .cancel { display: none; }
+    @media (max-width: 1120px) {
+      .topbar { padding: 0 15px; gap: 10px; }
+      .actions { display: none; }
+    }
     @media (max-width: 760px) {
       body { grid-template-columns: 1fr; }
       .sidebar { display: none; }
+      main { grid-column: 1; }
       .metrics .metric:not(.cost) { display: none; }
-      .topbar { padding: 0 15px; }
       #events { padding: 20px 14px; }
       .composer-wrap { padding: 10px 12px 14px; }
     }
@@ -176,6 +186,10 @@
       </div>
     </header>
     <section id="events" aria-live="polite"></section>
+    <div id="working" class="working-banner" hidden>
+      <span class="working-spinner" aria-hidden="true"></span>
+      <span>Agent is working…</span>
+    </div>
     <div class="composer-wrap">
       <div id="error"></div>
       <form class="composer" id="composer">
@@ -233,6 +247,7 @@
       $("#actions").hidden = !state.current;
       document.querySelectorAll("#actions button").forEach(button => button.disabled = state.status === "running");
       $("#prompt").placeholder = state.input ? state.input.question : "Ask Orrery to build, investigate, or review…";
+      $("#working").hidden = state.status !== "running" && !state.pending;
     }
 
     function emptyState() {
@@ -344,6 +359,11 @@
     }
 
     async function openSession(id) {
+      const url = new URL(location.href);
+      if (url.searchParams.get("session") !== id) {
+        url.searchParams.set("session", id);
+        history.pushState(null, "", url);
+      }
       state.current = id; state.cost = 0; state.model = "—"; state.pending = false; state.input = null;
       state.stream?.close(); $("#events").innerHTML = ""; showError();
       try {
@@ -363,6 +383,11 @@
     }
 
     function resetComposer() {
+      const url = new URL(location.href);
+      if (url.searchParams.has("session")) {
+        url.searchParams.delete("session");
+        history.pushState(null, "", url);
+      }
       state.stream?.close(); state.current = null; state.cost = 0; state.model = "—"; state.phase = "idle"; state.status = ""; state.pending = false; state.input = null;
       $("#title").textContent = "New task"; $("#prompt").value = ""; autoSize(); emptyState(); syncHeader(); loadSessions(); $("#prompt").focus();
     }
@@ -408,6 +433,12 @@
     $("#fork").addEventListener("click",async()=>{const fork=await sessionAction("fork");if(fork?.id)await openSession(fork.id)});
     async function showHistory(){if(!state.current)return;const checkpoints=await request(`/api/v1/sessions/${encodeURIComponent(state.current)}/checkpoints`);$("#checkpoint-list").innerHTML=(checkpoints||[]).map(cp=>`<div class="checkpoint"><div><strong>${escapeHTML(cp.Label)}</strong><div class="card-meta">${escapeHTML(cp.Reason)} · ${escapeHTML(new Date(cp.CreatedAt).toLocaleString())}</div></div><button class="action" data-restore="${escapeHTML(cp.ID)}">Restore</button></div>`).join("")||`<div class="empty-inner">No checkpoints yet.</div>`;$("#checkpoint-list").querySelectorAll("[data-restore]").forEach(button=>button.addEventListener("click",async()=>{await sessionAction("restore",{checkpoint_id:button.dataset.restore});$("#history-dialog").close();await openSession(state.current)}));$("#history-dialog").showModal()}
     $("#history").addEventListener("click",showHistory);$("#close-history").addEventListener("click",()=>$("#history-dialog").close());
+
+    window.addEventListener("popstate", () => {
+      const session = new URLSearchParams(location.search).get("session");
+      if (session) openSession(session);
+      else resetComposer();
+    });
 
     emptyState(); syncHeader(); loadSessions().then(() => {
       const direct = params.get("session");

@@ -38,18 +38,7 @@ func Open(path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) DB() *sql.DB  { return s.db }
 func (s *Store) migrate() error {
-	_, err := s.db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
-CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, spec TEXT NOT NULL, durable_summary TEXT NOT NULL DEFAULT '', phase TEXT NOT NULL DEFAULT 'plan', model TEXT NOT NULL DEFAULT '', turn INTEGER NOT NULL DEFAULT 0, spent_usd REAL NOT NULL DEFAULT 0, budget_usd REAL NOT NULL, status TEXT NOT NULL DEFAULT 'running', integration TEXT NOT NULL DEFAULT '', external_id TEXT NOT NULL DEFAULT '', external_incarnation TEXT NOT NULL DEFAULT '', workspace_path TEXT NOT NULL DEFAULT '', workspace_ownership TEXT NOT NULL DEFAULT 'orrery', integration_context_json TEXT NOT NULL DEFAULT '{}', request_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), seq INTEGER NOT NULL, turn_id TEXT NOT NULL DEFAULT '', type TEXT NOT NULL, data_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(session_id,seq));
-CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), role TEXT NOT NULL, content_json TEXT NOT NULL, created_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS request_receipts(session_id TEXT NOT NULL REFERENCES sessions(id), request_id TEXT NOT NULL, kind TEXT NOT NULL, turn_id TEXT NOT NULL, payload_hash TEXT NOT NULL, accepted_at TEXT NOT NULL, PRIMARY KEY(session_id,request_id));
-CREATE TABLE IF NOT EXISTS todos(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), position INTEGER NOT NULL, text TEXT NOT NULL, phase TEXT NOT NULL, status TEXT NOT NULL, UNIQUE(session_id,position));
-CREATE TABLE IF NOT EXISTS cache_ledger(session_id TEXT NOT NULL, model TEXT NOT NULL, warm_prefix_tokens INTEGER NOT NULL DEFAULT 0, last_hit TEXT, ttl_seconds INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(session_id,model));
-CREATE TABLE IF NOT EXISTS routing_records(id TEXT PRIMARY KEY, session_id TEXT NOT NULL, turn INTEGER NOT NULL, decision_point TEXT NOT NULL, state_json TEXT NOT NULL, candidates_json TEXT NOT NULL, chosen_model TEXT NOT NULL, chosen_effort TEXT NOT NULL, was_switch INTEGER NOT NULL, cache_est_json TEXT NOT NULL, explanation TEXT NOT NULL, turn_outcome_json TEXT, job_outcome_json TEXT, session_outcome_json TEXT, created_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), parent_job_id TEXT, spec TEXT NOT NULL, result_schema_json TEXT NOT NULL, budget_json TEXT NOT NULL, workspace_json TEXT NOT NULL, hints_json TEXT NOT NULL, depth INTEGER NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL, result_json TEXT, outcome_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS checkpoints(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), label TEXT NOT NULL, reason TEXT NOT NULL, session_json TEXT NOT NULL, messages_json TEXT NOT NULL, todos_json TEXT NOT NULL, created_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS pending_inputs(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), question TEXT NOT NULL, choices_json TEXT NOT NULL, allow_freeform INTEGER NOT NULL, status TEXT NOT NULL, answer TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, answered_at TEXT);
-CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id,seq); CREATE INDEX IF NOT EXISTS idx_routing_session_turn ON routing_records(session_id,turn); CREATE INDEX IF NOT EXISTS idx_jobs_session ON jobs(session_id);`)
+	_, err := s.db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, spec TEXT NOT NULL, durable_summary TEXT NOT NULL DEFAULT '', phase TEXT NOT NULL DEFAULT 'plan', model TEXT NOT NULL DEFAULT '', turn INTEGER NOT NULL DEFAULT 0, spent_usd REAL NOT NULL DEFAULT 0, budget_usd REAL NOT NULL, status TEXT NOT NULL DEFAULT 'running', integration TEXT NOT NULL DEFAULT '', external_id TEXT NOT NULL DEFAULT '', external_incarnation TEXT NOT NULL DEFAULT '', workspace_path TEXT NOT NULL DEFAULT '', workspace_ownership TEXT NOT NULL DEFAULT 'orrery', integration_context_json TEXT NOT NULL DEFAULT '{}', request_json TEXT NOT NULL DEFAULT '{}', parent_session_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), seq INTEGER NOT NULL, turn_id TEXT NOT NULL DEFAULT '', type TEXT NOT NULL, data_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(session_id,seq)); CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), role TEXT NOT NULL, content_json TEXT NOT NULL, created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS request_receipts(session_id TEXT NOT NULL REFERENCES sessions(id), request_id TEXT NOT NULL, kind TEXT NOT NULL, turn_id TEXT NOT NULL, payload_hash TEXT NOT NULL, accepted_at TEXT NOT NULL, PRIMARY KEY(session_id,request_id)); CREATE TABLE IF NOT EXISTS todos(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), position INTEGER NOT NULL, text TEXT NOT NULL, phase TEXT NOT NULL, status TEXT NOT NULL, UNIQUE(session_id,position)); CREATE TABLE IF NOT EXISTS cache_ledger(session_id TEXT NOT NULL, model TEXT NOT NULL, warm_prefix_tokens INTEGER NOT NULL DEFAULT 0, last_hit TEXT, ttl_seconds INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(session_id,model)); CREATE TABLE IF NOT EXISTS routing_records(id TEXT PRIMARY KEY, session_id TEXT NOT NULL, turn INTEGER NOT NULL, decision_point TEXT NOT NULL, state_json TEXT NOT NULL, candidates_json TEXT NOT NULL, chosen_model TEXT NOT NULL, chosen_effort TEXT NOT NULL, was_switch INTEGER NOT NULL, cache_est_json TEXT NOT NULL, explanation TEXT NOT NULL, turn_outcome_json TEXT, job_outcome_json TEXT, session_outcome_json TEXT, created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), parent_job_id TEXT, spec TEXT NOT NULL, result_schema_json TEXT NOT NULL, budget_json TEXT NOT NULL, workspace_json TEXT NOT NULL, hints_json TEXT NOT NULL, depth INTEGER NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL, result_json TEXT, outcome_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS checkpoints(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), label TEXT NOT NULL, reason TEXT NOT NULL, session_json TEXT NOT NULL, messages_json TEXT NOT NULL, todos_json TEXT NOT NULL, created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS pending_inputs(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), question TEXT NOT NULL, choices_json TEXT NOT NULL, allow_freeform INTEGER NOT NULL, status TEXT NOT NULL, answer TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, answered_at TEXT); CREATE TABLE IF NOT EXISTS queued_messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), request_id TEXT NOT NULL, content TEXT NOT NULL, attachments_json TEXT NOT NULL DEFAULT '[]', source TEXT NOT NULL DEFAULT 'web', payload_hash TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, UNIQUE(session_id,request_id)); CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id,seq); CREATE INDEX IF NOT EXISTS idx_routing_session_turn ON routing_records(session_id,turn); CREATE INDEX IF NOT EXISTS idx_jobs_session ON jobs(session_id); CREATE INDEX IF NOT EXISTS idx_queued_messages_session ON queued_messages(session_id);`)
 	if err != nil {
 		return err
 	}
@@ -63,12 +52,16 @@ CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id,seq); CRE
 		"workspace_ownership":      "TEXT NOT NULL DEFAULT 'orrery'",
 		"integration_context_json": "TEXT NOT NULL DEFAULT '{}'",
 		"request_json":             "TEXT NOT NULL DEFAULT '{}'",
+		"parent_session_id":        "TEXT NOT NULL DEFAULT ''",
 	} {
 		if err := s.ensureColumn("sessions", name, definition); err != nil {
 			return err
 		}
 	}
 	if err := s.ensureColumn("events", "turn_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("queued_messages", "payload_hash", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS request_receipts(session_id TEXT NOT NULL REFERENCES sessions(id), request_id TEXT NOT NULL, kind TEXT NOT NULL, turn_id TEXT NOT NULL, payload_hash TEXT NOT NULL, accepted_at TEXT NOT NULL, PRIMARY KEY(session_id,request_id)); CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_external ON sessions(integration,external_id,external_incarnation) WHERE external_id!='';`)
@@ -106,6 +99,7 @@ type Session struct {
 	ID, Spec, DurableSummary, Phase, Model, Status string
 	Integration, ExternalID, ExternalIncarnation   string
 	WorkspacePath, WorkspaceOwnership              string
+	ParentSessionID                                string
 	IntegrationContextJSON, RequestJSON            string
 	Turn                                           int
 	SpentUSD, BudgetUSD                            float64
@@ -129,7 +123,7 @@ func (s *Store) CreateSession(ctx context.Context, x Session) error {
 	if x.RequestJSON == "" {
 		x.RequestJSON = "{}"
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO sessions(id,spec,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.Spec, x.DurableSummary, x.Phase, x.Model, x.Turn, x.SpentUSD, x.BudgetUSD, x.Status, x.Integration, x.ExternalID, x.ExternalIncarnation, x.WorkspacePath, x.WorkspaceOwnership, x.IntegrationContextJSON, x.RequestJSON, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO sessions(id,spec,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.Spec, x.DurableSummary, x.Phase, x.Model, x.Turn, x.SpentUSD, x.BudgetUSD, x.Status, x.Integration, x.ExternalID, x.ExternalIncarnation, x.WorkspacePath, x.WorkspaceOwnership, x.IntegrationContextJSON, x.RequestJSON, x.ParentSessionID, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	return err
 }
 
@@ -177,7 +171,7 @@ func (s *Store) CreateSessionAccepted(ctx context.Context, x Session, requestID,
 		x.RequestJSON = "{}"
 	}
 	stamp := now.Format(time.RFC3339Nano)
-	_, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,spec,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.Spec, x.DurableSummary, x.Phase, x.Model, x.Turn, x.SpentUSD, x.BudgetUSD, x.Status, x.Integration, x.ExternalID, x.ExternalIncarnation, x.WorkspacePath, x.WorkspaceOwnership, x.IntegrationContextJSON, x.RequestJSON, stamp, stamp)
+	_, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,spec,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.Spec, x.DurableSummary, x.Phase, x.Model, x.Turn, x.SpentUSD, x.BudgetUSD, x.Status, x.Integration, x.ExternalID, x.ExternalIncarnation, x.WorkspacePath, x.WorkspaceOwnership, x.IntegrationContextJSON, x.RequestJSON, x.ParentSessionID, stamp, stamp)
 	if err != nil {
 		return Session{}, false, err
 	}
@@ -198,7 +192,7 @@ func (s *Store) CreateSessionAccepted(ctx context.Context, x Session, requestID,
 func (s *Store) Session(ctx context.Context, id string) (Session, error) {
 	var x Session
 	var ca, ua string
-	err := s.db.QueryRowContext(ctx, `SELECT id,spec,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,created_at,updated_at FROM sessions WHERE id=?`, id).Scan(&x.ID, &x.Spec, &x.DurableSummary, &x.Phase, &x.Model, &x.Turn, &x.SpentUSD, &x.BudgetUSD, &x.Status, &x.Integration, &x.ExternalID, &x.ExternalIncarnation, &x.WorkspacePath, &x.WorkspaceOwnership, &x.IntegrationContextJSON, &x.RequestJSON, &ca, &ua)
+	err := s.db.QueryRowContext(ctx, `SELECT id,spec,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at FROM sessions WHERE id=?`, id).Scan(&x.ID, &x.Spec, &x.DurableSummary, &x.Phase, &x.Model, &x.Turn, &x.SpentUSD, &x.BudgetUSD, &x.Status, &x.Integration, &x.ExternalID, &x.ExternalIncarnation, &x.WorkspacePath, &x.WorkspaceOwnership, &x.IntegrationContextJSON, &x.RequestJSON, &x.ParentSessionID, &ca, &ua)
 	x.CreatedAt, _ = time.Parse(time.RFC3339Nano, ca)
 	x.UpdatedAt, _ = time.Parse(time.RFC3339Nano, ua)
 	return x, err
@@ -213,7 +207,7 @@ func (s *Store) SessionByExternalID(ctx context.Context, integration, externalID
 	return s.Session(ctx, id)
 }
 func (s *Store) Sessions(ctx context.Context) ([]Session, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM sessions ORDER BY created_at DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM sessions WHERE parent_session_id IS NULL OR parent_session_id='' ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +250,7 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"request_receipts", "events", "messages", "todos", "cache_ledger", "jobs", "routing_records", "checkpoints", "pending_inputs"} {
+	for _, table := range []string{"request_receipts", "events", "messages", "todos", "cache_ledger", "jobs", "routing_records", "checkpoints", "pending_inputs", "queued_messages"} {
 		if _, err = tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE session_id=?`, id); err != nil {
 			return err
 		}
@@ -350,6 +344,136 @@ func (s *Store) ResolvePendingInput(ctx context.Context, sid, answer string) (Pe
 	_, err = s.db.ExecContext(ctx, `UPDATE pending_inputs SET status='answered',answer=?,answered_at=? WHERE id=? AND status='pending'`, answer, now.Format(time.RFC3339Nano), x.ID)
 	x.Status, x.Answer, x.AnsweredAt = "answered", answer, now
 	return x, err
+}
+
+type QueuedMessage struct {
+	ID              int
+	SessionID       string
+	RequestID       string
+	Content         string
+	AttachmentsJSON string
+	Source          string
+	PayloadHash     string
+	CreatedAt       time.Time
+}
+
+// EnqueueMessage stores a user message to be delivered as the next turn when the
+// current session turn completes. It is idempotent: a retry with the same
+// request_id and payload hash is a no-op; reusing the request_id for different
+// content is rejected. No request receipt is written here — the receipt is
+// created only when the message is actually delivered, so an interrupted turn
+// does not swallow a queued message.
+func (s *Store) EnqueueMessage(ctx context.Context, sessionID, requestID, content, source, payloadHash string, attachments any) (bool, error) {
+	if requestID == "" {
+		return false, errors.New("request_id required")
+	}
+	if strings.TrimSpace(content) == "" {
+		return false, errors.New("content required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var existingHash string
+	err = tx.QueryRowContext(ctx, `SELECT payload_hash FROM queued_messages WHERE session_id=? AND request_id=?`, sessionID, requestID).Scan(&existingHash)
+	if err == nil {
+		if existingHash != payloadHash {
+			return false, fmt.Errorf("request_id %q was already used with a different payload", requestID)
+		}
+		_ = tx.Commit()
+		return true, nil // duplicate of an already-queued message
+	}
+	if err != sql.ErrNoRows {
+		return false, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err = tx.ExecContext(ctx, `INSERT INTO queued_messages(session_id,request_id,content,attachments_json,source,payload_hash,created_at) VALUES(?,?,?,?,?,?,?)`, sessionID, requestID, content, JSON(attachments), source, payloadHash, now); err != nil {
+		return false, err
+	}
+	return false, tx.Commit()
+}
+
+// DequeueMessage removes and returns the oldest queued message for the session.
+// The row is removed immediately; callers must deliver it before removing the
+// receipt idempotency guard or re-enqueue on failure.
+func (s *Store) DequeueMessage(ctx context.Context, sessionID string) (QueuedMessage, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return QueuedMessage{}, false, err
+	}
+	defer tx.Rollback()
+	var q QueuedMessage
+	var created string
+	err = tx.QueryRowContext(ctx, `SELECT id,session_id,request_id,content,attachments_json,source,payload_hash,created_at FROM queued_messages WHERE session_id=? ORDER BY id ASC LIMIT 1`, sessionID).Scan(&q.ID, &q.SessionID, &q.RequestID, &q.Content, &q.AttachmentsJSON, &q.Source, &q.PayloadHash, &created)
+	if err == sql.ErrNoRows {
+		_ = tx.Commit()
+		return QueuedMessage{}, false, nil
+	}
+	if err != nil {
+		return QueuedMessage{}, false, err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM queued_messages WHERE id=?`, q.ID); err != nil {
+		return QueuedMessage{}, false, err
+	}
+	q.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	return q, true, tx.Commit()
+}
+
+// DeliverQueuedMessage atomically promotes a queued message to a real turn:
+// it records the idempotency receipt, the user message, and the acceptance event
+// and deletes the queued row. The queued message must already have been removed
+// from the queue with DequeueMessage; this method is separate to allow the
+// engine to attempt delivery before finalizing deletion.
+func (s *Store) DeliverQueuedMessage(ctx context.Context, sid, requestID, turnID, kind, payloadHash string, content, request any) (RequestReceipt, error) {
+	if requestID == "" {
+		return RequestReceipt{}, errors.New("request_id required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RequestReceipt{}, err
+	}
+	defer tx.Rollback()
+	var existingHash, existingTurn, existingKind, accepted string
+	err = tx.QueryRowContext(ctx, `SELECT payload_hash,turn_id,kind,accepted_at FROM request_receipts WHERE session_id=? AND request_id=?`, sid, requestID).Scan(&existingHash, &existingTurn, &existingKind, &accepted)
+	if err == nil {
+		if existingHash != payloadHash {
+			return RequestReceipt{}, fmt.Errorf("request_id %q was already used with a different payload", requestID)
+		}
+		ts, _ := time.Parse(time.RFC3339Nano, accepted)
+		return RequestReceipt{SessionID: sid, RequestID: requestID, Kind: existingKind, TurnID: existingTurn, PayloadHash: existingHash, AcceptedAt: ts, Duplicate: true}, nil
+	}
+	if err != sql.ErrNoRows {
+		return RequestReceipt{}, err
+	}
+	now := time.Now().UTC()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO request_receipts(session_id,request_id,kind,turn_id,payload_hash,accepted_at) VALUES(?,?,?,?,?,?)`, sid, requestID, kind, turnID, payloadHash, now.Format(time.RFC3339Nano)); err != nil {
+		return RequestReceipt{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO messages(session_id,role,content_json,created_at) VALUES(?,?,?,?)`, sid, "user", JSON(content), now.Format(time.RFC3339Nano)); err != nil {
+		return RequestReceipt{}, err
+	}
+	if request != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE sessions SET request_json=?,updated_at=? WHERE id=?`, JSON(request), now.Format(time.RFC3339Nano), sid); err != nil {
+			return RequestReceipt{}, err
+		}
+	}
+	var seq int
+	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq),0)+1 FROM events WHERE session_id=?`, sid).Scan(&seq); err != nil {
+		return RequestReceipt{}, err
+	}
+	data := JSON(map[string]any{"request_id": requestID, "source": kind})
+	if _, err = tx.ExecContext(ctx, `INSERT INTO events(session_id,seq,turn_id,type,data_json,created_at) VALUES(?,?,?,?,?,?)`, sid, seq, turnID, "turn.accepted", data, now.Format(time.RFC3339Nano)); err != nil {
+		return RequestReceipt{}, err
+	}
+	userData := JSON(map[string]any{"request_id": requestID, "content": content})
+	if _, err = tx.ExecContext(ctx, `INSERT INTO events(session_id,seq,turn_id,type,data_json,created_at) VALUES(?,?,?,?,?,?)`, sid, seq+1, turnID, "user.message", userData, now.Format(time.RFC3339Nano)); err != nil {
+		return RequestReceipt{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return RequestReceipt{}, err
+	}
+	return RequestReceipt{SessionID: sid, RequestID: requestID, Kind: kind, TurnID: turnID, PayloadHash: payloadHash, AcceptedAt: now}, nil
 }
 
 // CreateCheckpoint snapshots conversational state before a destructive context
@@ -470,13 +594,14 @@ func (s *Store) ForkSession(ctx context.Context, sourceID, newID string) (Sessio
 	fork.ID, fork.Integration, fork.ExternalID, fork.ExternalIncarnation = newID, "", "", ""
 	fork.Status, fork.Turn, fork.SpentUSD = "interrupted", 0, 0
 	fork.CreatedAt, fork.UpdatedAt = now, now
+	fork.ParentSessionID = sourceID
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Session{}, err
 	}
 	defer tx.Rollback()
 	stamp := now.Format(time.RFC3339Nano)
-	if _, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,spec,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, fork.ID, fork.Spec, fork.DurableSummary, fork.Phase, fork.Model, fork.Turn, fork.SpentUSD, fork.BudgetUSD, fork.Status, fork.Integration, fork.ExternalID, fork.ExternalIncarnation, fork.WorkspacePath, fork.WorkspaceOwnership, fork.IntegrationContextJSON, fork.RequestJSON, stamp, stamp); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,spec,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, fork.ID, fork.Spec, fork.DurableSummary, fork.Phase, fork.Model, fork.Turn, fork.SpentUSD, fork.BudgetUSD, fork.Status, fork.Integration, fork.ExternalID, fork.ExternalIncarnation, fork.WorkspacePath, fork.WorkspaceOwnership, fork.IntegrationContextJSON, fork.RequestJSON, fork.ParentSessionID, stamp, stamp); err != nil {
 		return Session{}, err
 	}
 	for _, m := range messages {

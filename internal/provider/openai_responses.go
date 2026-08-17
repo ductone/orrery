@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"github.com/ductone/orrey/internal/model"
 	"io"
 	"net/http"
@@ -128,7 +127,7 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 		case "function_call":
 			args := map[string]any{}
 			if err = json.Unmarshal([]byte(item.Arguments), &args); err != nil {
-				return Response{}, fmt.Errorf("tool arguments: %w", err)
+				return Response{}, &MalformedToolArgumentsError{Name: item.Name, Err: err}
 			}
 			name := item.Name
 			if internal := fromWire[name]; internal != "" {

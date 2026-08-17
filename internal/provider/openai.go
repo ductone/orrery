@@ -158,7 +158,7 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 	for _, tc := range ch.Message.ToolCalls {
 		args := map[string]any{}
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-			return Response{}, fmt.Errorf("tool arguments: %w", err)
+			return Response{}, &MalformedToolArgumentsError{Name: tc.Function.Name, Err: err}
 		}
 		name := tc.Function.Name
 		if internal := fromWire[name]; internal != "" {

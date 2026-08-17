@@ -60,6 +60,24 @@ type RouterConfig struct {
 type BudgetConfig struct {
 	SessionUSD         float64 `yaml:"session_usd"`
 	JobDefaultFraction float64 `yaml:"job_default_fraction"`
+	// SessionTokens caps the novel (non-cached) tokens a session may consume.
+	// Optional: zero means the built-in default (defaultSessionTokens).
+	SessionTokens int `yaml:"session_tokens"`
+}
+
+// defaultSessionTokens is the fallback cap on novel (non-cached) tokens per
+// session when session_tokens is not set. It is deliberately generous: the
+// dollar budget is the real cost guardrail, and cache re-reads are excluded
+// from this count.
+const defaultSessionTokens = 4_000_000
+
+// SessionTokenLimit returns the configured per-session token cap, or the
+// default when unset/zero.
+func (b BudgetConfig) SessionTokenLimit() int {
+	if b.SessionTokens <= 0 {
+		return defaultSessionTokens
+	}
+	return b.SessionTokens
 }
 
 type TelemetryConfig struct {
@@ -112,6 +130,9 @@ func LoadWithEnv(path string, overrides map[string]string) (Config, error) {
 	}
 	if cfg.Budget.SessionUSD <= 0 || cfg.Budget.JobDefaultFraction <= 0 || cfg.Budget.JobDefaultFraction > 1 {
 		return cfg, errors.New("config: invalid budget")
+	}
+	if cfg.Budget.SessionTokens < 0 {
+		return cfg, errors.New("config: budget.session_tokens must be non-negative")
 	}
 	for name, server := range cfg.LSP {
 		if strings.TrimSpace(name) == "" || len(server.Command) == 0 || strings.TrimSpace(server.Command[0]) == "" {

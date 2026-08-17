@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -31,24 +32,33 @@ import (
 type EmitFunc func(agentproto.AgentEvent)
 
 type Engine struct {
-	cfg       config.Config
-	store     *store.Store
-	providers *provider.Registry
-	policy    router.Policy
-	mcp       *mcp.Manager
-	web       *webtools.Client
-	lsp       *lsp.Manager
-	runtimeMu sync.RWMutex
-	boundary  func(context.Context) error
-	mu        sync.Mutex
-	cancels   map[string]context.CancelFunc
-	turnIDs   map[string]string
-	discovery map[string]*instructionDiscovery
-	writers   map[string]string
+	cfg               config.Config
+	store             *store.Store
+	providers         *provider.Registry
+	policy            router.Policy
+	mcp               *mcp.Manager
+	web               *webtools.Client
+	lsp               *lsp.Manager
+	runtimeMu         sync.RWMutex
+	boundary          func(context.Context) error
+	mu                sync.Mutex
+	cancels           map[string]context.CancelFunc
+	turnIDs           map[string]string
+	discovery         map[string]*instructionDiscovery
+	writers           map[string]string
+	compactedLastTurn map[string]bool
 }
 
 func New(cfg config.Config, s *store.Store, p *provider.Registry, mc *mcp.Manager) *Engine {
-	return &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), lsp: lsp.New(cfg.LSP), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}, writers: map[string]string{}}
+	return &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), lsp: lsp.New(cfg.LSP), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}, writers: map[string]string{}, compactedLastTurn: map[string]bool{}}
+}
+
+// markCompacted records that a session's history was just compacted so the
+// next routing decision treats the prefix as cold and drops model stickiness.
+func (e *Engine) markCompacted(sid string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.compactedLastTurn[sid] = true
 }
 func (e *Engine) Store() *store.Store { return e.store }
 func (e *Engine) Close() error {
@@ -144,6 +154,7 @@ type StartInfo struct {
 	TurnID    string
 	Accepted  bool
 	Duplicate bool
+	Queued    bool
 	Result    <-chan agentproto.TaskResult
 }
 
@@ -225,6 +236,8 @@ func (e *Engine) startExisting(parent context.Context, id, turnID string, req ag
 		delete(e.cancels, id)
 		delete(e.turnIDs, id)
 		e.mu.Unlock()
+		// Deliver any message queued while this turn was running as the next turn.
+		go e.drainQueued(id, emit)
 	}()
 	return out
 }
@@ -247,7 +260,7 @@ func (e *Engine) CreateIdle(ctx context.Context, workspace string, budgetUSD flo
 	if budgetUSD <= 0 {
 		budgetUSD = cfg.Budget.SessionUSD
 	}
-	req := agentproto.TaskRequest{Spec: "Interactive coding session", Budget: agentproto.Budget{MaxTokens: 4_000_000, MaxUSD: budgetUSD, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"}, Depth: 4}
+	req := agentproto.TaskRequest{Spec: "Interactive coding session", Budget: agentproto.Budget{MaxTokens: cfg.Budget.SessionTokenLimit(), MaxUSD: budgetUSD, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"}, Depth: 4}
 	s := store.Session{ID: uuid.NewString(), Spec: req.Spec, Phase: "plan", BudgetUSD: budgetUSD, Status: "interrupted", WorkspacePath: workspace, WorkspaceOwnership: "external", RequestJSON: store.JSON(req)}
 	if err := e.store.CreateSession(ctx, s); err != nil {
 		return store.Session{}, err
@@ -285,7 +298,7 @@ func (e *Engine) ContinueIntegratedWithAttachments(ctx context.Context, id, inst
 	}
 	req := agentproto.TaskRequest{}
 	if json.Unmarshal([]byte(s.RequestJSON), &req) != nil {
-		req = agentproto.TaskRequest{Spec: s.Spec, Budget: agentproto.Budget{MaxUSD: s.BudgetUSD - s.SpentUSD, MaxTokens: 4_000_000, MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: s.WorkspacePath, Mode: "shared-write", Ownership: s.WorkspaceOwnership}, Depth: 4}
+		req = agentproto.TaskRequest{Spec: s.Spec, Budget: agentproto.Budget{MaxUSD: s.BudgetUSD - s.SpentUSD, MaxTokens: e.sessionTokenLimit(), MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: s.WorkspacePath, Mode: "shared-write", Ownership: s.WorkspaceOwnership}, Depth: 4}
 	}
 	req.Attachments = append(req.Attachments, attachments...)
 	if err := validateAttachments(&req); err != nil {
@@ -301,7 +314,16 @@ func (e *Engine) ContinueIntegratedWithAttachments(ctx context.Context, id, inst
 	e.mu.Lock()
 	if _, active := e.cancels[id]; active {
 		e.mu.Unlock()
-		return StartInfo{}, errors.New("session already has an active turn")
+		// A turn is already running: queue the message server-side so it is
+		// delivered on the next turn instead of being rejected with a conflict.
+		dup, qerr := e.store.EnqueueMessage(ctx, id, requestID, instruction, source, payloadHash, attachments)
+		if qerr != nil {
+			return StartInfo{}, qerr
+		}
+		if !dup {
+			e.emit(ctx, id, "message.queued", map[string]any{"request_id": requestID, "content": instruction}, emit)
+		}
+		return StartInfo{SessionID: id, Accepted: true, Duplicate: dup, Queued: true}, nil
 	}
 	turnID := uuid.NewString()
 	receipt, err := e.store.AcceptMessage(ctx, id, requestID, turnID, source, payloadHash, provider.Message{Role: "user", Content: instruction}, req)
@@ -319,7 +341,7 @@ func (e *Engine) ContinueIntegratedWithAttachments(ctx context.Context, id, inst
 	}
 	req.Budget.MaxUSD = s.BudgetUSD - s.SpentUSD
 	if req.Budget.MaxTokens <= 0 {
-		req.Budget.MaxTokens = 4_000_000
+		req.Budget.MaxTokens = e.sessionTokenLimit()
 	}
 	if req.Budget.MaxWallClock <= 0 {
 		req.Budget.MaxWallClock = 2 * time.Hour
@@ -381,8 +403,90 @@ func (e *Engine) launchExisting(ctx context.Context, cancel context.CancelFunc, 
 		delete(e.cancels, id)
 		delete(e.turnIDs, id)
 		e.mu.Unlock()
+		// Deliver any message queued while this turn was running as the next turn.
+		go e.drainQueued(id, emit)
 	}()
 	return out
+}
+
+// drainQueued delivers the oldest server-side queued message, if any, as the
+// session's next turn once no turn is active. It only continues a session that
+// ended in a normal (non-failed) state; a failed, cancelled, or budget-
+// exhausted session keeps its queued message for explicit user follow-up.
+func (e *Engine) drainQueued(id string, emit EmitFunc) {
+	if !e.sessionIdle(id) {
+		return
+	}
+	s, err := e.store.Session(context.Background(), id)
+	if err != nil {
+		return
+	}
+	switch s.Status {
+	case string(agentproto.Pass), string(agentproto.InputRequired), "interrupted":
+		// eligible to continue
+	default:
+		return
+	}
+	q, ok, err := e.store.DequeueMessage(context.Background(), id)
+	if err != nil || !ok {
+		return
+	}
+	e.emit(context.Background(), id, "message.dequeued", map[string]any{"request_id": q.RequestID, "content": q.Content}, emit)
+	var attachments []agentproto.AttachmentRef
+	if q.AttachmentsJSON != "" && q.AttachmentsJSON != "null" {
+		_ = json.Unmarshal([]byte(q.AttachmentsJSON), &attachments)
+	}
+	// Recompute the payload hash exactly as the client did when it enqueued,
+	// so the delivery-time receipt can be idempotent without dropping attachments.
+	payloadHash := hashPayload(map[string]any{"content": q.Content, "source": q.Source, "attachments": attachments})
+	turnID := uuid.NewString()
+	ctx := context.Background()
+	_, err = e.store.DeliverQueuedMessage(ctx, id, q.RequestID, turnID, q.Source, payloadHash, provider.Message{Role: "user", Content: q.Content}, e.requestForSession(s, attachments))
+	if err != nil {
+		// The queued row is already gone, but the message was not delivered. Re-enqueue
+		// it so a user can retry or a later drain can pick it up again.
+		if _, qerr := e.store.EnqueueMessage(ctx, id, q.RequestID, q.Content, q.Source, payloadHash, attachments); qerr != nil {
+			e.emit(ctx, id, "provider.error", map[string]any{"error": "dequeue queued message: lost message: " + err.Error()}, emit)
+			return
+		}
+		e.emit(ctx, id, "provider.error", map[string]any{"error": "dequeue queued message: " + err.Error()}, emit)
+		go e.drainQueued(id, emit)
+		return
+	}
+	if err := e.store.SetSessionStatus(ctx, id, "running"); err != nil {
+		e.emit(ctx, id, "provider.error", map[string]any{"error": "dequeue queued message: set running: " + err.Error()}, emit)
+		return
+	}
+	req := e.requestForSession(s, attachments)
+	req.Budget.MaxUSD = s.BudgetUSD - s.SpentUSD
+	if req.Budget.MaxTokens <= 0 {
+		req.Budget.MaxTokens = e.sessionTokenLimit()
+	}
+	if req.Budget.MaxWallClock <= 0 {
+		req.Budget.MaxWallClock = 2 * time.Hour
+	}
+	if req.Workspace.Path == "" {
+		cfg, _, _, _, _ := e.runtimeSnapshot()
+		req.Workspace.Path = cfg.WorkspaceRoot
+	}
+	turnCtx, cancel := context.WithTimeout(withTurnID(ctx, turnID), req.Budget.MaxWallClock)
+	e.mu.Lock()
+	e.cancels[id] = cancel
+	e.turnIDs[id] = turnID
+	e.mu.Unlock()
+	e.launchExisting(turnCtx, cancel, id, req, emit)
+}
+
+func (e *Engine) requestForSession(s store.Session, attachments []agentproto.AttachmentRef) agentproto.TaskRequest {
+	req := agentproto.TaskRequest{}
+	if json.Unmarshal([]byte(s.RequestJSON), &req) != nil {
+		req = agentproto.TaskRequest{Spec: s.Spec, Budget: agentproto.Budget{MaxUSD: s.BudgetUSD - s.SpentUSD, MaxTokens: e.sessionTokenLimit(), MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: s.WorkspacePath, Mode: "shared-write", Ownership: s.WorkspaceOwnership}, Depth: 4}
+	}
+	req.Attachments = append(req.Attachments, attachments...)
+	if err := validateAttachments(&req); err != nil {
+		return agentproto.TaskRequest{} // validation errors are surfaced at delivery time
+	}
+	return req
 }
 
 func (e *Engine) runRoot(ctx context.Context, id string, req agentproto.TaskRequest, emit EmitFunc) agentproto.TaskResult {
@@ -531,11 +635,10 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 	if err != nil {
 		return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "workspace instruction discovery: " + err.Error()}, emit)
 	}
-	if parentJob == "" {
-		if dirty, dirtyErr := workspaceHasReviewableChanges(ctx, req.Workspace.Path); dirtyErr == nil && dirty {
-			progress.edited = true
-		}
-	}
+	// Do not treat pre-existing workspace dirt as this session's edits: in a
+	// shared workspace another task (or a human) may have left changes, and
+	// flagging them here would force a read-only task into a spurious
+	// verify/review loop. Verification is driven by edits this session makes.
 	emptyCompletions := 0
 	e.emit(ctx, sid, "session.started", map[string]any{"spec": req.Spec}, emit)
 	for {
@@ -580,12 +683,19 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		stall.PhaseTurns = progress.phaseTurns
 		stall.RepeatedReads = progress.repeatedReads
 		stall.RepeatedSearches = progress.repeatedSearch
-		if stall.FailedCommands >= 2 || stall.TestFailStreak >= 2 || stall.RepeatedEdits >= 3 || stall.NoProgressTurns >= 4 {
+		if stall.FailedCommands >= 2 || stall.TestFailStreak >= 2 || stall.RepeatedEdits >= 3 || stall.NoProgressTurns >= 4 || stall.RepeatedReads >= 2 || stall.RepeatedSearches >= 2 {
 			point = router.Escalation
+		}
+		// A compaction during the previous turn invalidated every warm prefix;
+		// clear current-model stickiness so routing picks by cost/quality fresh.
+		currentModel := s.Model
+		if e.compactedLastTurn[sid] {
+			currentModel = ""
+			delete(e.compactedLastTurn, sid)
 		}
 		newInstruction := len(stored) > 0 && stored[len(stored)-1].Role == "user"
 		runtimeCfg, runtimeProviders, runtimePolicy, _, _ := e.runtimeSnapshot()
-		state := router.RoutingState{SessionID: sid, Turn: s.Turn + 1, Point: point, Phase: router.Phase(s.Phase), CurrentModel: s.Model, InputTokens: inputTokens, EstimatedOutput: 4000, HasImage: messagesHaveImages(stored), ToolContinuation: len(stored) > 0 && stored[len(stored)-1].Role == "tool", NewInstruction: newInstruction, Stall: stall, AvailableModels: runtimeProviders.AvailableIDs()}
+		state := router.RoutingState{SessionID: sid, Turn: s.Turn + 1, Point: point, Phase: router.Phase(s.Phase), CurrentModel: currentModel, InputTokens: inputTokens, EstimatedOutput: 4000, HasImage: messagesHaveImages(stored), ToolContinuation: len(stored) > 0 && stored[len(stored)-1].Role == "tool", NewInstruction: newInstruction, Stall: stall, AvailableModels: runtimeProviders.AvailableIDs()}
 		if newInstruction {
 			state.Phase = router.Plan
 		}
@@ -653,6 +763,8 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		}
 		var resp provider.Response
 		failed := []string{}
+		modelAttempts := 0
+		malformedAttempts := 0
 		for {
 			resp, err = runtimeProviders.CompleteOne(ctx, decision, build)
 			if err == nil {
@@ -660,8 +772,57 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			}
 			e.emit(ctx, sid, "provider.error", map[string]any{"model": decision.Model.ID, "error": err.Error()}, emit)
 			_ = e.store.UpdateLatestTurnRoutingOutcome(ctx, sid, state.Turn, map[string]any{"provider_error": err.Error(), "model": decision.Model.ID})
+			// A malformed tool call is a recoverable model/protocol error, not a
+			// session failure: feed it back and let the same model retry with a
+			// smaller valid call. Only fail after repeated malformed responses.
+			if provider.IsMalformedToolArguments(err) {
+				malformedAttempts++
+				e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "malformed tool-call arguments", "attempt": malformedAttempts}, emit)
+				if malformedAttempts >= 3 {
+					return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "model returned malformed tool-call arguments three times: " + err.Error()}, emit)
+				}
+				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Content: "Your last tool call's arguments were not valid JSON (usually a truncated response). Do not retry the same large call. Issue one small, complete tool call at a time with valid JSON arguments."})
+				state.CurrentModel = decision.Model.ID
+				continue
+			}
 			if !provider.IsRetryable(err) {
 				return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: err.Error()}, emit)
+			}
+			// Whole-provider credential cooldown cannot succeed by retrying the
+			// same model, so reroute immediately; the router will pick a provider
+			// that still has an available credential. Exclude the whole family so
+			// the router does not reroute to a sibling model on the same cooled
+			// provider.
+			if errors.Is(err, provider.ErrCredentialsBackoff) {
+				failed = append(failed, decision.Model.ID)
+				state.ExcludeModels = failed
+				if !slices.Contains(state.ExcludeFamilies, decision.Model.Family) {
+					state.ExcludeFamilies = append(state.ExcludeFamilies, decision.Model.Family)
+				}
+				state.AvailableModels = runtimeProviders.AvailableIDs()
+				state.CurrentModel = decision.Model.ID
+				decision, why, err = runtimePolicy.Decide(ctx, state)
+				if err != nil {
+					return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: err.Error()}, emit)
+				}
+				modelAttempts = 0
+				e.emit(ctx, sid, "routing.fallback", map[string]any{"decision": decision, "explanation": why}, emit)
+				continue
+			}
+			// Retry the same model a bounded number of times with backoff before
+			// rerouting: a transient provider error does not mean the model is
+			// wrong. modelAttempts is per-model so a rerouted model gets a fresh
+			// budget.
+			modelAttempts++
+			select {
+			case <-ctx.Done():
+				return e.finish(sid, agentproto.TaskResult{Status: agentproto.Cancelled, Outcome: outcome, Error: ctx.Err().Error()}, emit)
+			case <-time.After(providerRetryBackoff(modelAttempts)):
+			}
+			if modelAttempts <= 2 {
+				state.CurrentModel = decision.Model.ID
+				e.emit(ctx, sid, "routing.retry", map[string]any{"model": decision.Model.ID, "attempt": modelAttempts}, emit)
+				continue
 			}
 			failed = append(failed, decision.Model.ID)
 			state.ExcludeModels = failed
@@ -671,10 +832,19 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			if err != nil {
 				return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: err.Error()}, emit)
 			}
+			modelAttempts = 0
 			e.emit(ctx, sid, "routing.fallback", map[string]any{"decision": decision, "explanation": why}, emit)
 		}
 		cost := decision.Model.Pricing.EstimateDetailed(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CacheReadTokens, resp.Usage.CacheWriteTokens)
-		outcome.Tokens += resp.Usage.InputTokens + resp.Usage.OutputTokens
+		// The token budget tracks novel work, not cache re-reads. Each turn
+		// re-sends the conversation prefix, and that cached prefix is near-free
+		// and contains no new information; counting it would charge ~20x the
+		// useful tokens and exhaust the budget on long sessions.
+		freshInput := resp.Usage.InputTokens - resp.Usage.CacheReadTokens
+		if freshInput < 0 {
+			freshInput = 0
+		}
+		outcome.Tokens += freshInput + resp.Usage.OutputTokens
 		outcome.CostUSD += cost
 		outcome.Latency += resp.Latency
 		s.Turn++
@@ -860,7 +1030,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		}
 		if parentJob == "" && progress.shouldDelegate() && req.Depth > 0 && e.hasEfficientWorker() {
 			job, spawnErr := e.spawn(ctx, sid, parentJob, req, map[string]any{
-				"spec":            "Explore the repository for the current task. Find the smallest relevant code path, collect decisive evidence, and return concise findings with exact file paths and recommended next action. Do not edit files.",
+				"spec":            "You are a bounded read-only exploration worker assisting a parent agent. The parent's task is:\n\n" + s.Spec + "\n\nFind the smallest relevant code path for that task, collect decisive evidence, and return concise findings with exact file paths, symbols, and a recommended next action. Do not edit files and do not repeat broad repository scans.",
 				"result_schema":   map[string]any{"type": "object"},
 				"budget_fraction": 0.10,
 				"workspace_mode":  "read",
@@ -885,6 +1055,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		_ = e.store.UpdateLatestTurnRoutingOutcome(ctx, sid, s.Turn, turnOutcome)
 		current, _ := e.store.Session(ctx, sid)
 		if current.Phase != s.Phase || inputTokens > decision.Model.ContextWindow*3/4 {
+			e.markCompacted(sid)
 			e.compact(ctx, sid, emit)
 		}
 	}
@@ -892,6 +1063,19 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 
 func shouldBlockEditForInstructions(call provider.ToolCall, instructionBoundaryHit bool) bool {
 	return call.Name == "edit" && instructionBoundaryHit
+}
+
+// providerRetryBackoff grows per consecutive retryable failure on the same
+// turn so transient provider errors are absorbed locally before a reroute.
+func providerRetryBackoff(attempt int) time.Duration {
+	switch {
+	case attempt <= 0:
+		return 2 * time.Second
+	case attempt == 1:
+		return 5 * time.Second
+	default:
+		return 10 * time.Second
+	}
 }
 
 func toolCallKey(call provider.ToolCall) string {
@@ -953,17 +1137,73 @@ func (e *Engine) providerMessages(ctx context.Context, sid string) ([]provider.M
 		}
 		out = append(out, p)
 	}
+	out = sanitizeProviderMessages(out)
 	if len(out) == 0 {
 		out = append(out, provider.Message{Role: "user", Content: "Begin the task. Establish a todo plan, then execute it to completion."})
 	}
 	return out, nil
 }
+
+func sanitizeProviderMessages(messages []provider.Message) []provider.Message {
+	// Track unmatched calls by ID so a tool result is only retained when its
+	// corresponding assistant call precedes it. Consuming the match also drops
+	// duplicate results, which providers reject just like orphaned results.
+	pending := make(map[string]int)
+	matchedResults := make([]bool, len(messages))
+	completedCalls := make(map[int]map[string]bool)
+	for i, message := range messages {
+		switch message.Role {
+		case "assistant":
+			for _, call := range message.ToolCalls {
+				if call.ID != "" {
+					pending[call.ID] = i
+				}
+			}
+		case "tool":
+			assistantIndex, ok := pending[message.ToolCallID]
+			if !ok {
+				continue
+			}
+			matchedResults[i] = true
+			if completedCalls[assistantIndex] == nil {
+				completedCalls[assistantIndex] = make(map[string]bool)
+			}
+			completedCalls[assistantIndex][message.ToolCallID] = true
+			delete(pending, message.ToolCallID)
+		}
+	}
+
+	out := make([]provider.Message, 0, len(messages))
+	for i, message := range messages {
+		if message.Role == "tool" && !matchedResults[i] {
+			continue
+		}
+		if message.Role == "assistant" && len(message.ToolCalls) > 0 {
+			// Prefer removing interrupted calls to fabricating tool output. This
+			// preserves the assistant's content while keeping provider history valid.
+			calls := make([]provider.ToolCall, 0, len(message.ToolCalls))
+			for _, call := range message.ToolCalls {
+				if completedCalls[i][call.ID] {
+					calls = append(calls, call)
+				}
+			}
+			message.ToolCalls = calls
+		}
+		out = append(out, message)
+	}
+	return out
+}
+func (e *Engine) sessionTokenLimit() int {
+	cfg, _, _, _, _ := e.runtimeSnapshot()
+	return cfg.Budget.SessionTokenLimit()
+}
+
 func applyBudgetDefaults(req *agentproto.TaskRequest, cfg config.Config) {
 	if req.Budget.MaxUSD <= 0 {
 		req.Budget.MaxUSD = cfg.Budget.SessionUSD
 	}
 	if req.Budget.MaxTokens <= 0 {
-		req.Budget.MaxTokens = 4_000_000
+		req.Budget.MaxTokens = cfg.Budget.SessionTokenLimit()
 	}
 	if req.Budget.MaxWallClock <= 0 {
 		req.Budget.MaxWallClock = 2 * time.Hour

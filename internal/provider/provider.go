@@ -165,6 +165,11 @@ func New(cfg config.Config) *Registry {
 				base = "https://api.openai.com"
 			}
 			r.clients[name] = newOpenAI(base, keys, true)
+		case "fireworks":
+			if base == "" {
+				base = "https://api.fireworks.ai/inference"
+			}
+			r.clients[name] = newOpenAI(base, keys, false)
 		case "xai":
 			if base == "" {
 				base = "https://api.x.ai"
@@ -273,6 +278,27 @@ type HTTPError struct {
 }
 
 func (e *HTTPError) Error() string { return fmt.Sprintf("provider HTTP %d: %s", e.Status, e.Body) }
+
+// MalformedToolArgumentsError reports a tool call whose arguments were not
+// valid JSON (usually a truncated model response). It is recoverable: the
+// engine feeds the error back to the model and asks for a smaller valid call
+// instead of terminating the session.
+type MalformedToolArgumentsError struct {
+	Name string
+	Err  error
+}
+
+func (e *MalformedToolArgumentsError) Error() string {
+	return fmt.Sprintf("tool arguments for %s: %v", e.Name, e.Err)
+}
+func (e *MalformedToolArgumentsError) Unwrap() error { return e.Err }
+
+// IsMalformedToolArguments reports whether err is a recoverable malformed
+// tool-call-arguments failure.
+func IsMalformedToolArguments(err error) bool {
+	var m *MalformedToolArgumentsError
+	return errors.As(err, &m)
+}
 func retryable(err error) bool {
 	if errors.Is(err, ErrCredentialsBackoff) {
 		return true

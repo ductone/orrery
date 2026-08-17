@@ -229,3 +229,35 @@ func TestPendingInputValidation(t *testing.T) {
 		t.Fatalf("pending err=%v", err)
 	}
 }
+
+func TestQueuedMessageRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(t.TempDir() + "/db.sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err = s.CreateSession(ctx, Session{ID: "s", Spec: "task", BudgetUSD: 1}); err != nil {
+		t.Fatal(err)
+	}
+	dup, err := s.EnqueueMessage(ctx, "s", "req-1", "follow-up task", "web", "hash-1", nil)
+	if err != nil || dup {
+		t.Fatalf("enqueue dup=%v err=%v", dup, err)
+	}
+	// Same request_id + payload is an idempotent no-op.
+	dup, err = s.EnqueueMessage(ctx, "s", "req-1", "follow-up task", "web", "hash-1", nil)
+	if err != nil || !dup {
+		t.Fatalf("re-enqueue dup=%v err=%v", dup, err)
+	}
+	// Reused request_id with different content is rejected.
+	if _, err = s.EnqueueMessage(ctx, "s", "req-1", "different", "web", "hash-2", nil); err == nil {
+		t.Fatal("expected payload mismatch error")
+	}
+	q, ok, err := s.DequeueMessage(ctx, "s")
+	if err != nil || !ok || q.Content != "follow-up task" || q.RequestID != "req-1" {
+		t.Fatalf("dequeue q=%+v ok=%v err=%v", q, ok, err)
+	}
+	if _, ok, err = s.DequeueMessage(ctx, "s"); err != nil || ok {
+		t.Fatalf("empty dequeue ok=%v err=%v", ok, err)
+	}
+}

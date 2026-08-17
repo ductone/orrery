@@ -192,10 +192,13 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 			}
 		}
 		c.Quality = quality(m.Tier, s.Phase, s.Stall)
-		if s.ToolContinuation && m.ID != s.CurrentModel {
+		// Cache stickiness: switching to a warm model costs latency/context; but
+		// when the prefix is cold (e.g. right after compaction) there is no cache
+		// to preserve, so drop stickiness and let cost/quality decide.
+		if s.ToolContinuation && m.ID != s.CurrentModel && warm {
 			c.SwitchPenalty += .18
 		}
-		if s.CurrentModel != "" && m.ID != s.CurrentModel {
+		if s.CurrentModel != "" && m.ID != s.CurrentModel && warm {
 			c.SwitchPenalty += .08 + math.Min(.25, float64(s.InputTokens)/400000)
 		}
 		c.Score = c.Quality - p.cfg.LambdaCost*c.CostUSD - c.SwitchPenalty
@@ -279,9 +282,22 @@ func quality(t model.Tier, p Phase, stall StallSignals) float64 {
 		q += .20
 	}
 	if stalled(stall) {
-		if t == model.Frontier {
+		// Read/search repetition is a cheap-model behavior problem, not a
+		// capability ceiling; bump efficient models most so a stall triggered by
+		// redundant exploration escalates to a disciplined cheap model rather
+		// than a much pricier frontier one. Hard failures (failed commands, test
+		// failures, repeated edits) still favor frontier.
+		readStall := stall.RepeatedReads >= 2 || stall.RepeatedSearches >= 2
+		switch {
+		case readStall && t == model.Efficient:
 			q += .25
-		} else {
+		case readStall && t == model.Frontier:
+			q += .10
+		case readStall:
+			q -= .2
+		case t == model.Frontier:
+			q += .25
+		default:
 			q -= .2
 		}
 	}
