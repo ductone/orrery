@@ -2,11 +2,15 @@ package core
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ductone/orrey/internal/agentproto"
+	"github.com/ductone/orrey/internal/store"
 )
 
 func TestCollectWorkspaceDiffIncludesNewFilesAndIgnoresRuntimeState(t *testing.T) {
@@ -78,5 +82,96 @@ func TestCollectWorkspaceDiffSupportsNonGitWorkspace(t *testing.T) {
 	}
 	if !strings.Contains(string(diff), "result.txt") || !strings.Contains(string(diff), "+complete") || strings.Contains(string(diff), "runtime.log") {
 		t.Fatalf("unexpected non-git review input:\n%s", diff)
+	}
+
+}
+func TestClassifyReviewJob(t *testing.T) {
+	cases := []struct {
+		name      string
+		job       store.Job
+		wantPass  bool
+		wantErrIs error
+	}{
+		{
+			name:     "pass true is a clean verdict",
+			job:      store.Job{ID: "j1", Status: string(agentproto.Pass), ResultJSON: `{"pass":true,"findings":[]}`},
+			wantPass: true,
+		},
+		{
+			name:     "pass false is a genuine rejection",
+			job:      store.Job{ID: "j2", Status: string(agentproto.Pass), ResultJSON: `{"pass":false,"findings":["bug"]}`},
+			wantPass: false,
+		},
+		{
+			name:      "missing pass verdict is inconclusive",
+			job:       store.Job{ID: "j3", Status: string(agentproto.Pass), ResultJSON: `{"findings":[]}`},
+			wantErrIs: ErrReviewInconclusive,
+		},
+		{
+			name:      "invalid JSON is inconclusive",
+			job:       store.Job{ID: "j4", Status: string(agentproto.Pass), ResultJSON: `not json`},
+			wantErrIs: ErrReviewInconclusive,
+		},
+		{
+			name:      "budget exhausted is inconclusive",
+			job:       store.Job{ID: "j5", Status: string(agentproto.BudgetExhausted), ResultJSON: `{}`},
+			wantErrIs: ErrReviewInconclusive,
+		},
+		{
+			name:      "failed status is inconclusive",
+			job:       store.Job{ID: "j6", Status: string(agentproto.Fail), ResultJSON: `{}`},
+			wantErrIs: ErrReviewInconclusive,
+		},
+		{
+			name:      "cancelled status is inconclusive",
+			job:       store.Job{ID: "j7", Status: string(agentproto.Cancelled), ResultJSON: `{}`},
+			wantErrIs: ErrReviewInconclusive,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			passed, text, err := classifyReviewJob(tc.job)
+			if tc.wantErrIs != nil {
+				if err == nil {
+					t.Fatalf("wanted error wrapping %v, got nil", tc.wantErrIs)
+				}
+				if !errors.Is(err, tc.wantErrIs) {
+					t.Fatalf("wanted error wrapping %v, got %v", tc.wantErrIs, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if passed != tc.wantPass {
+				t.Fatalf("passed=%v, want %v", passed, tc.wantPass)
+			}
+			if text == "" {
+				t.Fatalf("expected non-empty review text")
+			}
+		})
+	}
+}
+
+func TestReviewChildBudget(t *testing.T) {
+	const fraction = 0.10
+	cases := []struct {
+		name      string
+		parentMax float64
+		available float64
+		want      float64
+	}{
+		{"small parent budget gets floor", 1.00, 1.00, 0.50},
+		{"large parent budget uses fraction", 10.00, 10.00, 1.00},
+		{"available cap wins over floor", 10.00, 0.30, 0.30},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base := min(tc.parentMax*fraction, tc.available*fraction)
+			got := reviewChildBudget(base, tc.available)
+			if got != tc.want {
+				t.Fatalf("reviewChildBudget(%v, %v) = %v, want %v", base, tc.available, got, tc.want)
+			}
+		})
 	}
 }

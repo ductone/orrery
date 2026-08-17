@@ -25,6 +25,22 @@ import (
 	"github.com/google/uuid"
 )
 
+// ErrReviewInconclusive signals that the independent review worker could not
+// reach a parseable verdict (for example, it ran out of budget or was cancelled).
+// It is distinct from a genuine review rejection (pass:false).
+var ErrReviewInconclusive = errors.New("review inconclusive")
+
+// minReviewUSD is the smallest budget an independent review worker is given so
+// it can still read a large diff when the parent budget is small.
+const minReviewUSD = 0.50
+
+// reviewChildBudget applies the review-only budget floor to a child budget that
+// has already been computed as a fraction of the parent budget. The floor gives
+// reviewers enough budget to read large diffs while capping to available funds.
+func reviewChildBudget(childUSD, available float64) float64 {
+	return min(max(childUSD, minReviewUSD), available)
+}
+
 func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest, discovery *instructionDiscovery, emit EmitFunc) *builtin.Registry {
 	runtimeCfg, _, _, runtimeMCP, runtimeWeb := e.runtimeSnapshot()
 	root := req.Workspace.Path
@@ -236,6 +252,12 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 		return nil, errors.New("read workers cannot create shared-write descendants")
 	}
 	childUSD := min(parentReq.Budget.MaxUSD*fraction, available*fraction)
+	if review {
+		// Independent reviewers need enough budget to read large diffs even when
+		// the parent budget is small; cap the floor so we never exceed what is
+		// actually available.
+		childUSD = reviewChildBudget(childUSD, available)
+	}
 	child := agentproto.TaskRequest{Spec: spec, ResultSchema: schema, Budget: agentproto.Budget{MaxTokens: max(1000, int(float64(parentReq.Budget.MaxTokens)*fraction)), MaxUSD: childUSD, MaxWallClock: parentReq.Budget.MaxWallClock, MaxDepth: parentReq.Budget.MaxDepth}, Workspace: agentproto.Workspace{Path: parentReq.Workspace.Path, Mode: workspaceMode, Ownership: parentReq.Workspace.Ownership}, Depth: parentReq.Depth - 1}
 	child.Hints.Review = review
 	if review {
@@ -314,7 +336,7 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 		"phase":           "review",
 	}, emit)
 	if err != nil {
-		return false, "", err
+		return false, "", fmt.Errorf("%w: spawn review worker: %v", ErrReviewInconclusive, err)
 	}
 	id := fmt.Sprint(job.(map[string]any)["id"])
 	ticker := time.NewTicker(200 * time.Millisecond)
@@ -322,23 +344,34 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 	for {
 		select {
 		case <-ctx.Done():
-			return false, "", ctx.Err()
+			return false, "", fmt.Errorf("%w: review context cancelled: %v", ErrReviewInconclusive, ctx.Err())
 		case <-ticker.C:
 			j, getErr := e.store.Job(ctx, id)
 			if getErr != nil || j.Status == "running" {
 				continue
 			}
-			if j.Status != string(agentproto.Pass) {
-				return false, "", fmt.Errorf("review job %s ended with status %s", id, j.Status)
-			}
-			var result map[string]any
-			if json.Unmarshal([]byte(j.ResultJSON), &result) != nil {
-				return false, j.ResultJSON, nil
-			}
-			passed, _ := result["pass"].(bool)
-			return passed, store.JSON(result), nil
+			return classifyReviewJob(j)
 		}
 	}
+}
+
+// classifyReviewJob interprets a completed review job.
+// A worker that finished normally with pass:false returns (false, reviewJSON, nil).
+// Any other outcome (non-pass status, invalid/empty JSON, or missing pass) is
+// treated as ErrReviewInconclusive because it carries no verdict about the patch.
+func classifyReviewJob(j store.Job) (bool, string, error) {
+	if j.Status != string(agentproto.Pass) {
+		return false, "", fmt.Errorf("%w: review job %s ended with status %s", ErrReviewInconclusive, j.ID, j.Status)
+	}
+	var result map[string]any
+	if json.Unmarshal([]byte(j.ResultJSON), &result) != nil {
+		return false, "", fmt.Errorf("%w: review job %s returned invalid JSON", ErrReviewInconclusive, j.ID)
+	}
+	passed, ok := result["pass"].(bool)
+	if !ok {
+		return false, "", fmt.Errorf("%w: review job %s returned no pass verdict", ErrReviewInconclusive, j.ID)
+	}
+	return passed, store.JSON(result), nil
 }
 
 const maxReviewDiff = 120_000
