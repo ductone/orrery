@@ -305,15 +305,30 @@ func (r *Registry) edit(_ context.Context, a map[string]any) (any, error) {
 		return nil, err
 	}
 	p.Path = safe
-	if err := hashline.Apply(p); err != nil {
+	result, err := hashline.Apply(p)
+	if err != nil {
 		var stale *hashline.StaleError
 		if errors.As(err, &stale) {
 			fresh, _ := json.Marshal(stale.Fresh)
-			return nil, fmt.Errorf("%w; fresh anchors near the lookup point: %s; call read on the exact target window before retrying", err, fresh)
+			return map[string]any{"error": err.Error(), "fresh_anchors": stale.Fresh}, fmt.Errorf("%w; fresh anchors near the lookup point: %s; call read on the exact target window before retrying", err, fresh)
 		}
 		return nil, err
 	}
-	return map[string]any{"applied": len(p.Hunks)}, nil
+	windows := computeFreshWindows(result.Lines, result.Affected)
+	return map[string]any{"applied": len(p.Hunks), "fresh_anchors": windows}, nil
+}
+
+func computeFreshWindows(lines []hashline.Line, affected []hashline.AffectedRegion) [][]hashline.Line {
+	if len(affected) == 0 {
+		return nil
+	}
+	var out [][]hashline.Line
+	for _, r := range affected {
+		lo := max(0, r.Start-2)
+		hi := min(len(lines), r.End+2)
+		out = append(out, lines[lo:hi])
+	}
+	return out
 }
 func (r *Registry) run(ctx context.Context, a map[string]any) (any, error) {
 	cmdText := asString(a["command"])

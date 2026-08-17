@@ -52,11 +52,22 @@ func Read(path string) ([]Line, error) {
 	}
 	return out, sc.Err()
 }
-func Apply(p Patch) error {
+
+type AffectedRegion struct {
+	Start int
+	End   int
+}
+
+type ApplyResult struct {
+	Lines    []Line
+	Affected []AffectedRegion
+}
+
+func Apply(p Patch) (*ApplyResult, error) {
 	lines, err := Read(p.Path)
 	newFile := errors.Is(err, os.ErrNotExist)
 	if err != nil && !newFile {
-		return err
+		return nil, err
 	}
 	raw := make([]string, len(lines))
 	for i, l := range lines {
@@ -69,30 +80,59 @@ func Apply(p Patch) error {
 	}
 	loc := make([]located, 0, len(p.Hunks))
 	for _, h := range p.Hunks {
-		at := -1
+		// Find all occurrences of anchor in the snapshot
+		var occurrences []int
 		if len(lines) == 0 && h.Anchor == hash("") && h.Offset == 0 && h.Delete == 0 {
-			at = 0
-		}
-		for i, l := range lines {
-			if strings.HasPrefix(l.Hash, h.Anchor) {
-				if at != -1 {
-					return &StaleError{h.Anchor, window(lines, i)}
+			occurrences = []int{0}
+		} else {
+			for i, l := range lines {
+				if strings.HasPrefix(l.Hash, h.Anchor) {
+					occurrences = append(occurrences, i)
 				}
-				at = i
 			}
 		}
-		if at < 0 {
-			return &StaleError{h.Anchor, window(lines, 0)}
+
+		if len(occurrences) == 0 {
+			return nil, &StaleError{h.Anchor, window(lines, 0)}
 		}
+
+		// A delete hunk must anchor unambiguously: if the anchor matches more than
+		// one line, deleting at a "best guess" location destroys information. Insert
+		// hunks may instead auto-rebase to a uniquely in-bounds occurrence below.
+		if h.Delete > 0 && len(occurrences) > 1 {
+			return nil, &StaleError{h.Anchor, window(lines, occurrences[0])}
+		}
+
+		// Filter to occurrences that give valid targets
+		var validOccurrences []int
+		for _, idx := range occurrences {
+			target := idx + h.Offset
+			if target >= 0 && target <= len(raw) && h.Delete >= 0 && target+h.Delete <= len(raw) {
+				validOccurrences = append(validOccurrences, idx)
+			}
+		}
+
+		var at int
+		if len(validOccurrences) == 0 {
+			// No in-bounds target. For a delete this is always a hard stale error
+			// (never relocate a destructive hunk). For an insert, the anchor is stale.
+			return nil, &StaleError{h.Anchor, window(lines, occurrences[0])}
+		}
+
+		if len(validOccurrences) > 1 {
+			// Multiple valid targets - ambiguous
+			return nil, &StaleError{h.Anchor, window(lines, validOccurrences[0])}
+		}
+
+		// Exactly one valid target - use it (auto-rebase if needed)
+		at = validOccurrences[0]
 		at += h.Offset
-		if at < 0 || at > len(raw) || h.Delete < 0 || at+h.Delete > len(raw) {
-			return errors.New("hashline: hunk range out of bounds")
-		}
+
 		if !h.AllowStructuralChange {
 			for _, deleted := range raw[at : at+h.Delete] {
 				decl := declarationKey(deleted)
 				if decl != "" && !containsDeclaration(h.Insert, decl) {
-					return fmt.Errorf("hashline: refusing to delete declaration %q without preserving it; set allow_structural_change=true for intentional removal", decl)
+					return nil, fmt.Errorf("hashline: refusing to delete declaration %q without preserving it; set allow_structural_change=true for intentional removal", decl)
 				}
 			}
 		}
@@ -100,25 +140,44 @@ func Apply(p Patch) error {
 	}
 	for i := 1; i < len(loc); i++ {
 		if loc[i].at < loc[i-1].at {
-			return errors.New("hashline: hunks must be ordered")
+			return nil, errors.New("hashline: hunks must be ordered")
+		}
+		if loc[i].at < loc[i-1].at+loc[i-1].h.Delete {
+			return nil, errors.New("hashline: overlapping delete ranges")
 		}
 	}
+	affected := make([]AffectedRegion, 0, len(loc))
+	shift := 0
 	for i := len(loc) - 1; i >= 0; i-- {
 		x := loc[i]
+		newStart := x.at + shift
 		raw = append(raw[:x.at], append(x.h.Insert, raw[x.at+x.h.Delete:]...)...)
+		shift += len(x.h.Insert) - x.h.Delete
+		newEnd := x.at + shift
+		affected = append(affected, AffectedRegion{newStart, newEnd})
+	}
+	for i, j := 0, len(affected)-1; i < j; i, j = i+1, j-1 {
+		affected[i], affected[j] = affected[j], affected[i]
 	}
 	if slices.Equal(raw, original) {
-		return ErrNoChanges
+		return nil, ErrNoChanges
 	}
 	mode := os.FileMode(0o644)
 	if !newFile {
 		info, statErr := os.Stat(p.Path)
 		if statErr != nil {
-			return statErr
+			return nil, statErr
 		}
 		mode = info.Mode()
 	}
-	return os.WriteFile(p.Path, []byte(strings.Join(raw, "\n")+"\n"), mode)
+	if err := os.WriteFile(p.Path, []byte(strings.Join(raw, "\n")+"\n"), mode); err != nil {
+		return nil, err
+	}
+	newLines := make([]Line, len(raw))
+	for i, t := range raw {
+		newLines[i] = Line{i + 1, hash(t), t}
+	}
+	return &ApplyResult{Lines: newLines, Affected: affected}, nil
 }
 
 func declarationKey(line string) string {
