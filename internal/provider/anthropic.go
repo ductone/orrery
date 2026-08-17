@@ -102,11 +102,12 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 		Model      string `json:"model"`
 		StopReason string `json:"stop_reason"`
 		Content    []struct {
-			Type  string         `json:"type"`
-			Text  string         `json:"text"`
-			ID    string         `json:"id"`
-			Name  string         `json:"name"`
-			Input map[string]any `json:"input"`
+			Type     string         `json:"type"`
+			Text     string         `json:"text"`
+			Thinking string         `json:"thinking"`
+			ID       string         `json:"id"`
+			Name     string         `json:"name"`
+			Input    map[string]any `json:"input"`
 		} `json:"content"`
 		Usage struct {
 			Input      int `json:"input_tokens"`
@@ -122,6 +123,9 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 	for _, b := range wire.Content {
 		if b.Type == "text" {
 			msg.Content += b.Text
+		}
+		if b.Type == "thinking" {
+			msg.Reasoning += b.Thinking
 		}
 		if b.Type == "tool_use" {
 			name := b.Name

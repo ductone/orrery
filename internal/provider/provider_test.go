@@ -200,6 +200,44 @@ func TestAnthropicMapsNamespacedToolNames(t *testing.T) {
 		t.Fatalf("wire=%q response=%+v", wire, resp.Message.ToolCalls)
 	}
 }
+func TestAnthropicCapturesThinkingWithoutChangingTextOrTools(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"model":"claude-fable-5","stop_reason":"tool_use","content":[{"type":"thinking","thinking":"first thought\n"},{"type":"text","text":"answer"},{"type":"thinking","thinking":"second thought"},{"type":"tool_use","id":"call_1","name":"exec","input":{"command":"true"}}],"usage":{}}`))
+	}))
+	defer srv.Close()
+	m, _ := model.Get("anthropic/claude-fable-5")
+	c := newAnthropic(srv.URL, []string{"key"})
+	resp, err := c.Complete(context.Background(), m, Request{MaxOutput: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Message.Reasoning != "first thought\nsecond thought" || resp.Message.Content != "answer" {
+		t.Fatalf("message %+v", resp.Message)
+	}
+	if len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].ID != "call_1" || resp.Message.ToolCalls[0].Name != "exec" {
+		t.Fatalf("tool calls %+v", resp.Message.ToolCalls)
+	}
+}
+
+func TestOpenAIResponsesCapturesReasoningWithoutChangingTextOrTools(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"model":"gpt-5.6-sol","status":"completed","output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"summary\n"},{"type":"unknown","text":"ignored"}],"content":[{"type":"reasoning_text","text":"detail"}]},{"type":"message","content":[{"type":"output_text","text":"answer"}]},{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{\"command\":\"true\"}"}],"usage":{}}`))
+	}))
+	defer srv.Close()
+	m, _ := model.Get("openai/gpt-5.6-sol")
+	c := newOpenAI(srv.URL, []string{"key"}, true)
+	resp, err := c.Complete(context.Background(), m, Request{MaxOutput: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Message.Reasoning != "summary\ndetail" || resp.Message.Content != "answer" {
+		t.Fatalf("message %+v", resp.Message)
+	}
+	if len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].ID != "call_1" || resp.Message.ToolCalls[0].Name != "exec" {
+		t.Fatalf("tool calls %+v", resp.Message.ToolCalls)
+	}
+}
+
 func TestOpenAIResponsesToolCall(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/responses" {

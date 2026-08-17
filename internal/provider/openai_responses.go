@@ -102,6 +102,10 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 				Type string `json:"type"`
 				Text string `json:"text"`
 			} `json:"content"`
+			Summary []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"summary"`
 		} `json:"output"`
 		Usage struct {
 			Input   int `json:"input_tokens"`
@@ -123,6 +127,15 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 				if part.Type == "output_text" {
 					msg.Content += part.Text
 				}
+			}
+		case "reasoning":
+			for _, part := range item.Summary {
+				if part.Type == "summary_text" {
+					msg.Reasoning += part.Text
+				}
+			}
+			for _, part := range item.Content {
+				msg.Reasoning += part.Text
 			}
 		case "function_call":
 			args := map[string]any{}
