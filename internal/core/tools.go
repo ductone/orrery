@@ -41,15 +41,25 @@ func reviewChildBudget(childUSD, available float64) float64 {
 	return min(max(childUSD, minReviewUSD), available)
 }
 
-func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest, discovery *instructionDiscovery, emit EmitFunc) *builtin.Registry {
+func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest, dialect model.EditDialect, discovery *instructionDiscovery, emit EmitFunc) *builtin.Registry {
 	runtimeCfg, _, _, runtimeMCP, runtimeWeb := e.runtimeSnapshot()
 	root := req.Workspace.Path
 	if root == "" {
 		root = runtimeCfg.WorkspaceRoot
 	}
-	r := builtin.New(root)
+	e.mu.Lock()
+	if e.toolStates == nil {
+		e.toolStates = map[string]*builtin.SessionState{}
+	}
+	state := e.toolStates[sid]
+	if state == nil {
+		state = &builtin.SessionState{}
+		e.toolStates[sid] = state
+	}
+	e.mu.Unlock()
+	r := builtin.NewWithStateDialect(root, state, string(dialect))
 	if req.Workspace.Mode == "read" {
-		r = builtin.NewReadOnly(root)
+		r = builtin.NewReadOnlyWithStateDialect(root, state, string(dialect))
 	}
 	r.Add("ask", "Pause safely and request information that is genuinely required to continue. Do not use for permission or questions answerable from the workspace.", obj(map[string]any{"question": str(), "choices": map[string]any{"type": "array", "items": str()}, "allow_freeform": map[string]any{"type": "boolean"}}, "question"), func(ctx context.Context, a map[string]any) (any, error) {
 		var choices []string

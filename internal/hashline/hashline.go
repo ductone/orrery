@@ -27,6 +27,15 @@ type Patch struct {
 	Path  string `json:"path"`
 	Hunks []Hunk `json:"hunks"`
 }
+
+type AnchorMode string
+
+const (
+	AnchorLine       AnchorMode = "line"
+	AnchorContextual AnchorMode = "contextual"
+	AnchorText       AnchorMode = "text"
+)
+
 type StaleError struct {
 	Anchor string
 	Fresh  []Line
@@ -36,21 +45,49 @@ var ErrNoChanges = errors.New("hashline: patch makes no changes")
 
 func (e *StaleError) Error() string { return fmt.Sprintf("stale or ambiguous anchor %q", e.Anchor) }
 func hash(s string) string          { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:])[:8] }
-func Read(path string) ([]Line, error) {
+
+func hashes(text []string, mode AnchorMode) []Line {
+	out := make([]Line, len(text))
+	for i, current := range text {
+		anchorText := current
+		if mode == AnchorText {
+			out[i] = Line{Number: i + 1, Hash: current, Text: current}
+			continue
+		}
+		if mode == AnchorContextual {
+			previous, next := "", ""
+			if i > 0 {
+				previous = text[i-1]
+			}
+			if i+1 < len(text) {
+				next = text[i+1]
+			}
+			anchorText = previous + "\x00" + current + "\x00" + next
+		}
+		out[i] = Line{Number: i + 1, Hash: hash(anchorText), Text: current}
+	}
+	return out
+}
+
+func Read(path string) ([]Line, error) { return ReadWithMode(path, AnchorLine) }
+
+func ReadWithMode(path string, mode AnchorMode) ([]Line, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	var out []Line
+	var text []string
 	sc := bufio.NewScanner(f)
 	buf := make([]byte, 64*1024)
 	sc.Buffer(buf, 8<<20)
 	for sc.Scan() {
-		t := sc.Text()
-		out = append(out, Line{len(out) + 1, hash(t), t})
+		text = append(text, sc.Text())
 	}
-	return out, sc.Err()
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return hashes(text, mode), nil
 }
 
 type AffectedRegion struct {
@@ -63,8 +100,10 @@ type ApplyResult struct {
 	Affected []AffectedRegion
 }
 
-func Apply(p Patch) (*ApplyResult, error) {
-	lines, err := Read(p.Path)
+func Apply(p Patch) (*ApplyResult, error) { return ApplyWithMode(p, AnchorLine) }
+
+func ApplyWithMode(p Patch, mode AnchorMode) (*ApplyResult, error) {
+	lines, err := ReadWithMode(p.Path, mode)
 	newFile := errors.Is(err, os.ErrNotExist)
 	if err != nil && !newFile {
 		return nil, err
@@ -82,11 +121,19 @@ func Apply(p Patch) (*ApplyResult, error) {
 	for _, h := range p.Hunks {
 		// Find all occurrences of anchor in the snapshot
 		var occurrences []int
-		if len(lines) == 0 && h.Anchor == hash("") && h.Offset == 0 && h.Delete == 0 {
+		newFileAnchor := hash("")
+		if mode == AnchorText {
+			newFileAnchor = ""
+		}
+		if len(lines) == 0 && h.Anchor == newFileAnchor && h.Offset == 0 && h.Delete == 0 {
 			occurrences = []int{0}
 		} else {
 			for i, l := range lines {
-				if strings.HasPrefix(l.Hash, h.Anchor) {
+				matched := strings.HasPrefix(l.Hash, h.Anchor)
+				if mode == AnchorText {
+					matched = l.Hash == h.Anchor
+				}
+				if matched {
 					occurrences = append(occurrences, i)
 				}
 			}
@@ -162,21 +209,18 @@ func Apply(p Patch) (*ApplyResult, error) {
 	if slices.Equal(raw, original) {
 		return nil, ErrNoChanges
 	}
-	mode := os.FileMode(0o644)
+	fileMode := os.FileMode(0o644)
 	if !newFile {
 		info, statErr := os.Stat(p.Path)
 		if statErr != nil {
 			return nil, statErr
 		}
-		mode = info.Mode()
+		fileMode = info.Mode()
 	}
-	if err := os.WriteFile(p.Path, []byte(strings.Join(raw, "\n")+"\n"), mode); err != nil {
+	if err := os.WriteFile(p.Path, []byte(strings.Join(raw, "\n")+"\n"), fileMode); err != nil {
 		return nil, err
 	}
-	newLines := make([]Line, len(raw))
-	for i, t := range raw {
-		newLines[i] = Line{i + 1, hash(t), t}
-	}
+	newLines := hashes(raw, mode)
 	return &ApplyResult{Lines: newLines, Affected: affected}, nil
 }
 

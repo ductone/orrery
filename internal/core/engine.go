@@ -26,6 +26,7 @@ import (
 	"github.com/ductone/orrey/internal/provider"
 	"github.com/ductone/orrey/internal/router"
 	"github.com/ductone/orrey/internal/store"
+	builtin "github.com/ductone/orrey/internal/tools"
 	"github.com/ductone/orrey/internal/webtools"
 )
 
@@ -47,10 +48,11 @@ type Engine struct {
 	discovery         map[string]*instructionDiscovery
 	writers           map[string]string
 	compactedLastTurn map[string]bool
+	toolStates        map[string]*builtin.SessionState
 }
 
 func New(cfg config.Config, s *store.Store, p *provider.Registry, mc *mcp.Manager) *Engine {
-	return &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), lsp: lsp.New(cfg.LSP), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}, writers: map[string]string{}, compactedLastTurn: map[string]bool{}}
+	return &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), lsp: lsp.New(cfg.LSP), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}, writers: map[string]string{}, compactedLastTurn: map[string]bool{}, toolStates: map[string]*builtin.SessionState{}}
 }
 
 // markCompacted records that a session's history was just compacted so the
@@ -709,7 +711,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: err.Error()}, emit)
 		}
 		e.emit(ctx, sid, "routing.decision", map[string]any{"decision": decision, "explanation": why}, emit)
-		reg := e.toolRegistry(sid, parentJob, req, discovery, emit)
+		reg := e.toolRegistry(sid, parentJob, req, decision.EditDialect, discovery, emit)
 		efficientWorker := e.hasEfficientWorker()
 		// Read-only workers have a deliberately small budget. Reserve their last
 		// turns for synthesis instead of letting another broad read consume the
@@ -994,7 +996,14 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 					stall.RepeatedEdits++
 					outcome.EditRetries++
 				}
-				value = map[string]any{"error": callErr.Error()}
+				if details, ok := value.(map[string]any); ok {
+					if _, exists := details["error"]; !exists {
+						details["error"] = callErr.Error()
+					}
+					value = details
+				} else {
+					value = map[string]any{"error": callErr.Error()}
+				}
 			} else if !instructionBlocked {
 				if call.Name == "exec" {
 					stall.FailedCommands = 0
@@ -1142,6 +1151,9 @@ func (e *Engine) hasEfficientWorker() bool {
 }
 
 func (e *Engine) finish(sid string, result agentproto.TaskResult, emit EmitFunc) agentproto.TaskResult {
+	e.mu.Lock()
+	delete(e.toolStates, sid)
+	e.mu.Unlock()
 	if s, err := e.store.Session(context.Background(), sid); err == nil {
 		if s.SpentUSD > result.Outcome.CostUSD {
 			result.Outcome.CostUSD = s.SpentUSD

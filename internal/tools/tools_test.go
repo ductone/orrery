@@ -2,11 +2,15 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/ductone/orrey/internal/hashline"
 )
 
 func TestExecFailureIsAnError(t *testing.T) {
@@ -65,6 +69,9 @@ func TestEditStaleAnchorReturnsFreshAnchorsAndRecoveryHint(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := New(root)
+	if _, err := r.Call(context.Background(), "read", map[string]any{"path": "file.go"}); err != nil {
+		t.Fatal(err)
+	}
 	_, err := r.Call(context.Background(), "edit", map[string]any{
 		"path":  "file.go",
 		"hunks": []any{map[string]any{"anchor": "deadbeef", "delete": float64(1), "insert": []any{"package changed"}}},
@@ -166,5 +173,249 @@ func TestReadScheme(t *testing.T) {
 	v, err := r.Call(context.Background(), "read", map[string]any{"path": "job://123/result.answer"})
 	if err != nil || v != "ok" {
 		t.Fatalf("%v %v", v, err)
+	}
+}
+
+func TestReadAroundLineAndLargeFileOutline(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "small.txt"), []byte("one\ntwo\nthree\nfour\nfive\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := New(root)
+	v, err := r.Call(context.Background(), "read", map[string]any{"path": "small.txt", "around_line": float64(3)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := v.([]hashline.Line)
+	if len(window) != 5 || window[2].Text != "three" || window[2].Hash == "" {
+		t.Fatalf("window=%#v", window)
+	}
+	v, err = r.Call(context.Background(), "read", map[string]any{"path": "small.txt", "around_line": float64(99)})
+	if err != nil || v.([]hashline.Line)[len(v.([]hashline.Line))-1].Text != "five" {
+		t.Fatalf("clamped window=%#v err=%v", v, err)
+	}
+	v, err = r.Call(context.Background(), "read", map[string]any{"path": "small.txt", "start": float64(3), "limit": float64(1), "around_line": nil})
+	if err != nil || len(v.([]hashline.Line)) != 1 || v.([]hashline.Line)[0].Text != "three" {
+		t.Fatalf("null around_line window=%#v err=%v", v, err)
+	}
+	large := make([]string, 2002)
+	large[0], large[1000], large[2001] = "package sample", "func middle() {}", "end"
+	if err := os.WriteFile(filepath.Join(root, "large.go"), []byte(strings.Join(large, "\n")), 0600); err != nil {
+		t.Fatal(err)
+	}
+	v, err = r.Call(context.Background(), "read", map[string]any{"path": "large.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := v.(map[string]any)
+	if !summary["summarized"].(bool) || len(summary["outline"].([]hashline.Line)) != 2 || !strings.Contains(summary["hint"].(string), "around_line") {
+		t.Fatalf("summary=%#v", summary)
+	}
+	v, err = r.Call(context.Background(), "read", map[string]any{"path": "large.go", "start": float64(1000), "limit": float64(2)})
+	if err != nil || len(v.([]hashline.Line)) != 2 {
+		t.Fatalf("window=%#v err=%v", v, err)
+	}
+}
+
+func TestEditFailureLadderAndNoopLoop(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("one\ntwo\nthree\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	state := &SessionState{}
+	r := NewWithState(root, state)
+	if _, err := r.Call(context.Background(), "read", map[string]any{"path": "file.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	stale := map[string]any{"path": "file.txt", "hunks": []any{map[string]any{"anchor": "deadbeef", "delete": float64(1), "insert": []any{"changed"}}}}
+	if _, err := r.Call(context.Background(), "edit", stale); err == nil || !strings.Contains(err.Error(), "fresh anchors") {
+		t.Fatalf("first stale: %v", err)
+	}
+	// The engine rebuilds its registry every model turn. Recovery state must
+	// survive that boundary.
+	r = NewWithState(root, state)
+	v, err := r.Call(context.Background(), "edit", stale)
+	if err == nil || !strings.Contains(err.Error(), "fresh unique anchor") {
+		t.Fatalf("second stale: %v", err)
+	}
+	ladder := v.(map[string]any)
+	if _, ok := ladder["occurrence_lines"]; !ok || ladder["directive"] == "" {
+		t.Fatalf("ladder=%#v", ladder)
+	}
+	read, err := r.Call(context.Background(), "read", map[string]any{"path": "file.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := read.([]hashline.Line)[0].Hash
+	noop := map[string]any{"path": "file.txt", "hunks": []any{map[string]any{"anchor": anchor, "delete": float64(1), "insert": []any{"one"}}}}
+	for i := 0; i < 2; i++ {
+		r = NewWithState(root, state)
+		if _, err := r.Call(context.Background(), "edit", noop); !errors.Is(err, hashline.ErrNoChanges) {
+			t.Fatalf("noop %d: %v", i, err)
+		}
+	}
+	r = NewWithState(root, state)
+	if _, err := r.Call(context.Background(), "edit", noop); err == nil || !strings.Contains(err.Error(), "E_NOOP_LOOP") {
+		t.Fatalf("loop error: %v", err)
+	}
+}
+
+func TestEditRejectsFileChangedSinceRead(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "file.txt")
+	if err := os.WriteFile(path, []byte("one\ntwo\nthree\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	state := &SessionState{}
+	r := NewWithStateDialect(root, state, "hashline-contextual")
+	value, err := r.Call(context.Background(), "read", map[string]any{"path": "file.txt", "around_line": float64(2)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := value.([]hashline.Line)[1].Hash
+	if err := os.WriteFile(path, []byte("external\ntwo\nthree\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	details, err := r.Call(context.Background(), "edit", map[string]any{
+		"path":  "file.txt",
+		"hunks": []any{map[string]any{"anchor": anchor, "delete": float64(1), "insert": []any{"changed"}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "E_FILE_CHANGED") {
+		t.Fatalf("error=%v details=%#v", err, details)
+	}
+	payload := details.(map[string]any)
+	if payload["expected_version"] == payload["current_version"] || payload["diff_since_read"] == nil {
+		t.Fatalf("details=%#v", payload)
+	}
+	b, _ := os.ReadFile(path)
+	if string(b) != "external\ntwo\nthree\n" {
+		t.Fatalf("conflicting edit modified the file: %q", b)
+	}
+}
+
+func TestAroundLineHonorsLimit(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("one\ntwo\nthree\nfour\nfive\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := New(root)
+	value, err := r.Call(context.Background(), "read", map[string]any{"path": "file.txt", "around_line": float64(3), "limit": float64(3)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := value.([]hashline.Line)
+	if len(window) != 3 || window[0].Text != "two" || window[2].Text != "four" {
+		t.Fatalf("window=%#v", window)
+	}
+}
+
+func TestConcurrentSessionsDoNotOverwriteSameSnapshot(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "file.txt")
+	if err := os.WriteFile(path, []byte("one\ntwo\nthree\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	registries := []*Registry{NewWithState(root, &SessionState{}), NewWithState(root, &SessionState{})}
+	anchors := make([]string, len(registries))
+	for i, registry := range registries {
+		value, err := registry.Call(context.Background(), "read", map[string]any{"path": "file.txt"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		anchors[i] = value.([]hashline.Line)[1].Hash
+	}
+	type outcome struct {
+		err error
+	}
+	outcomes := make(chan outcome, len(registries))
+	var wg sync.WaitGroup
+	for i, registry := range registries {
+		wg.Add(1)
+		go func(i int, registry *Registry) {
+			defer wg.Done()
+			_, err := registry.Call(context.Background(), "edit", map[string]any{
+				"path":  "file.txt",
+				"hunks": []any{map[string]any{"anchor": anchors[i], "delete": float64(1), "insert": []any{fmt.Sprintf("writer-%d", i)}}},
+			})
+			outcomes <- outcome{err: err}
+		}(i, registry)
+	}
+	wg.Wait()
+	close(outcomes)
+	succeeded, conflicted := 0, 0
+	for result := range outcomes {
+		switch {
+		case result.err == nil:
+			succeeded++
+		case strings.Contains(result.err.Error(), "E_FILE_CHANGED"):
+			conflicted++
+		default:
+			t.Fatalf("unexpected edit error: %v", result.err)
+		}
+	}
+	if succeeded != 1 || conflicted != 1 {
+		t.Fatalf("succeeded=%d conflicted=%d", succeeded, conflicted)
+	}
+}
+
+func TestOptimisticLockDetectsFinalNewlineOnlyChange(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "file.txt")
+	if err := os.WriteFile(path, []byte("one\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := NewWithState(root, &SessionState{})
+	value, err := r.Call(context.Background(), "read", map[string]any{"path": "file.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := value.([]hashline.Line)[0].Hash
+	if err := os.WriteFile(path, []byte("one"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Call(context.Background(), "edit", map[string]any{
+		"path":  "file.txt",
+		"hunks": []any{map[string]any{"anchor": anchor, "delete": float64(1), "insert": []any{"changed"}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "E_FILE_CHANGED") {
+		t.Fatalf("final-newline-only change was not detected: %v", err)
+	}
+}
+
+func TestSuccessfulEditRefreshesOptimisticLockSnapshot(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "file.txt")
+	if err := os.WriteFile(path, []byte("one\ntwo\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := NewWithState(root, &SessionState{})
+	value, err := r.Call(context.Background(), "read", map[string]any{"path": "file.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAnchor := value.([]hashline.Line)[0].Hash
+	value, err = r.Call(context.Background(), "edit", map[string]any{
+		"path":  "file.txt",
+		"hunks": []any{map[string]any{"anchor": firstAnchor, "delete": float64(1), "insert": []any{"ONE"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	windows := value.(map[string]any)["fresh_anchors"].([][]hashline.Line)
+	var secondAnchor string
+	for _, line := range windows[0] {
+		if line.Text == "two" {
+			secondAnchor = line.Hash
+		}
+	}
+	if secondAnchor == "" {
+		t.Fatalf("fresh window omitted second line: %#v", windows)
+	}
+	_, err = r.Call(context.Background(), "edit", map[string]any{
+		"path":  "file.txt",
+		"hunks": []any{map[string]any{"anchor": secondAnchor, "delete": float64(1), "insert": []any{"TWO"}}},
+	})
+	if err != nil {
+		t.Fatalf("second edit using returned fresh anchor failed: %v", err)
 	}
 }

@@ -2,7 +2,9 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +26,14 @@ import (
 )
 
 type Handler func(context.Context, map[string]any) (any, error)
+
+var fileLocks [256]sync.Mutex
+
+func fileLock(path string) *sync.Mutex {
+	sum := sha256.Sum256([]byte(path))
+	return &fileLocks[sum[0]]
+}
+
 type Registry struct {
 	root     string
 	defs     []provider.Tool
@@ -31,7 +41,85 @@ type Registry struct {
 	schemes  map[string]Handler
 	mu       sync.Mutex
 	jobs     map[string]*commandJob
+	state    *SessionState
+	dialect  anchorDialect
 }
+
+// SessionState holds edit recovery state across model turns. Engine tool
+// registries are intentionally rebuilt each turn, so this state must be owned
+// by the session rather than by an individual Registry.
+type SessionState struct {
+	mu             sync.Mutex
+	anchorFailures map[string]int
+	noop           noopState
+	snapshots      map[string]fileSnapshot
+}
+
+type noopState struct {
+	signature string
+	streak    int
+}
+
+type fileSnapshot struct {
+	version string
+	content []string
+}
+
+type anchorDialect string
+
+const (
+	anchorHashline   anchorDialect = "hashline-json"
+	anchorContextual anchorDialect = "hashline-contextual"
+	anchorText       anchorDialect = "text-anchor"
+)
+
+func (d anchorDialect) mode() hashline.AnchorMode {
+	if d == anchorContextual {
+		return hashline.AnchorContextual
+	}
+	if d == anchorText {
+		return hashline.AnchorText
+	}
+	return hashline.AnchorLine
+}
+
+func fileVersion(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])[:16], nil
+}
+
+func lineText(lines []hashline.Line) []string {
+	text := make([]string, len(lines))
+	for i := range lines {
+		text[i] = lines[i].Text
+	}
+	return text
+}
+
+func editDescription(d anchorDialect) string {
+	if d == anchorContextual {
+		return "Apply contextual hashline hunks. Anchors are 8-character hashes of the previous, current, and next visible lines from the latest read; changing either neighbor makes an anchor stale. For a new file use e3b0c442 with delete=0."
+	}
+	if d == anchorText {
+		return "Apply exact-text anchor hunks. Copy the complete line text from the latest read into anchor; repeated identical lines are ambiguous. For a new file use an empty anchor with delete=0."
+	}
+	return "Apply content-anchored hashline hunks. You MUST read the exact target window immediately before editing and copy its latest 8-character hash into anchor. To create a new file, use anchor e3b0c442 with delete=0. Re-read after compaction or a stale error. Structural declaration deletion is rejected unless explicitly allowed."
+}
+
+func readDescription(d anchorDialect) string {
+	if d == anchorContextual {
+		return "Read a file or directory. File anchors hash the previous, current, and next visible lines; a changed neighbor invalidates an anchor."
+	}
+	if d == anchorText {
+		return "Read a file or directory. The hash field contains the exact line text to copy into edit.anchor; repeated identical lines may be ambiguous."
+	}
+	return "Read a file or directory. Files include hashline anchors. around_line returns a small 1-based window around a requested line."
+}
+
 type commandJob struct {
 	cmd  *exec.Cmd
 	path string
@@ -39,17 +127,47 @@ type commandJob struct {
 }
 
 func New(root string) *Registry {
-	r := NewReadOnly(root)
+	return NewWithStateDialect(root, nil, string(anchorHashline))
+}
+
+func NewWithState(root string, state *SessionState) *Registry {
+	return NewWithStateDialect(root, state, string(anchorHashline))
+}
+
+func NewWithStateDialect(root string, state *SessionState, dialect string) *Registry {
+	r := NewReadOnlyWithStateDialect(root, state, dialect)
 	anchor := map[string]any{"type": "string", "pattern": "^[0-9a-f]{8}$", "description": "Exact 8-character hash copied from the latest read result. Never use line text, a line number, or a placeholder."}
-	r.add("edit", "Apply content-anchored hashline hunks. You MUST read the exact target window immediately before editing and copy its latest 8-character hash into anchor. To create a new file, use anchor e3b0c442 with delete=0. Re-read after compaction or a stale error. Structural declaration deletion is rejected unless explicitly allowed.", schema(map[string]any{"path": str(), "hunks": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"anchor": anchor, "offset": num(), "delete": num(), "insert": map[string]any{"type": "array", "items": str()}, "allow_structural_change": boolean()}, "required": []string{"anchor", "delete", "insert"}, "additionalProperties": false}}}, "path", "hunks"), r.edit)
+	if r.dialect == anchorText {
+		anchor = map[string]any{"type": "string", "description": "Complete exact line text copied from the latest read result. Never use a line number or placeholder."}
+	}
+	r.add("edit", editDescription(r.dialect), schema(map[string]any{"path": str(), "hunks": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"anchor": anchor, "offset": num(), "delete": num(), "insert": map[string]any{"type": "array", "items": str()}, "allow_structural_change": boolean()}, "required": []string{"anchor", "delete", "insert"}, "additionalProperties": false}}}, "path", "hunks"), r.edit)
 	r.add("exec", "Run a shell command in the workspace. Use background=true for long jobs.", schema(map[string]any{"command": str(), "background": boolean(), "timeout_seconds": num()}, "command"), r.run)
 	r.add("job", "Wait for, cancel, or read logs from a background exec job.", schema(map[string]any{"id": str(), "action": map[string]any{"type": "string", "enum": []string{"wait", "cancel", "logs"}}}, "id", "action"), r.job)
 	return r
 }
 
 func NewReadOnly(root string) *Registry {
-	r := &Registry{root: root, handlers: map[string]Handler{}, schemes: map[string]Handler{}, jobs: map[string]*commandJob{}}
-	r.add("read", "Read a file or directory. Files include hashline anchors.", schema(map[string]any{"path": str(), "start": num(), "limit": num()}, "path"), r.read)
+	return NewReadOnlyWithStateDialect(root, nil, string(anchorHashline))
+}
+
+func NewReadOnlyWithState(root string, state *SessionState) *Registry {
+	return NewReadOnlyWithStateDialect(root, state, string(anchorHashline))
+}
+
+func NewReadOnlyWithStateDialect(root string, state *SessionState, dialect string) *Registry {
+	if state == nil {
+		state = &SessionState{}
+	}
+	state.mu.Lock()
+	if state.anchorFailures == nil {
+		state.anchorFailures = map[string]int{}
+	}
+	if state.snapshots == nil {
+		state.snapshots = map[string]fileSnapshot{}
+	}
+	state.mu.Unlock()
+	r := &Registry{root: root, handlers: map[string]Handler{}, schemes: map[string]Handler{}, jobs: map[string]*commandJob{}, state: state, dialect: anchorDialect(dialect)}
+	r.add("read", readDescription(r.dialect), schema(map[string]any{"path": str(), "start": num(), "limit": num(), "around_line": num()}, "path"), r.read)
 	r.add("search", "Regex search file contents with optional glob.", schema(map[string]any{"pattern": str(), "glob": str(), "max_results": num()}, "pattern"), r.search)
 	return r
 }
@@ -174,9 +292,31 @@ func (r *Registry) read(ctx context.Context, a map[string]any) (any, error) {
 		}
 		return out, nil
 	}
-	lines, err := hashline.Read(p)
+	lock := fileLock(p)
+	lock.Lock()
+	defer lock.Unlock()
+	lines, err := hashline.ReadWithMode(p, r.dialect.mode())
 	if err != nil {
 		return nil, err
+	}
+	currentVersion, err := fileVersion(p)
+	if err != nil {
+		return nil, err
+	}
+	r.state.mu.Lock()
+	r.state.snapshots[p] = fileSnapshot{version: currentVersion, content: lineText(lines)}
+	r.state.mu.Unlock()
+	if around, ok := a["around_line"]; ok && around != nil {
+		if len(lines) == 0 {
+			return lines, nil
+		}
+		line := min(len(lines), max(1, asInt(around, 1)))
+		window := asInt(a["limit"], 9)
+		window = min(200, max(1, window))
+		lo := max(0, line-1-window/2)
+		hi := min(len(lines), lo+window)
+		lo = max(0, hi-window)
+		return lines[lo:hi], nil
 	}
 	start := max(1, asInt(a["start"], 1))
 	limit := asInt(a["limit"], 400)
@@ -184,11 +324,11 @@ func (r *Registry) read(ctx context.Context, a map[string]any) (any, error) {
 		outline := []hashline.Line{}
 		for _, l := range lines {
 			t := strings.TrimSpace(l.Text)
-			if strings.HasPrefix(t, "func ") || strings.HasPrefix(t, "type ") || strings.HasPrefix(t, "package ") || strings.HasPrefix(t, "#") {
+			if strings.HasPrefix(t, "func ") || strings.HasPrefix(t, "type ") || strings.HasPrefix(t, "class ") || strings.HasPrefix(t, "interface ") || strings.HasPrefix(t, "package ") || strings.HasPrefix(t, "#") {
 				outline = append(outline, l)
 			}
 		}
-		return map[string]any{"summarized": true, "line_count": len(lines), "outline": outline, "hint": "request a start/limit window"}, nil
+		return map[string]any{"summarized": true, "line_count": len(lines), "outline": outline, "hint": "request a start/limit window or an around_line window"}, nil
 	}
 	lo := min(len(lines), start-1)
 	hi := min(len(lines), lo+limit)
@@ -305,17 +445,122 @@ func (r *Registry) edit(_ context.Context, a map[string]any) (any, error) {
 		return nil, err
 	}
 	p.Path = safe
-	result, err := hashline.Apply(p)
+	signature := string(b)
+	lock := fileLock(p.Path)
+	lock.Lock()
+	defer lock.Unlock()
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+	if r.state.noop.signature != signature {
+		r.state.noop = noopState{}
+	}
+	current, readErr := hashline.ReadWithMode(p.Path, r.dialect.mode())
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return nil, readErr
+	}
+	if readErr == nil {
+		currentVersion, err := fileVersion(p.Path)
+		if err != nil {
+			return nil, err
+		}
+		snapshot, ok := r.state.snapshots[p.Path]
+		if !ok {
+			details := map[string]any{
+				"error":           "E_FILE_NOT_READ: file must be read before editing",
+				"current_version": currentVersion,
+				"directive":       "read the exact target window, then retry with a returned anchor",
+			}
+			return details, errors.New("E_FILE_NOT_READ: file must be read before editing")
+		}
+		if currentVersion != snapshot.version {
+			details := map[string]any{
+				"error":            "E_FILE_CHANGED: file changed since this session last read it",
+				"expected_version": snapshot.version,
+				"current_version":  currentVersion,
+				"diff_since_read":  diffSince(snapshot.content, lineText(current)),
+				"directive":        "re-read the target region and retry using fresh anchors",
+			}
+			return details, errors.New("E_FILE_CHANGED: file changed since this session last read it")
+		}
+	}
+	result, err := hashline.ApplyWithMode(p, r.dialect.mode())
+	if errors.Is(err, hashline.ErrNoChanges) {
+		r.state.noop.signature, r.state.noop.streak = signature, r.state.noop.streak+1
+		if r.state.noop.streak >= 3 {
+			return nil, errors.New("E_NOOP_LOOP: three consecutive identical no-op edits")
+		}
+		return nil, err
+	}
+	// Any result other than the same no-op breaks the consecutive no-op streak,
+	// even when the file changed externally and the same patch is now stale.
+	r.state.noop = noopState{}
 	if err != nil {
 		var stale *hashline.StaleError
 		if errors.As(err, &stale) {
+			key := p.Path + "|" + stale.Anchor
+			r.state.anchorFailures[key]++
+			if r.state.anchorFailures[key] > 1 {
+				lines, _ := hashline.ReadWithMode(p.Path, r.dialect.mode())
+				occurrences := []int{}
+				for _, line := range lines {
+					if r.anchorMatches(line.Hash, stale.Anchor) {
+						occurrences = append(occurrences, line.Number)
+					}
+				}
+				region := stale.Fresh
+				if len(occurrences) > 0 {
+					lo := max(0, occurrences[0]-11)
+					hi := min(len(lines), occurrences[0]+10)
+					region = lines[lo:hi]
+				} else if len(lines) > 0 {
+					region = lines[:min(len(lines), 20)]
+				}
+				return map[string]any{"error": err.Error(), "region": region, "occurrence_lines": occurrences, "directive": "choose a fresh unique anchor from this region before retrying"}, fmt.Errorf("%w; occurrence line numbers: %v; choose a fresh unique anchor from the larger region before retrying", err, occurrences)
+			}
 			fresh, _ := json.Marshal(stale.Fresh)
 			return map[string]any{"error": err.Error(), "fresh_anchors": stale.Fresh}, fmt.Errorf("%w; fresh anchors near the lookup point: %s; call read on the exact target window before retrying", err, fresh)
 		}
 		return nil, err
 	}
+	r.state.anchorFailures = map[string]int{}
+	currentVersion, err := fileVersion(p.Path)
+	if err != nil {
+		return nil, err
+	}
+	r.state.snapshots[p.Path] = fileSnapshot{version: currentVersion, content: lineText(result.Lines)}
 	windows := computeFreshWindows(result.Lines, result.Affected)
 	return map[string]any{"applied": len(p.Hunks), "fresh_anchors": windows}, nil
+}
+
+func (r *Registry) anchorMatches(candidate, anchor string) bool {
+	if r.dialect == anchorText {
+		return candidate == anchor
+	}
+	return strings.HasPrefix(candidate, anchor)
+}
+
+func diffSince(before, after []string) map[string]any {
+	changes := make([]map[string]any, 0, 20)
+	lineCount := max(len(before), len(after))
+	truncated := false
+	for i := 0; i < lineCount; i++ {
+		oldText, newText := "", ""
+		if i < len(before) {
+			oldText = before[i]
+		}
+		if i < len(after) {
+			newText = after[i]
+		}
+		if oldText == newText {
+			continue
+		}
+		if len(changes) == cap(changes) {
+			truncated = true
+			break
+		}
+		changes = append(changes, map[string]any{"line": i + 1, "before": oldText, "after": newText})
+	}
+	return map[string]any{"changes": changes, "truncated": truncated}
 }
 
 func computeFreshWindows(lines []hashline.Line, affected []hashline.AffectedRegion) [][]hashline.Line {

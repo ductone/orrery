@@ -223,3 +223,64 @@ func TestApplyAutoRebaseDoesNotDeleteFuzzyAnchor(t *testing.T) {
 		t.Fatalf("file was modified despite fuzzy delete: %q", b)
 	}
 }
+
+func TestContextualAnchorsDisambiguateRepeatedLines(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "x.go")
+	if err := os.WriteFile(p, []byte("first\n}\nleft\nsecond\n}\nright\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := ReadWithMode(p, AnchorContextual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines[1].Hash == lines[4].Hash {
+		t.Fatalf("repeated lines retained the same contextual hash: %q", lines[1].Hash)
+	}
+	if _, err := ApplyWithMode(Patch{Path: p, Hunks: []Hunk{{Anchor: lines[4].Hash, Delete: 1, Insert: []string{"} // target"}}}}, AnchorContextual); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p)
+	if !strings.Contains(string(b), "second\n} // target\nright") {
+		t.Fatalf("wrong repeated line edited: %q", b)
+	}
+}
+
+func TestContextualAnchorBecomesStaleWhenNeighborChanges(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "x.txt")
+	if err := os.WriteFile(p, []byte("before\ntarget\nafter\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := ReadWithMode(p, AnchorContextual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("changed\ntarget\nafter\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = ApplyWithMode(Patch{Path: p, Hunks: []Hunk{{Anchor: lines[1].Hash, Delete: 1, Insert: []string{"updated"}}}}, AnchorContextual)
+	var stale *StaleError
+	if !errors.As(err, &stale) {
+		t.Fatalf("neighbor change did not stale the anchor: %v", err)
+	}
+}
+
+func TestTextAnchorDialectUsesExactLineText(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "x.txt")
+	if err := os.WriteFile(p, []byte("alpha\nbeta\ngamma\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := ReadWithMode(p, AnchorText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines[1].Hash != "beta" {
+		t.Fatalf("text anchor=%q", lines[1].Hash)
+	}
+	if _, err := ApplyWithMode(Patch{Path: p, Hunks: []Hunk{{Anchor: "beta", Delete: 1, Insert: []string{"BETA"}}}}, AnchorText); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p)
+	if string(b) != "alpha\nBETA\ngamma\n" {
+		t.Fatalf("content=%q", b)
+	}
+}
