@@ -1,11 +1,15 @@
 package core
 
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ductone/orrey/internal/config"
 	"github.com/ductone/orrey/internal/provider"
 	"github.com/ductone/orrey/internal/store"
+	"github.com/google/uuid"
 )
 
 func TestEmptyFinalResponse(t *testing.T) {
@@ -102,4 +106,82 @@ func TestFallbackCompactionProducesRecoveryContract(t *testing.T) {
 	if !state.valid() || state.Objective != s.Spec || len(state.Verification) == 0 || len(state.Decisions) == 0 || state.PriorSummary == "" {
 		t.Fatalf("state=%+v", state)
 	}
+}
+
+func testEngine(t *testing.T) (*Engine, *store.Store) {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return New(config.Config{}, st, nil, nil), st
+}
+
+func TestInferPhaseTransitions(t *testing.T) {
+	ctx := context.Background()
+	e, st := testEngine(t)
+
+	mkSession := func(phase string) string {
+		sid := uuid.NewString()
+		if err := st.CreateSession(ctx, store.Session{ID: sid, Spec: "transition test", Phase: phase, BudgetUSD: 1}); err != nil {
+			t.Fatal(err)
+		}
+		return sid
+	}
+	phaseOf := func(sid string) string {
+		s, err := st.Session(ctx, sid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.Phase
+	}
+
+	t.Run("edit in review returns to implement", func(t *testing.T) {
+		sid := mkSession("review")
+		p := newProgressTracker()
+		e.inferPhase(ctx, sid, "edit", "", p)
+		if got := phaseOf(sid); got != "implement" {
+			t.Fatalf("got %q, want implement", got)
+		}
+	})
+
+	t.Run("edit in diagnose returns to implement", func(t *testing.T) {
+		sid := mkSession("diagnose")
+		p := newProgressTracker()
+		e.inferPhase(ctx, sid, "edit", "", p)
+		if got := phaseOf(sid); got != "implement" {
+			t.Fatalf("got %q, want implement", got)
+		}
+	})
+
+	t.Run("reviewed and verified advances to wrap-up", func(t *testing.T) {
+		sid := mkSession("review")
+		p := newProgressTracker()
+		p.reviewed = true
+		p.verified = true
+		e.inferPhase(ctx, sid, "", "", p)
+		if got := phaseOf(sid); got != "wrap-up" {
+			t.Fatalf("got %q, want wrap-up", got)
+		}
+	})
+
+	t.Run("reviewed but unverified stays in review", func(t *testing.T) {
+		sid := mkSession("review")
+		p := newProgressTracker()
+		p.reviewed = true
+		e.inferPhase(ctx, sid, "", "", p)
+		if got := phaseOf(sid); got != "review" {
+			t.Fatalf("got %q, want review", got)
+		}
+	})
+
+	t.Run("edit from explore still enters implement", func(t *testing.T) {
+		sid := mkSession("explore")
+		p := newProgressTracker()
+		e.inferPhase(ctx, sid, "edit", "", p)
+		if got := phaseOf(sid); got != "implement" {
+			t.Fatalf("got %q, want implement", got)
+		}
+	})
 }

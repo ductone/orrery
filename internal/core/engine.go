@@ -918,6 +918,9 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 					}
 				}
 			}
+			// Once the independent review and verification gates are satisfied, advance
+			// the session phase toward wrap-up so it does not remain stuck in review.
+			e.inferPhase(ctx, sid, "", "", progress)
 			result := parseResult(resp.Message.Content)
 			if err := validateSchema(req.ResultSchema, result); err != nil {
 				return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "result schema: " + err.Error()}, emit)

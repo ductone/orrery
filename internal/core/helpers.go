@@ -132,13 +132,28 @@ func (e *Engine) inferPhase(ctx context.Context, sid, toolName, command string, 
 		return
 	}
 	next := s.Phase
+
+	// Edit while in explore/plan → implement (initial implementation work).
 	if toolName == "edit" && (next == string(router.Explore) || next == string(router.Plan)) {
 		next = string(router.Implement)
 	}
+
+	// Edit while in review/diagnose → implement (work resumed after review).
+	if toolName == "edit" && (next == string(router.Review) || next == string(router.Diagnose)) {
+		next = string(router.Implement)
+	}
+
 	cmd := strings.ToLower(command)
 	if toolName == "exec" && progress.edited && containsAny(cmd, " test", "test ", "lint", "typecheck", "build", "check", "vet") {
 		next = string(router.Review)
 	}
+
+	// When independent review and verification both passed, advance to wrap-up
+	// so the session can complete instead of lingering in review until the bound fires.
+	if next == string(router.Review) && progress.reviewed && progress.verified {
+		next = string(router.WrapUp)
+	}
+
 	if next != s.Phase {
 		s.Phase = next
 		_ = e.store.UpdateSession(ctx, s)
