@@ -120,6 +120,33 @@ func TestBoundedPhaseTransitions(t *testing.T) {
 	}
 }
 
+func TestVerifiedCompletionIsForcedAfterReviewWithoutEdits(t *testing.T) {
+	p := newProgressTracker()
+	p.phase = "review"
+	p.verified = true
+	p.turnsSinceEdit = 2
+	if p.shouldForceVerifiedCompletion() {
+		t.Fatal("verified completion was forced too early")
+	}
+	p.turnsSinceEdit = 3
+	if !p.shouldForceVerifiedCompletion() {
+		t.Fatal("verified completion was not forced after three review turns without edits")
+	}
+	p.phase = "diagnose"
+	if !p.shouldForceVerifiedCompletion() {
+		t.Fatal("verified completion was not forced during diagnosis")
+	}
+	p.phase = "implement"
+	if p.shouldForceVerifiedCompletion() {
+		t.Fatal("verified completion must not be forced during implementation")
+	}
+	p.phase = "review"
+	p.verified = false
+	if p.shouldForceVerifiedCompletion() {
+		t.Fatal("unverified review must not force completion")
+	}
+}
+
 func TestIndependentReviewRemediationBoundSurvivesPhaseChanges(t *testing.T) {
 	p := newProgressTracker()
 	p.markReviewRejected()

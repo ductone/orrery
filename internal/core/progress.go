@@ -18,6 +18,7 @@ type progressTracker struct {
 	nudges, completionRejections  int
 	reviewRemediationTurns        int
 	delegated, edited, verified   bool
+	turnsSinceEdit                int
 	reviewed                      bool
 	reviewRemediation             bool
 	seenResults                   map[string]string
@@ -101,6 +102,11 @@ func (p *progressTracker) observe(call provider.ToolCall, value any, callErr err
 }
 
 func (p *progressTracker) endTurn() {
+	if p.turnEdited {
+		p.turnsSinceEdit = 0
+	} else {
+		p.turnsSinceEdit++
+	}
 	if p.turnProgress {
 		p.noProgressTurns = 0
 		return
@@ -120,6 +126,10 @@ func shouldForceWorkerSynthesis(turn int) bool { return turn >= 4 }
 
 func (p *progressTracker) shouldForcePlanExecution() bool {
 	return p.repeatedTodos >= 2 || p.phaseTurns >= 6
+}
+
+func (p *progressTracker) shouldForceVerifiedCompletion() bool {
+	return p.verified && p.turnsSinceEdit >= 3 && (p.phase == "review" || p.phase == "diagnose")
 }
 
 func shouldForceFinalResolution(phase string, phaseTurns int) bool {
@@ -142,6 +152,7 @@ func (p *progressTracker) reviewRemediationReason(parentJob string) string {
 	return ""
 }
 
+// terminalStallReason is deliberately narrow: an agent may spend many turns on
 // terminalStallReason is deliberately narrow: an agent may spend many turns on
 // a hard task, but repeatedly submitting the exact same plan after a progress
 // intervention cannot create new evidence. Ending the run preserves budget and

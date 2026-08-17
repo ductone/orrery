@@ -719,6 +719,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		forcePlanSynthesis := parentJob == "" && s.Phase == string(router.Plan) && (progress.delegated || progress.phaseTurns >= 4)
 		forcePlanExecution := parentJob == "" && s.Phase == string(router.Plan) && progress.shouldForcePlanExecution()
 		forceImplementation := parentJob == "" && s.Phase == string(router.Implement) && progress.noProgressTurns >= 3
+		forceVerifiedCompletion := parentJob == "" && progress.shouldForceVerifiedCompletion()
 		forceResolution := parentJob == "" && ((s.Phase == string(router.Review) || s.Phase == string(router.Diagnose)) && progress.phaseTurns >= 6 || progress.reviewRemediation && progress.reviewRemediationTurns >= 4)
 		forceFinalResolution := parentJob == "" && shouldForceFinalResolution(s.Phase, progress.phaseTurns)
 		build := func(m model.ModelSpec, d router.Decision) (provider.Request, error) {
@@ -754,6 +755,10 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			if forceImplementation {
 				system += " Implementation is stalled after decisive evidence. Stop broad exploration. Read only an exact edit window if needed, finish the smallest justified edit, then run focused verification."
 				definitions = reg.DefinitionsOnly("todo", "read", "edit", "exec")
+			}
+			if forceVerifiedCompletion {
+				system += " The workspace has been successfully verified and no new edit has been made for several review turns. Review is complete. No more tools are available; return the final result now from the existing diff and verification evidence."
+				definitions = nil
 			}
 			if forceResolution {
 				system += " Review or diagnosis has reached its resolution limit. Existing issue, diff, test, and review evidence is sufficient. Do not rediscover or refetch the task. Make only the smallest correction required by current evidence, run one focused verification command, then return the final result."
