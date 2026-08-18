@@ -128,7 +128,7 @@ func TestCompactionAnchorSelectsActiveTodo(t *testing.T) {
 		{Text: "Implement the pinned-plan UI", Phase: "implement", Status: "pending"},
 		{Text: "Run the pinned-plan UI verification", Phase: "review", Status: "in_progress"},
 	}
-	anchor := selectDurableAnchor(s, todos)
+	anchor := selectDurableAnchor(s, todos, store.Continuation{}, nil)
 	if anchor.Source != "in_progress" || !strings.Contains(anchor.CurrentObjective, "Run the pinned-plan UI verification") {
 		t.Fatalf("in_progress todo must win: %+v", anchor)
 	}
@@ -140,7 +140,7 @@ func TestCompactionAnchorSelectsActiveTodo(t *testing.T) {
 		{Text: "Implement the pinned-plan UI", Phase: "implement", Status: "pending"},
 		{Text: "Run the pinned-plan UI verification", Phase: "review", Status: "pending"},
 	}
-	anchor = selectDurableAnchor(s, noInProgress)
+	anchor = selectDurableAnchor(s, noInProgress, store.Continuation{}, nil)
 	if anchor.Source != "pending" || !strings.Contains(anchor.CurrentObjective, "Implement the pinned-plan UI") {
 		t.Fatalf("first pending todo must be used: %+v", anchor)
 	}
@@ -157,7 +157,7 @@ func TestCompactionAnchorAllCompleteNamesLastCompleted(t *testing.T) {
 		{Text: "Implement the pinned-plan UI", Phase: "implement", Status: "completed"},
 		{Text: "Run the pinned-plan UI verification", Phase: "review", Status: "completed"},
 	}
-	anchor := selectDurableAnchor(s, todos)
+	anchor := selectDurableAnchor(s, todos, store.Continuation{}, nil)
 	if anchor.Source != "completed_wrap_up" {
 		t.Fatalf("expected completed_wrap_up source: %+v", anchor)
 	}
@@ -182,7 +182,7 @@ func TestCompactionAnchorAppliesToFallback(t *testing.T) {
 		{Role: "assistant", ContentJSON: `{"content":"It is 14:30 UTC."}`},
 	}
 	state := fallbackDurableState(s, old)
-	state, anchor, counts := anchorDurableState(state, s, todos, old)
+	state, anchor, counts := anchorDurableState(state, s, todos, store.Continuation{}, nil, old)
 	if !strings.Contains(state.CurrentObjective, "Fix the retry race") {
 		t.Fatalf("fallback lost active todo anchor: %+v", state)
 	}
@@ -263,7 +263,7 @@ func TestCompactionAnchorWrapUpAllowsResolvedCompletedTodo(t *testing.T) {
 	s := store.Session{Spec: "Run the pinned-plan UI verification", Phase: "wrap-up"}
 	todos := []store.Todo{{Text: "Run the pinned-plan UI verification", Phase: "review", Status: "completed"}}
 	state := DurableState{Objective: s.Spec, ResolvedRequests: []string{"Run the pinned-plan UI verification"}}
-	state, anchor, _ := anchorDurableState(state, s, todos, nil)
+	state, anchor, _ := anchorDurableState(state, s, todos, store.Continuation{}, nil, nil)
 	if err := validateCompactionAnchor(state, anchor); err != nil {
 		t.Fatalf("wrap-up naming a resolved completed todo must not fail: %v", err)
 	}
@@ -276,8 +276,72 @@ func TestCompactionAnchorRejectsResolvedActiveTodo(t *testing.T) {
 	s := store.Session{Spec: "What time is it?", Phase: "implement"}
 	todos := []store.Todo{{Text: "What time is it?", Phase: "implement", Status: "pending"}}
 	state := DurableState{Objective: s.Spec, ResolvedRequests: []string{"What time is it?"}}
-	state, anchor, _ := anchorDurableState(state, s, todos, nil)
+	state, anchor, _ := anchorDurableState(state, s, todos, store.Continuation{}, nil, nil)
 	if err := validateCompactionAnchor(state, anchor); err == nil {
 		t.Fatal("active todo equal to a resolved request must fail validation")
+	}
+}
+
+// The continuation ledger is the authority for the active objective: it drives
+// the anchor even when the todo plan is cleared, because completed work items
+// are retained and the report obligation is explicit state.
+func TestCompactionAnchorUsesContinuationLedger(t *testing.T) {
+	ctx := context.Background()
+	_, st := testEngine(t)
+	workspace := t.TempDir()
+	req := agentproto.TaskRequest{
+		Spec:      "Ship the pinned-plan UI",
+		Budget:    agentproto.Budget{MaxUSD: 5, MaxTokens: 10_000, MaxWallClock: time.Second, MaxDepth: 0},
+		Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write"},
+	}
+	const sid = "compaction-ledger"
+	if err := st.CreateSession(ctx, store.Session{ID: sid, Spec: req.Spec, Phase: "implement", Status: "interrupted", BudgetUSD: req.Budget.MaxUSD, WorkspacePath: workspace, RequestJSON: store.JSON(req)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetTodos(ctx, sid, []store.Todo{
+		{Text: "Implement the pinned-plan UI", Phase: "implement", Status: "pending"},
+		{Text: "Run the pinned-plan UI verification", Phase: "review", Status: "in_progress"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := st.Session(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cont, err := st.Continuation(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workItems, err := st.WorkItems(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := selectDurableAnchor(s, nil, cont, workItems)
+	if anchor.Source != "in_progress" || !strings.Contains(anchor.CurrentObjective, "Run the pinned-plan UI verification") {
+		t.Fatalf("ledger active anchor wrong: %+v", anchor)
+	}
+
+	// Complete everything, then clear the plan: the report obligation must
+	// survive because completed work items are retained in the ledger.
+	if err := st.SetTodos(ctx, sid, []store.Todo{
+		{Text: "Implement the pinned-plan UI", Phase: "implement", Status: "completed"},
+		{Text: "Run the pinned-plan UI verification", Phase: "review", Status: "completed"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetTodos(ctx, sid, nil); err != nil {
+		t.Fatal(err)
+	}
+	cont, err = st.Continuation(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workItems, err = st.WorkItems(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor = selectDurableAnchor(s, nil, cont, workItems)
+	if anchor.Source != "completed_wrap_up" || !strings.Contains(anchor.CurrentObjective, "Run the pinned-plan UI verification") {
+		t.Fatalf("ledger wrap-up anchor wrong: %+v", anchor)
 	}
 }

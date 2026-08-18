@@ -1183,6 +1183,22 @@ func (e *Engine) finish(sid string, result agentproto.TaskResult, emit EmitFunc)
 			s.Status = string(result.Status)
 			_ = e.store.UpdateSession(context.Background(), s)
 		}
+		// A passing final response delivers the report obligation; clear the
+		// continuation anchor so a follow-up turn does not re-assert it. The
+		// durable summary may not be DurableState JSON (e.g. a todo snapshot),
+		// in which case it is preserved while the continuation is still cleared.
+		if result.Status == agentproto.Pass {
+			newSummary := s.DurableSummary
+			var state DurableState
+			if json.Unmarshal([]byte(s.DurableSummary), &state) == nil {
+				state.CurrentObjective = ""
+				state.PendingReport = ""
+				if b, err := json.Marshal(state); err == nil {
+					newSummary = string(b)
+				}
+			}
+			_ = e.store.AcknowledgeReport(context.Background(), sid, newSummary)
+		}
 	}
 	_ = e.store.UpdateSessionRoutingOutcome(context.Background(), sid, result)
 	for _, artifact := range result.Artifacts {

@@ -96,15 +96,24 @@ func (e *Engine) compactState(ctx context.Context, sid, reason string, emit Emit
 	if err != nil {
 		return err
 	}
-	state, meta, summaryErr := e.semanticSummary(ctx, s, todos, msgs[:keepAt])
+	cont, err := e.store.Continuation(ctx, sid)
+	if err != nil {
+		return err
+	}
+	workItems, err := e.store.WorkItems(ctx, sid)
+	if err != nil {
+		return err
+	}
+	state, meta, summaryErr := e.semanticSummary(ctx, s, todos, cont, workItems, msgs[:keepAt])
 	if summaryErr != nil {
 		state = fallbackDurableState(s, msgs[:keepAt])
 		meta = map[string]any{"strategy": "structured_fallback", "error": summaryErr.Error()}
 	}
-	// The todo plan is persistent session state, whereas the semantic summary is
-	// best-effort model output. Keep the task to continue and the report still
-	// owed deterministic so compaction cannot resurrect an older answered prompt.
-	state, anchor, resolvedCounts := anchorDurableState(state, s, todos, msgs[:keepAt])
+	// The continuation ledger and todo plan are persistent session state,
+	// whereas the semantic summary is best-effort model output. Keep the task
+	// to continue and the report still owed deterministic so compaction cannot
+	// resurrect an older answered prompt.
+	state, anchor, resolvedCounts := anchorDurableState(state, s, todos, cont, workItems, msgs[:keepAt])
 	if err := validateCompactionAnchor(state, anchor); err != nil {
 		return err
 	}
@@ -113,14 +122,7 @@ func (e *Engine) compactState(ctx context.Context, sid, reason string, emit Emit
 		return err
 	}
 	s.DurableSummary = string(encoded)
-	if err = e.store.UpdateSession(ctx, s); err != nil {
-		return err
-	}
-	if err = e.store.CompactMessages(ctx, sid, len(msgs)-keepAt); err != nil {
-		_ = e.store.RestoreCheckpoint(ctx, sid, cp.ID)
-		return err
-	}
-	if err = e.store.InvalidateCaches(ctx, sid); err != nil {
+	if err = e.store.ApplyCompaction(ctx, s, len(msgs)-keepAt); err != nil {
 		return err
 	}
 	if err := e.mcpBoundary(ctx); err != nil {
@@ -146,7 +148,7 @@ func (e *Engine) compact(ctx context.Context, sid string, emit EmitFunc) {
 	}
 }
 
-func (e *Engine) semanticSummary(ctx context.Context, s store.Session, todos []store.Todo, old []store.Message) (DurableState, map[string]any, error) {
+func (e *Engine) semanticSummary(ctx context.Context, s store.Session, todos []store.Todo, cont store.Continuation, workItems []store.WorkItem, old []store.Message) (DurableState, map[string]any, error) {
 	spec, ok := model.Get(s.Model)
 	_, providers, _, _, _ := e.runtimeSnapshot()
 	if !ok || providers == nil || !providers.Available(spec) {
@@ -154,7 +156,7 @@ func (e *Engine) semanticSummary(ctx context.Context, s store.Session, todos []s
 	}
 	transcript := compactTranscript(old, 96_000)
 	system := `Summarize an autonomous coding session for lossless continuation. Return one JSON object only with these exact keys: objective, current_objective, pending_report, resolved_requests, requirements, decisions, completed, files, verification, open_work, blockers, instructions, worker_results. objective, current_objective, and pending_report are strings; every other field is an array of concise strings. current_objective and pending_report must preserve the supplied LIVE TODO ANCHOR rather than an older request. resolved_requests lists requests already answered or superseded; never make them active again. Preserve concrete paths, symbols, commands, test outcomes, constraints, unresolved hypotheses, loaded instruction/skill names, and worker findings. Do not invent completion or evidence.`
-	prompt := "ORIGINAL TASK\n" + s.Spec + "\n\nLIVE TODO ANCHOR (authoritative)\n" + durableTaskAnchor(s, todos) + "\n\nPRIOR DURABLE STATE\n" + s.DurableSummary + "\n\nACTIVITY TO COMPACT\n" + transcript
+	prompt := "ORIGINAL TASK\n" + s.Spec + "\n\nLIVE TODO ANCHOR (authoritative)\n" + durableTaskAnchor(s, todos, cont, workItems) + "\n\nPRIOR DURABLE STATE\n" + s.DurableSummary + "\n\nACTIVITY TO COMPACT\n" + transcript
 	estimatedCost := spec.Pricing.Estimate(estimate(prompt), 2200, 0)
 	if s.BudgetUSD > 0 && estimatedCost > s.BudgetUSD-s.SpentUSD {
 		return DurableState{}, nil, errors.New("insufficient remaining budget for semantic summary")
@@ -217,8 +219,8 @@ func fallbackDurableState(s store.Session, old []store.Message) DurableState {
 // persisted todo plan. Unlike a transcript summary, todos survive compaction
 // and therefore remain authoritative when the retained turns no longer show
 // the active implementation work.
-func anchorDurableState(state DurableState, s store.Session, todos []store.Todo, old []store.Message) (DurableState, durableAnchor, resolvedRequestCounts) {
-	anchor := selectDurableAnchor(s, todos)
+func anchorDurableState(state DurableState, s store.Session, todos []store.Todo, cont store.Continuation, workItems []store.WorkItem, old []store.Message) (DurableState, durableAnchor, resolvedRequestCounts) {
+	anchor := selectDurableAnchor(s, todos, cont, workItems)
 	prior := priorResolvedRequests(s.DurableSummary)
 	semantic := state.ResolvedRequests
 	detected := resolvedRequests(s, old)
@@ -228,17 +230,35 @@ func anchorDurableState(state DurableState, s store.Session, todos []store.Todo,
 	return state, anchor, resolvedRequestCounts{Prior: len(prior), Semantic: len(semantic), Detected: len(detected), Final: len(state.ResolvedRequests)}
 }
 
-func durableTaskAnchor(s store.Session, todos []store.Todo) string {
-	current, report := durableTaskAnchorParts(s, todos)
+func durableTaskAnchor(s store.Session, todos []store.Todo, cont store.Continuation, workItems []store.WorkItem) string {
+	current, report := durableTaskAnchorParts(s, todos, cont, workItems)
 	return "CURRENT OBJECTIVE\n" + current + "\n\nPENDING REPORT\n" + report
 }
 
-func durableTaskAnchorParts(s store.Session, todos []store.Todo) (string, string) {
-	anchor := selectDurableAnchor(s, todos)
+func durableTaskAnchorParts(s store.Session, todos []store.Todo, cont store.Continuation, workItems []store.WorkItem) (string, string) {
+	anchor := selectDurableAnchor(s, todos, cont, workItems)
 	return anchor.CurrentObjective, anchor.PendingReport
 }
 
-func selectDurableAnchor(s store.Session, todos []store.Todo) durableAnchor {
+// selectDurableAnchor prefers the harness-owned continuation ledger when one
+// exists: the ledger's active work item and report obligation are explicit
+// state, not inference over mutable todo prose. Sessions that predate the
+// ledger fall back to the todo heuristic.
+func selectDurableAnchor(s store.Session, todos []store.Todo, cont store.Continuation, workItems []store.WorkItem) durableAnchor {
+	if cont.SessionID != "" {
+		if anchor, ok := ledgerActiveAnchor(s, cont, workItems); ok {
+			return anchor
+		}
+		if anchor, ok := ledgerWrapUpAnchor(s, cont, workItems); ok {
+			return anchor
+		}
+		return durableAnchor{
+			CurrentObjective: fmt.Sprintf("Continue the current %s work for the original task.", s.Phase),
+			PendingReport:    "Before final response, report the active work, verification, and any blockers. Do not reopen resolved requests.",
+			Source:           "session_phase",
+			TodoPosition:     -1,
+		}
+	}
 	for _, status := range []string{"in_progress", "pending"} {
 		for i, todo := range todos {
 			text := strings.TrimSpace(todo.Text)
@@ -297,6 +317,65 @@ func selectDurableAnchor(s store.Session, todos []store.Todo) durableAnchor {
 		Source:           "session_phase",
 		TodoPosition:     -1,
 	}
+}
+
+func ledgerActiveAnchor(s store.Session, cont store.Continuation, workItems []store.WorkItem) (durableAnchor, bool) {
+	if cont.ActiveWorkItemID == "" {
+		return durableAnchor{}, false
+	}
+	for i, wi := range workItems {
+		if wi.ID == cont.ActiveWorkItemID {
+			phase := strings.TrimSpace(wi.Phase)
+			if phase == "" {
+				phase = s.Phase
+			}
+			return durableAnchor{
+				CurrentObjective: fmt.Sprintf("Continue the active %s task: %s", phase, wi.Objective),
+				PendingReport:    "Complete the active todo before final response; then report the changes, verification, and any blockers. Do not reopen resolved requests.",
+				Source:           wi.Status,
+				TodoPosition:     i,
+				TodoPhase:        phase,
+				TodoStatus:       wi.Status,
+				TodoText:         wi.Objective,
+			}, true
+		}
+	}
+	return durableAnchor{}, false
+}
+
+func ledgerWrapUpAnchor(s store.Session, cont store.Continuation, workItems []store.WorkItem) (durableAnchor, bool) {
+	if !cont.FinalReportRequired {
+		return durableAnchor{}, false
+	}
+	lastIndex := -1
+	var last store.WorkItem
+	for i, wi := range workItems {
+		if wi.Status == "completed" && strings.TrimSpace(wi.Objective) != "" && (lastIndex < 0 || wi.CompletedAt.After(last.CompletedAt) || (wi.CompletedAt.Equal(last.CompletedAt) && wi.Position > last.Position)) {
+			lastIndex = i
+			last = wi
+		}
+	}
+	if lastIndex >= 0 {
+		phase := strings.TrimSpace(last.Phase)
+		if phase == "" {
+			phase = s.Phase
+		}
+		return durableAnchor{
+			CurrentObjective: fmt.Sprintf("Wrap up the completed %s task: %s", phase, last.Objective),
+			PendingReport:    fmt.Sprintf("The active plan is complete. Produce the final report for the completed todo %q, its files, verification, and blockers; do not re-answer resolved earlier questions.", last.Objective),
+			Source:           "completed_wrap_up",
+			TodoPosition:     lastIndex,
+			TodoPhase:        phase,
+			TodoStatus:       last.Status,
+			TodoText:         last.Objective,
+		}, true
+	}
+	return durableAnchor{
+		CurrentObjective: "Wrap up the active task: report the completed plan and verification; do not revisit prior resolved requests.",
+		PendingReport:    "The active plan is complete. Produce the final report for its completed work, files, verification, and blockers; do not re-answer resolved earlier questions.",
+		Source:           "todo_wrap_up",
+		TodoPosition:     -1,
+	}, true
 }
 
 func validateCompactionAnchor(state DurableState, anchor durableAnchor) error {
