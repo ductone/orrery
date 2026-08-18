@@ -770,7 +770,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				system += " The bounded resolution window is complete. No more tools are available. Return the final result now from the existing diff, verification, and review evidence."
 				definitions = nil
 			}
-			return provider.Request{System: system, DurableSpec: "TASK\n" + s.Spec + "\n\nDURABLE SUMMARY\n" + s.DurableSummary, Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the durable summary.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: definitions, MaxOutput: min(8000, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
+			return provider.Request{System: system, DurableSpec: durableSpec(s), Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the durable summary.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: definitions, MaxOutput: min(8000, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
 		}
 		var resp provider.Response
 		failed := []string{}
@@ -1116,6 +1116,27 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			e.compact(ctx, sid, emit)
 		}
 	}
+}
+
+func durableSpec(s store.Session) string {
+	var state DurableState
+	if json.Unmarshal([]byte(s.DurableSummary), &state) != nil || strings.TrimSpace(state.CurrentObjective) == "" {
+		return "TASK\n" + s.Spec + "\n\nDURABLE SUMMARY\n" + s.DurableSummary
+	}
+	var b strings.Builder
+	b.WriteString("TASK\n")
+	b.WriteString(s.Spec)
+	b.WriteString("\n\nCURRENT OBJECTIVE (authoritative)\n")
+	b.WriteString(state.CurrentObjective)
+	b.WriteString("\n\nPENDING REPORT (authoritative)\n")
+	b.WriteString(state.PendingReport)
+	if len(state.ResolvedRequests) > 0 {
+		b.WriteString("\n\nRESOLVED REQUESTS (do not re-answer or reopen)\n")
+		b.WriteString(strings.Join(state.ResolvedRequests, "\n"))
+	}
+	b.WriteString("\n\nDURABLE SUMMARY\n")
+	b.WriteString(s.DurableSummary)
+	return b.String()
 }
 
 func shouldBlockEditForInstructions(call provider.ToolCall, instructionBoundaryHit bool) bool {

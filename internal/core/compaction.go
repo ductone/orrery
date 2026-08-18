@@ -20,18 +20,21 @@ import (
 // compaction. Fields are intentionally boring: a later model should be able to
 // resume without reconstructing intent from prose fragments.
 type DurableState struct {
-	Objective     string   `json:"objective"`
-	Requirements  []string `json:"requirements"`
-	Decisions     []string `json:"decisions"`
-	Completed     []string `json:"completed"`
-	Files         []string `json:"files"`
-	Verification  []string `json:"verification"`
-	OpenWork      []string `json:"open_work"`
-	Blockers      []string `json:"blockers"`
-	Instructions  []string `json:"instructions"`
-	WorkerResults []string `json:"worker_results"`
-	PriorSummary  string   `json:"prior_summary,omitempty"`
-	CompactedAt   string   `json:"compacted_at"`
+	Objective        string   `json:"objective"`
+	CurrentObjective string   `json:"current_objective"`
+	PendingReport    string   `json:"pending_report"`
+	ResolvedRequests []string `json:"resolved_requests"`
+	Requirements     []string `json:"requirements"`
+	Decisions        []string `json:"decisions"`
+	Completed        []string `json:"completed"`
+	Files            []string `json:"files"`
+	Verification     []string `json:"verification"`
+	OpenWork         []string `json:"open_work"`
+	Blockers         []string `json:"blockers"`
+	Instructions     []string `json:"instructions"`
+	WorkerResults    []string `json:"worker_results"`
+	PriorSummary     string   `json:"prior_summary,omitempty"`
+	CompactedAt      string   `json:"compacted_at"`
 }
 
 func (d DurableState) valid() bool {
@@ -69,11 +72,19 @@ func (e *Engine) compactState(ctx context.Context, sid, reason string, emit Emit
 		return fmt.Errorf("checkpoint before compaction: %w", err)
 	}
 
-	state, meta, summaryErr := e.semanticSummary(ctx, s, msgs[:keepAt])
+	todos, err := e.store.Todos(ctx, sid)
+	if err != nil {
+		return err
+	}
+	state, meta, summaryErr := e.semanticSummary(ctx, s, todos, msgs[:keepAt])
 	if summaryErr != nil {
 		state = fallbackDurableState(s, msgs[:keepAt])
 		meta = map[string]any{"strategy": "structured_fallback", "error": summaryErr.Error()}
 	}
+	// The todo plan is persistent session state, whereas the semantic summary is
+	// best-effort model output. Keep the task to continue and the report still
+	// owed deterministic so compaction cannot resurrect an older answered prompt.
+	state = anchorDurableState(state, s, todos, msgs[:keepAt])
 	encoded, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -109,15 +120,15 @@ func (e *Engine) compact(ctx context.Context, sid string, emit EmitFunc) {
 	}
 }
 
-func (e *Engine) semanticSummary(ctx context.Context, s store.Session, old []store.Message) (DurableState, map[string]any, error) {
+func (e *Engine) semanticSummary(ctx context.Context, s store.Session, todos []store.Todo, old []store.Message) (DurableState, map[string]any, error) {
 	spec, ok := model.Get(s.Model)
 	_, providers, _, _, _ := e.runtimeSnapshot()
 	if !ok || providers == nil || !providers.Available(spec) {
 		return DurableState{}, nil, errors.New("current model unavailable for semantic summary")
 	}
 	transcript := compactTranscript(old, 96_000)
-	system := `Summarize an autonomous coding session for lossless continuation. Return one JSON object only with these exact keys: objective, requirements, decisions, completed, files, verification, open_work, blockers, instructions, worker_results. objective is a string; every other field is an array of concise strings. Preserve concrete paths, symbols, commands, test outcomes, constraints, unresolved hypotheses, loaded instruction/skill names, and worker findings. Do not invent completion or evidence.`
-	prompt := "ORIGINAL TASK\n" + s.Spec + "\n\nPRIOR DURABLE STATE\n" + s.DurableSummary + "\n\nACTIVITY TO COMPACT\n" + transcript
+	system := `Summarize an autonomous coding session for lossless continuation. Return one JSON object only with these exact keys: objective, current_objective, pending_report, resolved_requests, requirements, decisions, completed, files, verification, open_work, blockers, instructions, worker_results. objective, current_objective, and pending_report are strings; every other field is an array of concise strings. current_objective and pending_report must preserve the supplied LIVE TODO ANCHOR rather than an older request. resolved_requests lists requests already answered or superseded; never make them active again. Preserve concrete paths, symbols, commands, test outcomes, constraints, unresolved hypotheses, loaded instruction/skill names, and worker findings. Do not invent completion or evidence.`
+	prompt := "ORIGINAL TASK\n" + s.Spec + "\n\nLIVE TODO ANCHOR (authoritative)\n" + durableTaskAnchor(s, todos) + "\n\nPRIOR DURABLE STATE\n" + s.DurableSummary + "\n\nACTIVITY TO COMPACT\n" + transcript
 	estimatedCost := spec.Pricing.Estimate(estimate(prompt), 2200, 0)
 	if s.BudgetUSD > 0 && estimatedCost > s.BudgetUSD-s.SpentUSD {
 		return DurableState{}, nil, errors.New("insufficient remaining budget for semantic summary")
@@ -174,6 +185,127 @@ func fallbackDurableState(s store.Session, old []store.Message) DurableState {
 		}
 	}
 	return DurableState{Objective: s.Spec, Decisions: decisions, Completed: completed, Files: files, Verification: verification, OpenWork: open, Instructions: instructions, WorkerResults: workers, PriorSummary: truncate(s.DurableSummary, 4000), CompactedAt: time.Now().UTC().Format(time.RFC3339)}
+}
+
+// anchorDurableState derives recovery-critical continuation state from the
+// persisted todo plan. Unlike a transcript summary, todos survive compaction
+// and therefore remain authoritative when the retained turns no longer show
+// the active implementation work.
+func anchorDurableState(state DurableState, s store.Session, todos []store.Todo, old []store.Message) DurableState {
+	state.CurrentObjective, state.PendingReport = durableTaskAnchorParts(s, todos)
+	state.ResolvedRequests = mergeResolvedRequests(priorResolvedRequests(s.DurableSummary), state.ResolvedRequests, resolvedRequests(s, old))
+	return state
+}
+
+func durableTaskAnchor(s store.Session, todos []store.Todo) string {
+	current, report := durableTaskAnchorParts(s, todos)
+	return "CURRENT OBJECTIVE\n" + current + "\n\nPENDING REPORT\n" + report
+}
+
+func durableTaskAnchorParts(s store.Session, todos []store.Todo) (string, string) {
+	for _, status := range []string{"in_progress", "pending"} {
+		for _, todo := range todos {
+			if todo.Status == status && strings.TrimSpace(todo.Text) != "" {
+				phase := strings.TrimSpace(todo.Phase)
+				if phase == "" {
+					phase = s.Phase
+				}
+				return fmt.Sprintf("Continue the active %s task: %s", phase, strings.TrimSpace(todo.Text)), "Complete the active todo before final response; then report the changes, verification, and any blockers. Do not reopen resolved requests."
+			}
+		}
+	}
+	if len(todos) > 0 {
+		return "Wrap up the active task: report the completed plan and verification; do not revisit prior resolved requests.", "The active plan is complete. Produce the final report for its completed work, files, verification, and blockers; do not re-answer resolved earlier questions."
+	}
+	return fmt.Sprintf("Continue the current %s work for the original task.", s.Phase), "Before final response, report the active work, verification, and any blockers. Do not reopen resolved requests."
+}
+
+func priorResolvedRequests(summary string) []string {
+	var state DurableState
+	if json.Unmarshal([]byte(summary), &state) != nil {
+		return nil
+	}
+	return state.ResolvedRequests
+}
+
+// resolvedRequests records only clearly answered question-like prompts. This
+// is intentionally narrow: it prevents a direct old answer (for example a
+// date lookup) from taking over after compaction without treating ordinary
+// task instructions as resolved merely because the model discussed them.
+func resolvedRequests(s store.Session, msgs []store.Message) []string {
+	resolved := []string{}
+	for i, message := range msgs {
+		prompt := messageContent(message)
+		if message.Role != "user" || !questionLike(prompt) || !answeredBeforeNextUser(msgs[i+1:]) {
+			continue
+		}
+		resolved = appendBounded(resolved, truncate(strings.TrimSpace(prompt), 360), 12)
+	}
+	if questionLike(s.Spec) && answeredOriginalRequest(msgs) {
+		resolved = appendBounded(resolved, truncate(strings.TrimSpace(s.Spec), 360), 12)
+	}
+	return resolved
+}
+
+func messageContent(message store.Message) string {
+	var parsed provider.Message
+	if json.Unmarshal([]byte(message.ContentJSON), &parsed) == nil && strings.TrimSpace(parsed.Content) != "" {
+		return parsed.Content
+	}
+	return message.ContentJSON
+}
+
+func questionLike(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	return strings.Contains(text, "?") || strings.HasPrefix(text, "what ") || strings.HasPrefix(text, "when ") || strings.HasPrefix(text, "where ") || strings.HasPrefix(text, "who ") || strings.HasPrefix(text, "why ") || strings.HasPrefix(text, "how ")
+}
+
+func answeredBeforeNextUser(msgs []store.Message) bool {
+	for _, message := range msgs {
+		if message.Role == "user" {
+			return false
+		}
+		if message.Role != "assistant" {
+			continue
+		}
+		var parsed provider.Message
+		if json.Unmarshal([]byte(message.ContentJSON), &parsed) == nil && len(parsed.ToolCalls) == 0 && strings.TrimSpace(parsed.Content) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func answeredOriginalRequest(msgs []store.Message) bool {
+	for _, message := range msgs {
+		if message.Role == "user" {
+			return false
+		}
+		if message.Role != "assistant" {
+			continue
+		}
+		var parsed provider.Message
+		if json.Unmarshal([]byte(message.ContentJSON), &parsed) == nil && len(parsed.ToolCalls) == 0 && strings.TrimSpace(parsed.Content) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func mergeResolvedRequests(groups ...[]string) []string {
+	seen := map[string]bool{}
+	merged := []string{}
+	for _, group := range groups {
+		for _, item := range group {
+			item = strings.TrimSpace(item)
+			if item == "" || seen[item] {
+				continue
+			}
+			seen[item] = true
+			merged = appendBounded(merged, item, 12)
+		}
+	}
+	return merged
 }
 
 func appendBounded(items []string, value string, limit int) []string {
