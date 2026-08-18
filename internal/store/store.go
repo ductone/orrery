@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -65,7 +67,16 @@ func (s *Store) migrate() error {
 	if err := s.ensureColumn("queued_messages", "payload_hash", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS request_receipts(session_id TEXT NOT NULL REFERENCES sessions(id), request_id TEXT NOT NULL, kind TEXT NOT NULL, turn_id TEXT NOT NULL, payload_hash TEXT NOT NULL, accepted_at TEXT NOT NULL, PRIMARY KEY(session_id,request_id)); CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_external ON sessions(integration,external_id,external_incarnation) WHERE external_id!='';`)
+	if err := s.ensureColumn("checkpoints", "pending_inputs_json", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("checkpoints", "work_items_json", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("checkpoints", "continuation_json", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS request_receipts(session_id TEXT NOT NULL REFERENCES sessions(id), request_id TEXT NOT NULL, kind TEXT NOT NULL, turn_id TEXT NOT NULL, payload_hash TEXT NOT NULL, accepted_at TEXT NOT NULL, PRIMARY KEY(session_id,request_id)); CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_external ON sessions(integration,external_id,external_incarnation) WHERE external_id!=''; CREATE TABLE IF NOT EXISTS work_items(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), objective TEXT NOT NULL, status TEXT NOT NULL, phase TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL, created_at TEXT NOT NULL, completed_at TEXT); CREATE TABLE IF NOT EXISTS continuation(session_id TEXT PRIMARY KEY REFERENCES sessions(id), active_work_item_id TEXT NOT NULL DEFAULT '', final_report_required INTEGER NOT NULL DEFAULT 0, resolved_request_ids_json TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL); CREATE INDEX IF NOT EXISTS idx_work_items_session ON work_items(session_id);`)
 	return err
 }
 
@@ -262,7 +273,7 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"request_receipts", "events", "messages", "todos", "cache_ledger", "jobs", "routing_records", "checkpoints", "pending_inputs", "queued_messages"} {
+	for _, table := range []string{"request_receipts", "events", "messages", "todos", "work_items", "continuation", "cache_ledger", "jobs", "routing_records", "checkpoints", "pending_inputs", "queued_messages"} {
 		if _, err = tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE session_id=?`, id); err != nil {
 			return err
 		}
@@ -304,9 +315,10 @@ type Message struct {
 }
 
 type Checkpoint struct {
-	ID, SessionID, Label, Reason         string
-	SessionJSON, MessagesJSON, TodosJSON string
-	CreatedAt                            time.Time
+	ID, SessionID, Label, Reason                       string
+	SessionJSON, MessagesJSON, TodosJSON               string
+	PendingInputsJSON, WorkItemsJSON, ContinuationJSON string
+	CreatedAt                                          time.Time
 }
 
 type PendingInput struct {
@@ -336,6 +348,32 @@ func (s *Store) PendingInput(ctx context.Context, sid string) (PendingInput, err
 		x.AnsweredAt, _ = time.Parse(time.RFC3339Nano, answered.String)
 	}
 	return x, err
+}
+
+// PendingInputs returns every pending-input row for a session, oldest first,
+// so a checkpoint can snapshot the full ask state rather than only the latest.
+func (s *Store) PendingInputs(ctx context.Context, sid string) ([]PendingInput, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,session_id,question,choices_json,allow_freeform,status,answer,created_at,answered_at FROM pending_inputs WHERE session_id=? ORDER BY created_at`, sid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PendingInput
+	for rows.Next() {
+		var x PendingInput
+		var choices, created string
+		var answered sql.NullString
+		if err := rows.Scan(&x.ID, &x.SessionID, &x.Question, &choices, &x.AllowFreeform, &x.Status, &x.Answer, &created, &answered); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(choices), &x.Choices)
+		x.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		if answered.Valid {
+			x.AnsweredAt, _ = time.Parse(time.RFC3339Nano, answered.String)
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) ResolvePendingInput(ctx context.Context, sid, answer string) (PendingInput, error) {
@@ -504,14 +542,26 @@ func (s *Store) CreateCheckpoint(ctx context.Context, id, sid, label, reason str
 	if err != nil {
 		return Checkpoint{}, err
 	}
+	pendingInputs, err := s.PendingInputs(ctx, sid)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	workItems, err := s.WorkItems(ctx, sid)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	cont, err := s.Continuation(ctx, sid)
+	if err != nil {
+		return Checkpoint{}, err
+	}
 	now := time.Now().UTC()
-	cp := Checkpoint{ID: id, SessionID: sid, Label: label, Reason: reason, SessionJSON: JSON(session), MessagesJSON: JSON(messages), TodosJSON: JSON(todos), CreatedAt: now}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO checkpoints(id,session_id,label,reason,session_json,messages_json,todos_json,created_at) VALUES(?,?,?,?,?,?,?,?)`, cp.ID, cp.SessionID, cp.Label, cp.Reason, cp.SessionJSON, cp.MessagesJSON, cp.TodosJSON, now.Format(time.RFC3339Nano))
+	cp := Checkpoint{ID: id, SessionID: sid, Label: label, Reason: reason, SessionJSON: JSON(session), MessagesJSON: JSON(messages), TodosJSON: JSON(todos), PendingInputsJSON: JSON(pendingInputs), WorkItemsJSON: JSON(workItems), ContinuationJSON: JSON(cont), CreatedAt: now}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO checkpoints(id,session_id,label,reason,session_json,messages_json,todos_json,pending_inputs_json,work_items_json,continuation_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, cp.ID, cp.SessionID, cp.Label, cp.Reason, cp.SessionJSON, cp.MessagesJSON, cp.TodosJSON, cp.PendingInputsJSON, cp.WorkItemsJSON, cp.ContinuationJSON, now.Format(time.RFC3339Nano))
 	return cp, err
 }
 
 func (s *Store) Checkpoints(ctx context.Context, sid string) ([]Checkpoint, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,session_id,label,reason,session_json,messages_json,todos_json,created_at FROM checkpoints WHERE session_id=? ORDER BY created_at DESC`, sid)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,session_id,label,reason,session_json,messages_json,todos_json,pending_inputs_json,work_items_json,continuation_json,created_at FROM checkpoints WHERE session_id=? ORDER BY created_at DESC`, sid)
 	if err != nil {
 		return nil, err
 	}
@@ -520,7 +570,7 @@ func (s *Store) Checkpoints(ctx context.Context, sid string) ([]Checkpoint, erro
 	for rows.Next() {
 		var cp Checkpoint
 		var created string
-		if err := rows.Scan(&cp.ID, &cp.SessionID, &cp.Label, &cp.Reason, &cp.SessionJSON, &cp.MessagesJSON, &cp.TodosJSON, &created); err != nil {
+		if err := rows.Scan(&cp.ID, &cp.SessionID, &cp.Label, &cp.Reason, &cp.SessionJSON, &cp.MessagesJSON, &cp.TodosJSON, &cp.PendingInputsJSON, &cp.WorkItemsJSON, &cp.ContinuationJSON, &created); err != nil {
 			return nil, err
 		}
 		cp.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
@@ -532,7 +582,7 @@ func (s *Store) Checkpoints(ctx context.Context, sid string) ([]Checkpoint, erro
 func (s *Store) Checkpoint(ctx context.Context, id string) (Checkpoint, error) {
 	var cp Checkpoint
 	var created string
-	err := s.db.QueryRowContext(ctx, `SELECT id,session_id,label,reason,session_json,messages_json,todos_json,created_at FROM checkpoints WHERE id=?`, id).Scan(&cp.ID, &cp.SessionID, &cp.Label, &cp.Reason, &cp.SessionJSON, &cp.MessagesJSON, &cp.TodosJSON, &created)
+	err := s.db.QueryRowContext(ctx, `SELECT id,session_id,label,reason,session_json,messages_json,todos_json,pending_inputs_json,work_items_json,continuation_json,created_at FROM checkpoints WHERE id=?`, id).Scan(&cp.ID, &cp.SessionID, &cp.Label, &cp.Reason, &cp.SessionJSON, &cp.MessagesJSON, &cp.TodosJSON, &cp.PendingInputsJSON, &cp.WorkItemsJSON, &cp.ContinuationJSON, &created)
 	cp.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	return cp, err
 }
@@ -548,9 +598,13 @@ func (s *Store) RestoreCheckpoint(ctx context.Context, sid, checkpointID string)
 	var snap Session
 	var messages []Message
 	var todos []Todo
+	var pendingInputs []PendingInput
 	if json.Unmarshal([]byte(cp.SessionJSON), &snap) != nil || json.Unmarshal([]byte(cp.MessagesJSON), &messages) != nil || json.Unmarshal([]byte(cp.TodosJSON), &todos) != nil {
 		return errors.New("invalid checkpoint snapshot")
 	}
+	// Old checkpoints predate pending-input snapshots; an empty payload means
+	// there was no ask state to preserve, so the delete below is correct.
+	_ = json.Unmarshal([]byte(cp.PendingInputsJSON), &pendingInputs)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -574,10 +628,51 @@ func (s *Store) RestoreCheckpoint(ctx context.Context, sid, checkpointID string)
 	if _, err = tx.ExecContext(ctx, `DELETE FROM pending_inputs WHERE session_id=?`, sid); err != nil {
 		return err
 	}
+	for _, input := range pendingInputs {
+		var answeredAt any
+		if !input.AnsweredAt.IsZero() {
+			answeredAt = input.AnsweredAt.UTC().Format(time.RFC3339Nano)
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO pending_inputs(id,session_id,question,choices_json,allow_freeform,status,answer,created_at,answered_at) VALUES(?,?,?,?,?,?,?,?,?)`, input.ID, input.SessionID, input.Question, JSON(input.Choices), input.AllowFreeform, input.Status, input.Answer, input.CreatedAt.UTC().Format(time.RFC3339Nano), answeredAt); err != nil {
+			return err
+		}
+	}
 	for i, todo := range todos {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO todos(session_id,position,text,phase,status) VALUES(?,?,?,?,?)`, sid, i, todo.Text, todo.Phase, todo.Status); err != nil {
 			return err
 		}
+	}
+	// Restore the continuation ledger from the checkpoint snapshot so retained
+	// completed work items and completion chronology survive. Old checkpoints
+	// predate the ledger snapshot; rebuild from the restored todos instead.
+	if _, err = tx.ExecContext(ctx, `DELETE FROM work_items WHERE session_id=?`, sid); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM continuation WHERE session_id=?`, sid); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cp.WorkItemsJSON) != "" {
+		var snapWorkItems []WorkItem
+		var snapCont Continuation
+		if json.Unmarshal([]byte(cp.WorkItemsJSON), &snapWorkItems) != nil || json.Unmarshal([]byte(cp.ContinuationJSON), &snapCont) != nil {
+			return errors.New("invalid checkpoint ledger snapshot")
+		}
+		for _, wi := range snapWorkItems {
+			var completedAt any
+			if !wi.CompletedAt.IsZero() {
+				completedAt = wi.CompletedAt.UTC().Format(time.RFC3339Nano)
+			}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO work_items(id,session_id,objective,status,phase,position,created_at,completed_at) VALUES(?,?,?,?,?,?,?,?)`, wi.ID, sid, wi.Objective, wi.Status, wi.Phase, wi.Position, wi.CreatedAt.UTC().Format(time.RFC3339Nano), completedAt); err != nil {
+				return err
+			}
+		}
+		if snapCont.SessionID != "" {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO continuation(session_id,active_work_item_id,final_report_required,resolved_request_ids_json,updated_at) VALUES(?,?,?,?,?)`, sid, snapCont.ActiveWorkItemID, snapCont.FinalReportRequired, JSON(snapCont.ResolvedRequestIDs), now); err != nil {
+				return err
+			}
+		}
+	} else if err = s.syncWorkItemsTx(ctx, tx, sid, todos); err != nil {
+		return err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE cache_ledger SET warm_prefix_tokens=0,last_hit=NULL WHERE session_id=?`, sid); err != nil {
 		return err
@@ -598,6 +693,14 @@ func (s *Store) ForkSession(ctx context.Context, sourceID, newID string) (Sessio
 		return Session{}, err
 	}
 	todos, err := s.Todos(ctx, sourceID)
+	if err != nil {
+		return Session{}, err
+	}
+	workItems, err := s.WorkItems(ctx, sourceID)
+	if err != nil {
+		return Session{}, err
+	}
+	cont, err := s.Continuation(ctx, sourceID)
 	if err != nil {
 		return Session{}, err
 	}
@@ -626,6 +729,27 @@ func (s *Store) ForkSession(ctx context.Context, sourceID, newID string) (Sessio
 	}
 	for i, todo := range todos {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO todos(session_id,position,text,phase,status) VALUES(?,?,?,?,?)`, newID, i, todo.Text, todo.Phase, todo.Status); err != nil {
+			return Session{}, err
+		}
+	}
+	idMap := map[string]string{}
+	for _, wi := range workItems {
+		forkID := uuid.NewString()
+		idMap[wi.ID] = forkID
+		var completedAt any
+		if !wi.CompletedAt.IsZero() {
+			completedAt = wi.CompletedAt.UTC().Format(time.RFC3339Nano)
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO work_items(id,session_id,objective,status,phase,position,created_at,completed_at) VALUES(?,?,?,?,?,?,?,?)`, forkID, newID, wi.Objective, wi.Status, wi.Phase, wi.Position, wi.CreatedAt.UTC().Format(time.RFC3339Nano), completedAt); err != nil {
+			return Session{}, err
+		}
+	}
+	if cont.SessionID != "" {
+		activeID := ""
+		if cont.ActiveWorkItemID != "" {
+			activeID = idMap[cont.ActiveWorkItemID]
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO continuation(session_id,active_work_item_id,final_report_required,resolved_request_ids_json,updated_at) VALUES(?,?,?,?,?)`, newID, activeID, cont.FinalReportRequired, JSON(cont.ResolvedRequestIDs), stamp); err != nil {
 			return Session{}, err
 		}
 	}
@@ -658,13 +782,48 @@ func (s *Store) Messages(ctx context.Context, sid string) ([]Message, error) {
 	}
 	return out, rows.Err()
 }
-func (s *Store) CompactMessages(ctx context.Context, sid string, keep int) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM messages WHERE session_id=? AND id NOT IN (SELECT id FROM messages WHERE session_id=? ORDER BY id DESC LIMIT ?)`, sid, sid, keep)
-	return err
+
+// AcknowledgeReport clears the continuation's report obligation and active work
+// item after a final report is delivered, and replaces the durable summary with
+// the supplied (anchor-cleared) version so a follow-up turn does not re-assert
+// already-reported work. Completed work items are retained as history.
+func (s *Store) AcknowledgeReport(ctx context.Context, sid, durableSummary string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err = tx.ExecContext(ctx, `UPDATE continuation SET active_work_item_id='',final_report_required=0,updated_at=? WHERE session_id=?`, now, sid); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET durable_summary=?,updated_at=? WHERE id=?`, durableSummary, now, sid); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
-func (s *Store) InvalidateCaches(ctx context.Context, sid string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE cache_ledger SET warm_prefix_tokens=0,last_hit=NULL WHERE session_id=?`, sid)
-	return err
+
+// ApplyCompaction atomically commits a compaction: it writes the new durable
+// summary, trims messages to the retained tail, and invalidates cache warmth in
+// a single transaction. A failure in any step leaves the session untouched, so
+// compaction can never leave a half-compacted state.
+func (s *Store) ApplyCompaction(ctx context.Context, session Session, keep int) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET durable_summary=?,phase=?,model=?,turn=?,status=?,updated_at=? WHERE id=?`, session.DurableSummary, session.Phase, session.Model, session.Turn, session.Status, now, session.ID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM messages WHERE session_id=? AND id NOT IN (SELECT id FROM messages WHERE session_id=? ORDER BY id DESC LIMIT ?)`, session.ID, session.ID, keep); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE cache_ledger SET warm_prefix_tokens=0,last_hit=NULL WHERE session_id=?`, session.ID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 type Todo struct {
@@ -672,6 +831,25 @@ type Todo struct {
 	Text     string `json:"text"`
 	Phase    string `json:"phase"`
 	Status   string `json:"status"`
+}
+
+// WorkItem is a harness-owned continuation record derived from the todo plan.
+// Unlike todo prose, it carries a stable ID and lifecycle timestamps so the
+// active objective and report obligation survive compaction and todo edits.
+type WorkItem struct {
+	ID, SessionID, Objective, Status, Phase string
+	Position                                int
+	CreatedAt, CompletedAt                  time.Time
+}
+
+// Continuation is the authoritative per-session continuation state: which work
+// item is active and whether a final report is still owed.
+type Continuation struct {
+	SessionID           string
+	ActiveWorkItemID    string
+	FinalReportRequired bool
+	ResolvedRequestIDs  []string
+	UpdatedAt           time.Time
 }
 
 func (s *Store) SetTodos(ctx context.Context, sid string, todos []Todo) error {
@@ -688,8 +866,217 @@ func (s *Store) SetTodos(ctx context.Context, sid string, todos []Todo) error {
 			return err
 		}
 	}
+	if err = s.syncWorkItemsTx(ctx, tx, sid, todos); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
+
+// workItemKey groups work items by normalized objective and phase so equal
+// objectives in different phases are matched separately.
+func workItemKey(objective, phase string) string {
+	return strings.ToLower(strings.TrimSpace(objective)) + "\x00" + strings.ToLower(strings.TrimSpace(phase))
+}
+
+// syncWorkItemsTx reconciles the continuation ledger to the todo plan in the
+// same transaction. Work items are keyed by normalized objective and phase so
+// their IDs and lifecycle timestamps survive todo reordering; completed items
+// are kept even when removed from the plan so the report obligation stays
+// concrete.
+func (s *Store) syncWorkItemsTx(ctx context.Context, tx *sql.Tx, sid string, todos []Todo) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id,objective,status,phase,position,created_at,completed_at FROM work_items WHERE session_id=?`, sid)
+	if err != nil {
+		return err
+	}
+	var existing []WorkItem
+	for rows.Next() {
+		var wi WorkItem
+		var created, completed sql.NullString
+		if err := rows.Scan(&wi.ID, &wi.Objective, &wi.Status, &wi.Phase, &wi.Position, &created, &completed); err != nil {
+			rows.Close()
+			return err
+		}
+		wi.CreatedAt, _ = time.Parse(time.RFC3339Nano, created.String)
+		if completed.Valid {
+			wi.CompletedAt, _ = time.Parse(time.RFC3339Nano, completed.String)
+		}
+		existing = append(existing, wi)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	// Retained completed rows only re-assert the report obligation if it was
+	// already owed before this sync; an acknowledged report stays cleared.
+	priorReportRequired := false
+	if err = tx.QueryRowContext(ctx, `SELECT final_report_required FROM continuation WHERE session_id=?`, sid).Scan(&priorReportRequired); err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	now := time.Now().UTC()
+	nowStr := now.Format(time.RFC3339Nano)
+	planNonCompleted := map[string]int{}
+	for _, t := range todos {
+		if strings.TrimSpace(t.Text) != "" && t.Status != "completed" {
+			planNonCompleted[workItemKey(t.Text, t.Phase)]++
+		}
+	}
+	consumed := map[string]bool{}
+	byPosition := map[int]string{}
+	var activeID string
+	anyCompleted := false
+	for i, t := range todos {
+		if strings.TrimSpace(t.Text) == "" {
+			continue
+		}
+		key := workItemKey(t.Text, t.Phase)
+		idx := -1
+		if t.Status == "completed" {
+			// Promote a live row that is being removed from the plan (its work
+			// was just completed) before matching a retained completed row. A
+			// live row is being removed when there are more live rows with this
+			// key than the plan has non-completed todos for it.
+			liveCount := 0
+			for j := range existing {
+				c := &existing[j]
+				if !consumed[c.ID] && workItemKey(c.Objective, c.Phase) == key && c.Status != "completed" {
+					liveCount++
+				}
+			}
+			if liveCount > planNonCompleted[key] {
+				for j := range existing {
+					c := &existing[j]
+					if !consumed[c.ID] && workItemKey(c.Objective, c.Phase) == key && c.Status != "completed" {
+						idx = j
+						break
+					}
+				}
+			}
+			// Otherwise match a completed row at the same position (idempotent
+			// re-submission), then any completed row, then a live row.
+			if idx < 0 {
+				for j := range existing {
+					c := &existing[j]
+					if consumed[c.ID] || workItemKey(c.Objective, c.Phase) != key || c.Status != "completed" || c.Position != i {
+						continue
+					}
+					idx = j
+					break
+				}
+			}
+			if idx < 0 {
+				for j := range existing {
+					c := &existing[j]
+					if consumed[c.ID] || workItemKey(c.Objective, c.Phase) != key || c.Status != "completed" {
+						continue
+					}
+					idx = j
+					break
+				}
+			}
+			// A completed todo never consumes a live row here: live rows are
+			// reserved for the plan's remaining non-completed todos. If no
+			// completed row matches, a new completed row is inserted below.
+		} else {
+			// Non-completed todo: match a live row at the same position, then
+			// any live row; never consume a completed row.
+			for j := range existing {
+				c := &existing[j]
+				if consumed[c.ID] || workItemKey(c.Objective, c.Phase) != key || c.Status == "completed" || c.Position != i {
+					continue
+				}
+				idx = j
+				break
+			}
+			if idx < 0 {
+				for j := range existing {
+					c := &existing[j]
+					if consumed[c.ID] || workItemKey(c.Objective, c.Phase) != key || c.Status == "completed" {
+						continue
+					}
+					idx = j
+					break
+				}
+			}
+		}
+		// A non-completed todo consumes one of the plan's non-completed slots
+		// for this key, so a later completed todo compares against the
+		// remaining count.
+		if t.Status != "completed" {
+			planNonCompleted[key]--
+		}
+		var wi WorkItem
+		wasCompleted := false
+		if idx >= 0 {
+			wi = existing[idx]
+			wasCompleted = wi.Status == "completed"
+			consumed[wi.ID] = true
+			var completedAt any
+			if t.Status == "completed" {
+				if wi.Status != "completed" {
+					completedAt = nowStr
+				} else {
+					completedAt = wi.CompletedAt.UTC().Format(time.RFC3339Nano)
+				}
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE work_items SET status=?,phase=?,position=?,completed_at=? WHERE id=?`, t.Status, t.Phase, i, completedAt, wi.ID); err != nil {
+				return err
+			}
+		} else {
+			wi = WorkItem{ID: uuid.NewString(), SessionID: sid, Objective: strings.TrimSpace(t.Text), Status: t.Status, Phase: t.Phase, Position: i, CreatedAt: now}
+			var completedAt any
+			if t.Status == "completed" {
+				completedAt = nowStr
+			}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO work_items(id,session_id,objective,status,phase,position,created_at,completed_at) VALUES(?,?,?,?,?,?,?,?)`, wi.ID, sid, wi.Objective, wi.Status, wi.Phase, wi.Position, nowStr, completedAt); err != nil {
+				return err
+			}
+		}
+		byPosition[i] = wi.ID
+		if t.Status == "in_progress" && activeID == "" {
+			activeID = wi.ID
+		}
+		// A completed todo creates a fresh obligation only when it is a new
+		// completion (the work item was not already completed) or the prior
+		// obligation was still owed; an idempotent resubmission of an
+		// acknowledged completion does not re-open it.
+		if t.Status == "completed" && (!wasCompleted || priorReportRequired) {
+			anyCompleted = true
+		}
+	}
+	// Unconsumed work items are no longer in the plan; drop them unless they
+	// are completed, which are retained as report subjects.
+	for _, wi := range existing {
+		if !consumed[wi.ID] && wi.Status != "completed" {
+			if _, err = tx.ExecContext(ctx, `DELETE FROM work_items WHERE id=?`, wi.ID); err != nil {
+				return err
+			}
+		}
+	}
+	// Completed work items are retained even when removed from the plan, so the
+	// report obligation must survive a cleared todo list — unless the report was
+	// already acknowledged, in which case retained rows do not re-open it.
+	if !anyCompleted && priorReportRequired {
+		for _, wi := range existing {
+			if !consumed[wi.ID] && wi.Status == "completed" {
+				anyCompleted = true
+				break
+			}
+		}
+	}
+	if activeID == "" {
+		for i, t := range todos {
+			if t.Status == "pending" && byPosition[i] != "" {
+				activeID = byPosition[i]
+				break
+			}
+		}
+	}
+	finalReportRequired := anyCompleted || activeID != ""
+	if _, err = tx.ExecContext(ctx, `INSERT INTO continuation(session_id,active_work_item_id,final_report_required,resolved_request_ids_json,updated_at) VALUES(?,?,?,COALESCE((SELECT resolved_request_ids_json FROM continuation WHERE session_id=?),'[]'),?) ON CONFLICT(session_id) DO UPDATE SET active_work_item_id=excluded.active_work_item_id,final_report_required=excluded.final_report_required,updated_at=excluded.updated_at`, sid, activeID, finalReportRequired, sid, nowStr); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *Store) Todos(ctx context.Context, sid string) ([]Todo, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT position,text,phase,status FROM todos WHERE session_id=? ORDER BY position`, sid)
 	if err != nil {
@@ -705,6 +1092,45 @@ func (s *Store) Todos(ctx context.Context, sid string) ([]Todo, error) {
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) WorkItems(ctx context.Context, sid string) ([]WorkItem, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,objective,status,phase,position,created_at,completed_at FROM work_items WHERE session_id=? ORDER BY position`, sid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []WorkItem
+	for rows.Next() {
+		var wi WorkItem
+		var created, completed sql.NullString
+		if err := rows.Scan(&wi.ID, &wi.Objective, &wi.Status, &wi.Phase, &wi.Position, &created, &completed); err != nil {
+			return nil, err
+		}
+		wi.CreatedAt, _ = time.Parse(time.RFC3339Nano, created.String)
+		if completed.Valid {
+			wi.CompletedAt, _ = time.Parse(time.RFC3339Nano, completed.String)
+		}
+		out = append(out, wi)
+	}
+	return out, rows.Err()
+}
+
+// Continuation returns the session's continuation ledger, or a zero value when
+// no ledger row exists yet (sessions that predate the ledger).
+func (s *Store) Continuation(ctx context.Context, sid string) (Continuation, error) {
+	var c Continuation
+	var updated, resolved string
+	err := s.db.QueryRowContext(ctx, `SELECT session_id,active_work_item_id,final_report_required,resolved_request_ids_json,updated_at FROM continuation WHERE session_id=?`, sid).Scan(&c.SessionID, &c.ActiveWorkItemID, &c.FinalReportRequired, &resolved, &updated)
+	if err == sql.ErrNoRows {
+		return Continuation{}, nil
+	}
+	if err != nil {
+		return Continuation{}, err
+	}
+	_ = json.Unmarshal([]byte(resolved), &c.ResolvedRequestIDs)
+	c.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+	return c, nil
 }
 
 type Job struct {
