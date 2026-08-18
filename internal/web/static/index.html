@@ -128,6 +128,14 @@
     .todo-row.completed .todo-check { color: var(--electric-dark); }
     .todo-row.in_progress .todo-check { color: var(--electric); }
     .phase { color: var(--conductor-light); font: 9px ui-monospace, monospace; text-transform: uppercase; letter-spacing: .06em; }
+    .pinned-plan { max-width: 920px; margin: 0 auto 8px; border: 1px solid var(--circuit); border-radius: 12px; background: rgba(22, 24, 28, .96); box-shadow: var(--shadow); overflow: hidden; }
+    .pinned-plan[hidden] { display: none; }
+    .pinned-plan summary { list-style: none; min-height: 38px; padding: 8px 13px; display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; user-select: none; }
+    .pinned-plan summary::-webkit-details-marker { display: none; }
+    .pinned-plan .pinned-title { min-width: 0; display: flex; align-items: center; gap: 9px; font-size: 12px; font-weight: 650; }
+    .pinned-plan .pinned-meta { min-width: 0; color: var(--signal); font: 10px ui-monospace, monospace; }
+    .pinned-plan .pinned-body { max-height: 180px; overflow: auto; border-top: 1px solid var(--circuit); }
+    .pinned-plan .todo-list { border-top: 0; }
     .terminal { border-color: rgba(0, 255, 204, .32); }
     .terminal.fail { border-color: rgba(255, 122, 133, .4); }
     code { background: rgba(42, 46, 53, .7); border-radius: 4px; padding: 1px 4px; font: .91em ui-monospace, monospace; color: var(--electric-light); }
@@ -217,6 +225,13 @@
       <span>Agent is working…</span>
     </div>
     <div class="composer-wrap">
+      <details id="pinned-plan" class="pinned-plan" hidden>
+        <summary>
+          <div class="pinned-title"><span class="icon">☷</span><span>Task plan</span></div>
+          <span class="pinned-meta" id="pinned-plan-meta">0/0</span>
+        </summary>
+        <div class="pinned-body"><div class="todo-list" id="pinned-plan-list"></div></div>
+      </details>
       <div id="error"></div>
       <form class="composer" id="composer">
         <textarea id="prompt" rows="3" placeholder="Ask Orrery to build, investigate, or review…" aria-label="Message"></textarea>
@@ -306,6 +321,16 @@
       return node;
     }
 
+    function renderPinnedPlan(items = []) {
+      const plan = $("#pinned-plan"), meta = $("#pinned-plan-meta"), list = $("#pinned-plan-list");
+      if (!items.length) { plan.hidden = true; list.innerHTML = ""; return; }
+      const completed = items.filter(item => item.status === "completed").length;
+      meta.textContent = `${completed}/${items.length}`;
+      const rows = items.map(item => `<div class="todo-row ${escapeHTML(item.status)}"><span class="todo-check">${item.status === "completed" ? "✓" : item.status === "in_progress" ? "◆" : "○"}</span><span class="phase">${escapeHTML(item.phase)}</span><span>${escapeHTML(item.text)}</span></div>`).join("");
+      list.innerHTML = rows;
+      plan.hidden = false;
+    }
+
     function renderEvent(event) {
       const envelope = JSON.parse(event.data), type = envelope.type || event.type, data = envelope.data || {};
       if (type === "session.created" || type === "session.started") return;
@@ -351,6 +376,7 @@
         if (next && next.phase) state.phase = next.phase;
         const rows = items.map(item => `<div class="todo-row ${escapeHTML(item.status)}"><span class="todo-check">${item.status === "completed" ? "✓" : item.status === "in_progress" ? "◆" : "○"}</span><span class="phase">${escapeHTML(item.phase)}</span><span>${escapeHTML(item.text)}</span></div>`).join("");
         addEvent("todo", "plan", `<details class="card" open><summary class="card-head"><div class="card-title"><span class="icon">☷</span>Task plan</div><span class="card-meta">${items.filter(item => item.status === "completed").length}/${items.length}</span></summary><div class="todo-list">${rows}</div></details>`);
+        renderPinnedPlan(items);
         syncHeader();
         return;
       }
@@ -392,7 +418,7 @@
         history.pushState(null, "", url);
       }
       state.current = id; state.cost = 0; state.model = "—"; state.pending = false; state.input = null;
-      state.stream?.close(); $("#events").innerHTML = ""; showError();
+      state.stream?.close(); $("#events").innerHTML = ""; showError(); renderPinnedPlan([]);
       try {
         const session = await request(`/api/v1/sessions/${encodeURIComponent(id)}`);
         state.phase = pick(session, "Phase", "phase") || "idle";
@@ -416,7 +442,7 @@
         history.pushState(null, "", url);
       }
       state.stream?.close(); state.current = null; state.cost = 0; state.model = "—"; state.phase = "idle"; state.status = ""; state.pending = false; state.input = null;
-      $("#title").textContent = "New task"; $("#prompt").value = ""; autoSize(); emptyState(); syncHeader(); loadSessions(); $("#prompt").focus(); closeDrawer();
+      $("#title").textContent = "New task"; $("#prompt").value = ""; autoSize(); emptyState(); renderPinnedPlan([]); syncHeader(); loadSessions(); $("#prompt").focus(); closeDrawer();
     }
 
     async function send(event) {
