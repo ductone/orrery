@@ -137,12 +137,18 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		e.emit(ctx, sid, "link.created", x, emit)
 		return x, nil
 	})
-	r.Add("spawn", "Create an in-process worker with isolated session state and a hard budget slice. Read workers run asynchronously. Shared-write workers run synchronously so the parent cannot mutate the checkout at the same time.", obj(map[string]any{"spec": str(), "result_schema": map[string]any{"type": "object"}, "budget_fraction": map[string]any{"type": "number"}, "review": map[string]any{"type": "boolean"}, "phase": map[string]any{"type": "string", "enum": []string{"explore", "plan", "implement", "diagnose", "review", "wrap-up"}}, "workspace_mode": map[string]any{"type": "string", "enum": []string{"read", "shared-write"}}}, "spec"), func(ctx context.Context, a map[string]any) (any, error) {
-		if req.Depth == 0 {
-			return nil, errors.New("spawn forbidden at depth 0")
-		}
-		return e.spawn(ctx, sid, parentJob, req, a, emit)
-	})
+	// Worker bookkeeping lives under .orrery/jobs in the assigned workspace,
+	// and a child can otherwise request a broader workspace mode. Omit spawn
+	// entirely for read-only sessions so the capability is both filesystem-safe
+	// and non-escalating.
+	if req.Workspace.Mode != "read" {
+		r.Add("spawn", "Create an in-process worker with isolated session state and a hard budget slice. Read workers run asynchronously. Shared-write workers run synchronously so the parent cannot mutate the checkout at the same time.", obj(map[string]any{"spec": str(), "result_schema": map[string]any{"type": "object"}, "budget_fraction": map[string]any{"type": "number"}, "review": map[string]any{"type": "boolean"}, "phase": map[string]any{"type": "string", "enum": []string{"explore", "plan", "implement", "diagnose", "review", "wrap-up"}}, "workspace_mode": map[string]any{"type": "string", "enum": []string{"read", "shared-write"}}}, "spec"), func(ctx context.Context, a map[string]any) (any, error) {
+			if req.Depth == 0 {
+				return nil, errors.New("spawn forbidden at depth 0")
+			}
+			return e.spawn(ctx, sid, parentJob, req, a, emit)
+		})
+	}
 	r.Add("job_result", "Read a durable child job result.", obj(map[string]any{"id": str()}, "id"), func(ctx context.Context, a map[string]any) (any, error) {
 		j, err := e.store.Job(ctx, fmt.Sprint(a["id"]))
 		if err != nil {
