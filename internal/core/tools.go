@@ -211,7 +211,11 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		})
 	}
 	if runtimeMCP != nil {
-		for _, d := range runtimeMCP.Definitions() {
+		definitions := runtimeMCP.Definitions()
+		if req.Workspace.Mode == "read" {
+			definitions = runtimeMCP.ReadWorkspaceDefinitions()
+		}
+		for _, d := range definitions {
 			def := d
 			r.Add(def.Name, def.Description, def.InputSchema, func(ctx context.Context, a map[string]any) (any, error) {
 				return runtimeMCP.CallForSession(ctx, sid, def.Name, a)

@@ -19,6 +19,10 @@ type Tool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	InputSchema map[string]any `json:"input_schema"`
+	// ReadOnly is transport metadata used to filter external MCP tools from
+	// read-workspace sessions. It is not sent to model providers.
+	ReadOnly          bool `json:"-"`
+	ReadWorkspaceSafe bool `json:"-"`
 }
 
 func toolNameMaps(tools []Tool) (map[string]string, map[string]string) {

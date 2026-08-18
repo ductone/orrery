@@ -75,6 +75,39 @@ func TestHTTPLifecycleAndBoundaryRefresh(t *testing.T) {
 	}
 }
 
+func TestReadOnlyDefinitionsRequireExplicitAnnotation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in rpcRequest
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		if in.Method == "notifications/initialized" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		result := any(map[string]any{})
+		if in.Method == "tools/list" {
+			result = map[string]any{"tools": []any{
+				map[string]any{"name": "inspect", "annotations": map[string]any{"readOnlyHint": true}, "inputSchema": map[string]any{"type": "object"}},
+				map[string]any{"name": "mutate", "inputSchema": map[string]any{"type": "object"}},
+			}}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": in.ID, "result": result})
+	}))
+	defer srv.Close()
+
+	m, err := New(context.Background(), map[string]config.MCPConfig{"test": {Transport: "http", URL: srv.URL}}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	if got := m.Definitions(); len(got) != 2 {
+		t.Fatalf("all definitions = %+v", got)
+	}
+	got := m.ReadWorkspaceDefinitions()
+	if len(got) != 1 || got[0].Name != "test.inspect" || !got[0].ReadOnly {
+		t.Fatalf("read-only definitions = %+v", got)
+	}
+}
+
 func TestCompactToolDescriptionKeepsToolSpecificTail(t *testing.T) {
 	description := strings.Repeat("shared gateway policy ", 200) + "tool-specific contract"
 	got := compactToolDescription(description)

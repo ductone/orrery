@@ -51,6 +51,22 @@ type Server struct {
 }
 type Manager struct{ servers map[string]*Server }
 
+// These mutations are narrowly caller-scoped by Squire and are required for
+// a read-workspace task to publish its report, manage its own inbox, report
+// progress, and finish. They are trusted only when the MCP server is explicitly
+// configured as the Squire bridge; arbitrary MCP servers must advertise
+// annotations.readOnlyHint=true.
+var squireReadWorkspaceSafeTools = map[string]struct{}{
+	"squire.fs.write":         {},
+	"squire.task.link":        {},
+	"squire.message.claim":    {},
+	"squire.message.complete": {},
+	"squire.task.progress":    {},
+	"squire.task.complete":    {},
+	"squire.task.fail":        {},
+	"squire.task.die":         {},
+}
+
 func New(ctx context.Context, cfg map[string]config.MCPConfig, logRoot string) (*Manager, error) {
 	m := &Manager{servers: map[string]*Server{}}
 	for name, c := range cfg {
@@ -104,6 +120,9 @@ func (s *Server) refresh(ctx context.Context) error {
 		Tools []struct {
 			Name, Description string
 			InputSchema       map[string]any `json:"inputSchema"`
+			Annotations       struct {
+				ReadOnlyHint bool `json:"readOnlyHint"`
+			} `json:"annotations"`
 		} `json:"tools"`
 	}
 	if err = json.Unmarshal(raw, &x); err != nil {
@@ -111,7 +130,14 @@ func (s *Server) refresh(ctx context.Context) error {
 	}
 	defs := make([]provider.Tool, 0, len(x.Tools))
 	for _, t := range x.Tools {
-		defs = append(defs, provider.Tool{Name: s.Name + "." + t.Name, Description: compactToolDescription(t.Description), InputSchema: t.InputSchema})
+		_, squireSafe := squireReadWorkspaceSafeTools[t.Name]
+		defs = append(defs, provider.Tool{
+			Name:              s.Name + "." + t.Name,
+			Description:       compactToolDescription(t.Description),
+			InputSchema:       t.InputSchema,
+			ReadOnly:          t.Annotations.ReadOnlyHint,
+			ReadWorkspaceSafe: s.cfg.Squire && squireSafe,
+		})
 	}
 	s.mu.Lock()
 	s.tools = defs
@@ -137,10 +163,25 @@ func compactToolDescription(description string) string {
 	return string(runes[:headRunes]) + "\n\n[shared MCP description elided by Orrery]\n\n" + string(runes[len(runes)-tailRunes:])
 }
 func (m *Manager) Definitions() []provider.Tool {
+	return m.definitions(false)
+}
+
+// ReadWorkspaceDefinitions returns tools explicitly marked read-only plus the
+// exact caller-scoped operations required from a trusted Squire bridge.
+// Missing or unknown effect metadata otherwise fails closed.
+func (m *Manager) ReadWorkspaceDefinitions() []provider.Tool {
+	return m.definitions(true)
+}
+
+func (m *Manager) definitions(readOnlyOnly bool) []provider.Tool {
 	var out []provider.Tool
 	for _, s := range m.servers {
 		s.mu.RLock()
-		out = append(out, s.tools...)
+		for _, tool := range s.tools {
+			if !readOnlyOnly || tool.ReadOnly || tool.ReadWorkspaceSafe {
+				out = append(out, tool)
+			}
+		}
 		s.mu.RUnlock()
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
