@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,6 +37,25 @@ type DurableState struct {
 	PriorSummary     string   `json:"prior_summary,omitempty"`
 	CompactedAt      string   `json:"compacted_at"`
 }
+
+type durableAnchor struct {
+	CurrentObjective string
+	PendingReport    string
+	Source           string
+	TodoPosition     int
+	TodoPhase        string
+	TodoStatus       string
+	TodoText         string
+}
+
+type resolvedRequestCounts struct {
+	Prior    int
+	Semantic int
+	Detected int
+	Final    int
+}
+
+func (a durableAnchor) hasTodo() bool { return strings.TrimSpace(a.TodoText) != "" }
 
 func (d DurableState) valid() bool {
 	return strings.TrimSpace(d.Objective) != "" && (len(d.Requirements) > 0 || len(d.Completed) > 0 || len(d.OpenWork) > 0 || len(d.Decisions) > 0 || len(d.Verification) > 0 || len(d.Blockers) > 0)
@@ -84,7 +104,10 @@ func (e *Engine) compactState(ctx context.Context, sid, reason string, emit Emit
 	// The todo plan is persistent session state, whereas the semantic summary is
 	// best-effort model output. Keep the task to continue and the report still
 	// owed deterministic so compaction cannot resurrect an older answered prompt.
-	state = anchorDurableState(state, s, todos, msgs[:keepAt])
+	state, anchor, resolvedCounts := anchorDurableState(state, s, todos, msgs[:keepAt])
+	if err := validateCompactionAnchor(state, anchor); err != nil {
+		return err
+	}
 	encoded, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -102,6 +125,9 @@ func (e *Engine) compactState(ctx context.Context, sid, reason string, emit Emit
 	}
 	if err := e.mcpBoundary(ctx); err != nil {
 		e.emit(ctx, sid, "runtime_config.reload_failed", map[string]any{"error": err.Error()}, emit)
+	}
+	for k, v := range anchorCompactionMeta(anchor, resolvedCounts) {
+		meta[k] = v
 	}
 	meta["kept_messages"] = len(msgs) - keepAt
 	meta["kept_turns"] = 4
@@ -191,10 +217,15 @@ func fallbackDurableState(s store.Session, old []store.Message) DurableState {
 // persisted todo plan. Unlike a transcript summary, todos survive compaction
 // and therefore remain authoritative when the retained turns no longer show
 // the active implementation work.
-func anchorDurableState(state DurableState, s store.Session, todos []store.Todo, old []store.Message) DurableState {
-	state.CurrentObjective, state.PendingReport = durableTaskAnchorParts(s, todos)
-	state.ResolvedRequests = mergeResolvedRequests(priorResolvedRequests(s.DurableSummary), state.ResolvedRequests, resolvedRequests(s, old))
-	return state
+func anchorDurableState(state DurableState, s store.Session, todos []store.Todo, old []store.Message) (DurableState, durableAnchor, resolvedRequestCounts) {
+	anchor := selectDurableAnchor(s, todos)
+	prior := priorResolvedRequests(s.DurableSummary)
+	semantic := state.ResolvedRequests
+	detected := resolvedRequests(s, old)
+	state.CurrentObjective = anchor.CurrentObjective
+	state.PendingReport = anchor.PendingReport
+	state.ResolvedRequests = mergeResolvedRequests(prior, semantic, detected)
+	return state, anchor, resolvedRequestCounts{Prior: len(prior), Semantic: len(semantic), Detected: len(detected), Final: len(state.ResolvedRequests)}
 }
 
 func durableTaskAnchor(s store.Session, todos []store.Todo) string {
@@ -203,21 +234,125 @@ func durableTaskAnchor(s store.Session, todos []store.Todo) string {
 }
 
 func durableTaskAnchorParts(s store.Session, todos []store.Todo) (string, string) {
+	anchor := selectDurableAnchor(s, todos)
+	return anchor.CurrentObjective, anchor.PendingReport
+}
+
+func selectDurableAnchor(s store.Session, todos []store.Todo) durableAnchor {
 	for _, status := range []string{"in_progress", "pending"} {
-		for _, todo := range todos {
-			if todo.Status == status && strings.TrimSpace(todo.Text) != "" {
+		for i, todo := range todos {
+			text := strings.TrimSpace(todo.Text)
+			if todo.Status == status && text != "" {
 				phase := strings.TrimSpace(todo.Phase)
 				if phase == "" {
 					phase = s.Phase
 				}
-				return fmt.Sprintf("Continue the active %s task: %s", phase, strings.TrimSpace(todo.Text)), "Complete the active todo before final response; then report the changes, verification, and any blockers. Do not reopen resolved requests."
+				return durableAnchor{
+					CurrentObjective: fmt.Sprintf("Continue the active %s task: %s", phase, text),
+					PendingReport:    "Complete the active todo before final response; then report the changes, verification, and any blockers. Do not reopen resolved requests.",
+					Source:           status,
+					TodoPosition:     i,
+					TodoPhase:        phase,
+					TodoStatus:       todo.Status,
+					TodoText:         text,
+				}
 			}
 		}
 	}
-	if len(todos) > 0 {
-		return "Wrap up the active task: report the completed plan and verification; do not revisit prior resolved requests.", "The active plan is complete. Produce the final report for its completed work, files, verification, and blockers; do not re-answer resolved earlier questions."
+	lastCompletedIndex := -1
+	var lastCompleted store.Todo
+	for i, todo := range todos {
+		if todo.Status == "completed" && strings.TrimSpace(todo.Text) != "" {
+			lastCompletedIndex = i
+			lastCompleted = todo
+		}
 	}
-	return fmt.Sprintf("Continue the current %s work for the original task.", s.Phase), "Before final response, report the active work, verification, and any blockers. Do not reopen resolved requests."
+	if lastCompletedIndex >= 0 {
+		text := strings.TrimSpace(lastCompleted.Text)
+		phase := strings.TrimSpace(lastCompleted.Phase)
+		if phase == "" {
+			phase = s.Phase
+		}
+		return durableAnchor{
+			CurrentObjective: fmt.Sprintf("Wrap up the completed %s task: %s", phase, text),
+			PendingReport:    fmt.Sprintf("The active plan is complete. Produce the final report for the completed todo %q, its files, verification, and blockers; do not re-answer resolved earlier questions.", text),
+			Source:           "completed_wrap_up",
+			TodoPosition:     lastCompletedIndex,
+			TodoPhase:        phase,
+			TodoStatus:       lastCompleted.Status,
+			TodoText:         text,
+		}
+	}
+	if len(todos) > 0 {
+		return durableAnchor{
+			CurrentObjective: "Wrap up the active task: report the completed plan and verification; do not revisit prior resolved requests.",
+			PendingReport:    "The active plan is complete. Produce the final report for its completed work, files, verification, and blockers; do not re-answer resolved earlier questions.",
+			Source:           "todo_wrap_up",
+			TodoPosition:     -1,
+		}
+	}
+	return durableAnchor{
+		CurrentObjective: fmt.Sprintf("Continue the current %s work for the original task.", s.Phase),
+		PendingReport:    "Before final response, report the active work, verification, and any blockers. Do not reopen resolved requests.",
+		Source:           "session_phase",
+		TodoPosition:     -1,
+	}
+}
+
+func validateCompactionAnchor(state DurableState, anchor durableAnchor) error {
+	if strings.TrimSpace(state.CurrentObjective) == "" {
+		return errors.New("compaction anchor missing current objective")
+	}
+	if strings.TrimSpace(state.PendingReport) == "" {
+		return errors.New("compaction anchor missing pending report")
+	}
+	switch anchor.Source {
+	case "in_progress", "pending":
+		if anchor.hasTodo() && !containsFold(state.CurrentObjective, anchor.TodoText) {
+			return fmt.Errorf("compaction anchor current objective lost %s todo", anchor.Source)
+		}
+		// A resolved request must not be the active work. Only the todo text is
+		// active work; the objective prefix and phase are boilerplate. Wrap-up
+		// sources name completed work for reporting, which is not reopening it.
+		for _, resolved := range state.ResolvedRequests {
+			resolved = strings.TrimSpace(resolved)
+			if resolved != "" && containsFold(anchor.TodoText, resolved) {
+				return errors.New("compaction anchor reopened a resolved request as active work")
+			}
+		}
+	case "completed_wrap_up":
+		if anchor.hasTodo() && !containsFold(state.CurrentObjective+"\n"+state.PendingReport, anchor.TodoText) {
+			return errors.New("compaction wrap-up anchor lost completed todo")
+		}
+	}
+	return nil
+}
+
+func anchorCompactionMeta(anchor durableAnchor, counts resolvedRequestCounts) map[string]any {
+	rendered := anchor.CurrentObjective + "\n\n" + anchor.PendingReport
+	sum := sha256.Sum256([]byte(rendered))
+	meta := map[string]any{
+		"anchor_source":              anchor.Source,
+		"anchor_hash":                fmt.Sprintf("%x", sum)[:16],
+		"resolved_requests_prior":    counts.Prior,
+		"resolved_requests_semantic": counts.Semantic,
+		"resolved_requests_detected": counts.Detected,
+		"resolved_requests_final":    counts.Final,
+	}
+	if anchor.TodoPosition >= 0 {
+		meta["anchor_todo_position"] = anchor.TodoPosition
+	}
+	if strings.TrimSpace(anchor.TodoPhase) != "" {
+		meta["anchor_todo_phase"] = anchor.TodoPhase
+	}
+	if strings.TrimSpace(anchor.TodoStatus) != "" {
+		meta["anchor_todo_status"] = anchor.TodoStatus
+	}
+	return meta
+}
+
+func containsFold(haystack, needle string) bool {
+	return strings.Contains(strings.ToLower(haystack), strings.ToLower(strings.TrimSpace(needle)))
 }
 
 func priorResolvedRequests(summary string) []string {
