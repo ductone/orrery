@@ -54,6 +54,35 @@ The built-in tool set is `read`, `search`, hashline `edit`, `exec`, background `
 
 The `ask` tool transitions only the current turn to `input_required`; the session remains resumable through the next message. The typed state is available through HTTP/SSE, native JSON-RPC, ACP `_meta`, and the web composer. The web UI also supports explicit checkpoints, semantic compaction, conversational forks, and restore. Restore never rewrites workspace files.
 
+## Routing
+
+Most harnesses pick one model per session. Orrery re-decides at four points: the start of every turn (`turn`), when a worker job is spawned (`spawn`), when an independent reviewer is created (`review`), and when the loop escalates after a stall (`escalation`). Each decision is scored, recorded, and explained in one line, for example `stayed on <model>: phase implement, warm prefix 82K, estimated next-call cost $0.0141`.
+
+A decision runs in two stages: hard filters, then scoring.
+
+**Filters** remove models that cannot or must not run the call. A candidate is rejected when the provider is not configured, the model was excluded after a provider failure, the request carries an image the model cannot read, input plus expected output exceeds the context window, its family is excluded, a tier pin does not match, switching is disabled, or the phase sits under the frontier floor (`plan`, `diagnose`, and `review` by default). Reviewers additionally reject the implementer's own family, but only after confirming some other family is actually usable, so single-provider deployments still get a review. If nothing survives, routing fails loudly rather than silently downgrading.
+
+**Scoring** ranks whatever remains by `score = quality − lambda_cost × cost − switch_penalty`.
+
+- *Quality* starts from the tier (frontier, efficient, tiny) and is then adjusted by phase. Judgement-heavy phases (`plan`, `diagnose`, `review`) reward frontier models and penalize the rest; throughput phases (`explore`, `implement`, `wrap-up`) give efficient models a bonus, since most agent turns are mechanical.
+- *Cost* is the estimated price of the actual next call, computed from live token counts and cached-prefix pricing, not a list price. `lambda_cost` is the single dial that says how much quality a dollar is worth.
+- *Switch penalty* prices the cache you would throw away. Leaving a warm model mid-tool-chain costs more, and the penalty grows with conversation size. Critically, it only applies when the prefix is warm: right after compaction there is no cache to protect, so cost and quality decide freely.
+
+**Stall handling** is where routing earns its keep. Repeated failed commands, a test-failure streak, repeated edits, turns without progress, or a phase running long all mark the turn as stalled. Orrery then distinguishes two kinds of stuck. Hard failures look like a capability ceiling and push toward frontier models. But repeated reads or searches are a discipline problem, not a hard problem, so the largest bonus goes to *efficient* models: redundant exploration escalates to a cheaper, better-behaved model instead of burning frontier tokens re-reading the same files.
+
+Reasoning effort follows the same phase logic — high for planning, diagnosis, review, and repeated test failures; low for wrap-up; medium otherwise — clamped to what each model supports. The chosen model also fixes its edit dialect and whether the strict or portable toolset is used.
+
+Ties break deterministically: keep the current model, then prefer the configured default, then sort by ID. Identical state produces an identical decision, which is what makes replay evaluation meaningful.
+
+Every decision — full input state, all candidates including rejected ones with reasons, chosen model, effort, cache estimate, and explanation — is written to SQLite. `export` turns that into a training dataset, `eval` replays recorded sessions against alternative policies, and `benchmark` compares a candidate policy to a baseline. Routing is tuned by measurement, and the schema is deliberately shaped for a learned policy to replace the hand-written `v1` weights later.
+
+```yaml
+router:
+  lambda_cost: 0.35                            # higher = more cost-sensitive
+  frontier_floor_phases: [plan, diagnose, review]
+  disable_switch: false                        # true pins the session to one model
+```
+
 ## Language servers
 
 Language servers are configured explicitly and started lazily per workspace:
