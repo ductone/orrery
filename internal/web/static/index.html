@@ -358,6 +358,16 @@
 
     const STRUCTURED_LIST_FIELDS = [["changes", "Changes"], ["verification", "Verification"], ["blockers", "Blockers"], ["notes", "Notes"]];
 
+    function omitStructuredFields(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+      const omit = new Set(["status", ...STRUCTURED_LIST_FIELDS.map(([key]) => key)]);
+      const rest = {};
+      for (const [key, val] of Object.entries(value)) {
+        if (!omit.has(key)) rest[key] = val;
+      }
+      return rest;
+    }
+
     function structuredCompletion(value) {
       if (!value || typeof value !== "object" || Array.isArray(value)) return "";
       const hasList = STRUCTURED_LIST_FIELDS.some(([key]) => Array.isArray(value[key]));
@@ -377,9 +387,9 @@
       const body = result.error
         ? `<div class="terminal-error">${escapeHTML(result.error)}</div>`
         : (structured || (summary ? `<div class="bubble">${markdown(summary)}</div>` : ""));
-      const detail = result.result && typeof result.result === "object" && Object.keys(result.result).length
-        ? `<details class="card"><summary class="card-head"><div class="card-title"><span class="icon">{ }</span>Full result</div></summary><div class="detail-body">${escapeHTML(pretty(result.result))}</div></details>`
-        : "";
+      const remainder = structured ? omitStructuredFields(result.result) : result.result;
+      const detail = remainder && typeof remainder === "object" && Object.keys(remainder).length
+        ? `<details class="card"><summary class="card-head"><div class="card-title"><span class="icon">{ }</span>Full result</div></summary><div class="detail-body">${escapeHTML(pretty(remainder))}</div></details>`
       const note = meta.note ? `<span class="verdict-note">· ${escapeHTML(meta.note)}</span>` : "";
       // A session stopped at its ceiling is one raise away from continuing, so
       // offer the raise on the card that reports the stop.

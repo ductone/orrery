@@ -109,6 +109,8 @@ func TestWebUIRendersStructuredCompletionOutput(t *testing.T) {
 	html := string(body)
 	for _, expected := range []string{
 		"function structuredCompletion(value)",
+		"function omitStructuredFields(value)",
+		`const remainder = structured ? omitStructuredFields(result.result) : result.result;`,
 		`["changes", "Changes"]`,
 		`["verification", "Verification"]`,
 		`["blockers", "Blockers"]`,
