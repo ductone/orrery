@@ -26,6 +26,26 @@ type Config struct {
 	WebSearch     WebSearchConfig           `yaml:"web_search"`
 	Instructions  []string                  `yaml:"instructions"`
 	LSP           map[string]LSPConfig      `yaml:"lsp"`
+	Interventions InterventionConfig        `yaml:"interventions"`
+}
+
+// InterventionConfig governs the LLM judge that gates expensive progress
+// interventions. The counters that trigger an intervention are deliberately
+// loose; the judge decides whether the trigger reflects a real stall.
+type InterventionConfig struct {
+	// JudgeEnabled turns the cascade off entirely. Disabled reproduces the
+	// pre-judge behaviour: a tripped counter acts immediately.
+	JudgeEnabled *bool `yaml:"judge_enabled"`
+	// JudgeBackoff multiplies a signal's observed value to set its new floor
+	// when the judge declines to intervene, so the same question is not asked
+	// again every turn. Optional: zero means defaultJudgeBackoff.
+	JudgeBackoff float64 `yaml:"judge_backoff"`
+	// JudgeTimeoutSeconds bounds the synchronous judge call. Optional: zero
+	// means defaultJudgeTimeout.
+	JudgeTimeoutSeconds int `yaml:"judge_timeout_seconds"`
+	// JudgeModel pins the judge to a catalog model id. Empty selects the
+	// cheapest configured model.
+	JudgeModel string `yaml:"judge_model"`
 }
 
 type LSPConfig struct {
@@ -60,6 +80,12 @@ type RouterConfig struct {
 type BudgetConfig struct {
 	SessionUSD         float64 `yaml:"session_usd"`
 	JobDefaultFraction float64 `yaml:"job_default_fraction"`
+	// MinReviewUSD is the floor budget an independent review worker receives
+	// when a fraction of the parent budget would be smaller. A reviewer has to
+	// read the whole diff before it can say anything, so a floor below the cost
+	// of one turn guarantees it exhausts without returning a verdict.
+	// Optional: zero means the built-in default (defaultMinReviewUSD).
+	MinReviewUSD float64 `yaml:"min_review_usd"`
 	// SessionTokens caps the novel (non-cached) tokens a session may consume.
 	// Optional: zero means the built-in default (defaultSessionTokens).
 	SessionTokens int `yaml:"session_tokens"`
@@ -71,6 +97,20 @@ type BudgetConfig struct {
 // from this count.
 const defaultSessionTokens = 4_000_000
 
+// defaultMinReviewUSD is the fallback review-worker budget floor. It is sized
+// at roughly three turns of a frontier model reading a large diff; a smaller
+// floor makes budget exhaustion the reviewer's normal outcome.
+const defaultMinReviewUSD = 2.0
+
+// Judge defaults. The backoff is multiplicative rather than additive because
+// the right threshold varies by task and is not known in advance: 1.5x
+// converges on a session's real exploration depth in a logarithmic number of
+// judge calls instead of a linear one.
+const (
+	defaultJudgeBackoff = 1.5
+	defaultJudgeTimeout = 20 * time.Second
+)
+
 // SessionTokenLimit returns the configured per-session token cap, or the
 // default when unset/zero.
 func (b BudgetConfig) SessionTokenLimit() int {
@@ -78,6 +118,39 @@ func (b BudgetConfig) SessionTokenLimit() int {
 		return defaultSessionTokens
 	}
 	return b.SessionTokens
+}
+
+// ReviewFloorUSD returns the configured review-worker budget floor, or the
+// default when unset/zero.
+func (b BudgetConfig) ReviewFloorUSD() float64 {
+	if b.MinReviewUSD <= 0 {
+		return defaultMinReviewUSD
+	}
+	return b.MinReviewUSD
+}
+
+// Enabled reports whether the intervention judge runs. It defaults to true, so
+// an omitted interventions block still gets the cascade.
+func (i InterventionConfig) Enabled() bool {
+	return i.JudgeEnabled == nil || *i.JudgeEnabled
+}
+
+// Backoff returns the configured judge backoff multiplier, or the default when
+// unset/zero.
+func (i InterventionConfig) Backoff() float64 {
+	if i.JudgeBackoff <= 0 {
+		return defaultJudgeBackoff
+	}
+	return i.JudgeBackoff
+}
+
+// JudgeTimeout returns the configured judge call timeout, or the default when
+// unset/zero.
+func (i InterventionConfig) JudgeTimeout() time.Duration {
+	if i.JudgeTimeoutSeconds <= 0 {
+		return defaultJudgeTimeout
+	}
+	return time.Duration(i.JudgeTimeoutSeconds) * time.Second
 }
 
 type TelemetryConfig struct {
@@ -94,8 +167,8 @@ func Default() Config {
 		Listen: "127.0.0.1:7433", WorkspaceRoot: filepath.Join(home, "src"), Database: ".orrery/orrery.db",
 		Providers: map[string]ProviderConfig{}, MCP: map[string]MCPConfig{},
 		LSP:    map[string]LSPConfig{},
-		Router: RouterConfig{LambdaCost: .35, FrontierFloorPhases: []string{"plan", "diagnose", "review"}},
-		Budget: BudgetConfig{SessionUSD: 25, JobDefaultFraction: .2},
+		Router: RouterConfig{LambdaCost: .35, FrontierFloorPhases: []string{"plan", "diagnose"}},
+		Budget: BudgetConfig{SessionUSD: 25, JobDefaultFraction: .2, MinReviewUSD: defaultMinReviewUSD},
 	}
 }
 
@@ -133,6 +206,17 @@ func LoadWithEnv(path string, overrides map[string]string) (Config, error) {
 	}
 	if cfg.Budget.SessionTokens < 0 {
 		return cfg, errors.New("config: budget.session_tokens must be non-negative")
+	}
+	if cfg.Budget.MinReviewUSD < 0 {
+		return cfg, errors.New("config: budget.min_review_usd must be non-negative")
+	}
+	// A backoff at or below 1 would set a floor no higher than the value that
+	// just tripped, so the judge would be re-asked every turn forever.
+	if cfg.Interventions.JudgeBackoff != 0 && cfg.Interventions.JudgeBackoff <= 1 {
+		return cfg, errors.New("config: interventions.judge_backoff must be greater than 1")
+	}
+	if cfg.Interventions.JudgeTimeoutSeconds < 0 {
+		return cfg, errors.New("config: interventions.judge_timeout_seconds must be non-negative")
 	}
 	for name, server := range cfg.LSP {
 		if strings.TrimSpace(name) == "" || len(server.Command) == 0 || strings.TrimSpace(server.Command[0]) == "" {

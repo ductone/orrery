@@ -183,6 +183,17 @@ func (s *Server) dispatch(ctx context.Context, req request) (any, error) {
 		var p struct{ SessionID string }
 		_ = json.Unmarshal(req.Params, &p)
 		return map[string]any{}, s.Engine.Compact(ctx, p.SessionID, "rpc", nil)
+	case "orrery/session/budget":
+		var p struct {
+			SessionID string  `json:"sessionId"`
+			AddUSD    float64 `json:"addUsd"`
+		}
+		_ = json.Unmarshal(req.Params, &p)
+		session, resumed, err := s.Engine.AddBudget(ctx, p.SessionID, p.AddUSD, nil)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"sessionId": session.ID, "budgetUsd": session.BudgetUSD, "spentUsd": session.SpentUSD, "resumed": resumed}, nil
 	default:
 		return nil, fmt.Errorf("method not found: %s", req.Method)
 	}

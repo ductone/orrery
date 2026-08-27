@@ -3,6 +3,7 @@ package core
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"math"
 	"strings"
 
 	"github.com/ductone/orrey/internal/agentproto"
@@ -22,13 +23,17 @@ type progressTracker struct {
 	reviewed                      bool
 	reviewRemediation             bool
 	seenResults                   map[string]string
-	lastTodo                      string
-	turnProgress                  bool
-	turnEdited, turnVerified      bool
+	// floors memoises judge verdicts: when the judge declines to intervene, the
+	// tripping signal's threshold is raised so the same question is not asked
+	// again every turn. Scoped to the phase, like the counters themselves.
+	floors                   map[string]int
+	lastTodo                 string
+	turnProgress             bool
+	turnEdited, turnVerified bool
 }
 
 func newProgressTracker() *progressTracker {
-	return &progressTracker{seenResults: map[string]string{}}
+	return &progressTracker{seenResults: map[string]string{}, floors: map[string]int{}}
 }
 
 func (p *progressTracker) beginTurn(phase string) {
@@ -40,6 +45,7 @@ func (p *progressTracker) beginTurn(phase string) {
 		p.phaseTurns = 0
 		p.noProgressTurns = 0
 		p.nudges = 0
+		clear(p.floors)
 	}
 	p.phaseTurns++
 	p.turnProgress = false
@@ -188,6 +194,29 @@ func terminalPhaseStallReason(parentJob, phase string, phaseTurns int) string {
 		return "agent exceeded the bounded " + phase + " phase without reaching a terminal result"
 	}
 	return ""
+}
+
+// threshold returns the effective trigger level for a signal: the built-in base
+// unless the judge has raised a floor for it in this phase.
+func (p *progressTracker) threshold(signal string, base int) int {
+	if floor, ok := p.floors[signal]; ok && floor > base {
+		return floor
+	}
+	return base
+}
+
+// backoff records a "not stuck" verdict by raising the signal's floor above the
+// value that just tripped, multiplicatively. The multiplier is scale-free: the
+// right level differs per task and is unknown up front, so this converges on it
+// in a logarithmic number of judge calls rather than a linear one.
+func (p *progressTracker) backoff(signal string, observed int, factor float64) {
+	next := int(math.Ceil(float64(observed) * factor))
+	if next <= observed {
+		next = observed + 1
+	}
+	if next > p.floors[signal] {
+		p.floors[signal] = next
+	}
 }
 
 func (p *progressTracker) stall() map[string]int {

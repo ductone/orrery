@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -1175,5 +1176,16 @@ func TestCheckpointRestoreLedgerSnapshot(t *testing.T) {
 	}
 	if cont.ActiveWorkItemID == "" || !cont.FinalReportRequired {
 		t.Fatalf("ledger continuation not restored: %+v", cont)
+	}
+}
+
+func TestAddBudgetUnknownSessionIsNotFound(t *testing.T) {
+	s, err := Open(t.TempDir() + "/db.sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.AddBudget(context.Background(), "no-such-session", 5); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("err=%v want sql.ErrNoRows", err)
 	}
 }

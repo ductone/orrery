@@ -11,6 +11,8 @@ import (
 
 	"github.com/ductone/orrey/internal/agentproto"
 	"github.com/ductone/orrey/internal/store"
+
+	"github.com/ductone/orrey/internal/config"
 )
 
 func TestCollectWorkspaceDiffIncludesNewFilesAndIgnoresRuntimeState(t *testing.T) {
@@ -155,23 +157,38 @@ func TestClassifyReviewJob(t *testing.T) {
 
 func TestReviewChildBudget(t *testing.T) {
 	const fraction = 0.10
+	floor := config.Default().Budget.ReviewFloorUSD()
+	if floor != 2.0 {
+		t.Fatalf("default review floor = %v, want 2.0", floor)
+	}
 	cases := []struct {
 		name      string
 		parentMax float64
 		available float64
 		want      float64
 	}{
-		{"small parent budget gets floor", 1.00, 1.00, 0.50},
-		{"large parent budget uses fraction", 10.00, 10.00, 1.00},
+		{"small parent budget gets floor", 1.00, 5.00, 2.00},
+		{"large parent budget uses fraction", 50.00, 50.00, 5.00},
 		{"available cap wins over floor", 10.00, 0.30, 0.30},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			base := min(tc.parentMax*fraction, tc.available*fraction)
-			got := reviewChildBudget(base, tc.available)
+			got := reviewChildBudget(base, tc.available, floor)
 			if got != tc.want {
-				t.Fatalf("reviewChildBudget(%v, %v) = %v, want %v", base, tc.available, got, tc.want)
+				t.Fatalf("reviewChildBudget(%v, %v, %v) = %v, want %v", base, tc.available, floor, got, tc.want)
 			}
 		})
+	}
+}
+
+// A reviewer must not be floored to a frontier model by default: the review
+// phase was removed from the frontier floor precisely because a frontier turn
+// costs more than the reviewer's whole budget.
+func TestDefaultConfigDoesNotFloorReviewToFrontier(t *testing.T) {
+	for _, phase := range config.Default().Router.FrontierFloorPhases {
+		if phase == "review" {
+			t.Fatal("review must not be in the default frontier_floor_phases")
+		}
 	}
 }

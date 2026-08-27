@@ -80,7 +80,7 @@
     .sidebar-foot { border-top: 1px solid var(--circuit); padding: 13px 18px; color: var(--signal); font-size: 11px; display: flex; justify-content: space-between; }
     main { grid-column: 2; grid-row: 1; min-width: 0; width: 100%; height: 100vh; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; }
     .topbar {
-      border-bottom: 1px solid var(--circuit); padding: 0 24px; display: flex; align-items: center; justify-content: space-between; gap: 20px;
+      border-bottom: 1px solid var(--circuit); padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; gap: 20px;
       min-width: 0; background: rgba(10, 10, 10, .35); backdrop-filter: blur(18px);
     }
     .task-heading { min-width: 0; display: flex; align-items: center; gap: 12px; }
@@ -119,6 +119,7 @@
     .thinking-card .icon { color: var(--conductor-light); background: rgba(91, 57, 245, .1); }
     .thinking-body { border-top: 1px solid var(--circuit); padding: 12px 14px; color: #9aa0a8; background: rgba(10, 10, 10, .32); white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.55 ui-monospace, monospace; font-style: italic; max-height: 260px; overflow: auto; }
     .detail-body { border-top: 1px solid var(--circuit); padding: 12px 14px; color: #c8ccd1; background: rgba(10, 10, 10, .32); white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.55 ui-monospace, monospace; max-height: 360px; overflow: auto; }
+    .card-command { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--electric); font: 11px/1.5 ui-monospace, monospace; font-weight: 500; opacity: .9; }
     .routing-card { border-color: rgba(155, 128, 248, .27); }
     .routing-card .icon { color: var(--conductor-light); background: rgba(91, 57, 245, .14); }
     .todo-list { display: grid; gap: 8px; padding: 13px 14px; border-top: 1px solid var(--circuit); }
@@ -137,7 +138,37 @@
     .pinned-plan .pinned-body { max-height: 180px; overflow: auto; border-top: 1px solid var(--circuit); }
     .pinned-plan .todo-list { border-top: 0; }
     .terminal { border-color: rgba(0, 255, 204, .32); }
-    .terminal.fail { border-color: rgba(255, 122, 133, .4); }
+    .terminal.fail, .terminal.error, .terminal.cancelled, .terminal.budget_exhausted { border-color: rgba(255, 122, 133, .4); }
+    .terminal.input_required { border-color: rgba(155, 128, 248, .45); }
+    .terminal { background: linear-gradient(rgba(0, 255, 204, .05), transparent 60%); }
+    .terminal.fail, .terminal.error, .terminal.cancelled, .terminal.budget_exhausted { background: linear-gradient(rgba(255, 122, 133, .06), transparent 60%); }
+    .terminal.input_required { background: linear-gradient(rgba(91, 57, 245, .08), transparent 60%); }
+    .terminal .card-head { min-height: 50px; }
+    .terminal .card-title { font-size: 13px; letter-spacing: .01em; }
+    .terminal .icon { width: 24px; min-width: 24px; height: 24px; font-size: 13px; }
+    .terminal.fail .icon, .terminal.error .icon, .terminal.cancelled .icon, .terminal.budget_exhausted .icon { color: var(--danger); background: rgba(255, 122, 133, .1); }
+    .terminal.input_required .icon { color: var(--conductor-light); background: rgba(91, 57, 245, .14); }
+    .status-label { text-transform: capitalize; }
+    .verdict-note { color: var(--signal); font-weight: 400; font-size: 11px; }
+    .structured-completion { display: grid; gap: 14px; padding: 15px 17px; border-top: 1px solid var(--circuit); background: rgba(10, 10, 10, .2); }
+    .bubble > .structured-completion { margin: -15px -17px; border-top: 0; background: transparent; }
+    .structured-status { width: fit-content; border: 1px solid rgba(0, 255, 204, .3); border-radius: 999px; padding: 3px 9px; color: var(--electric-dark); font: 10px ui-monospace, monospace; text-transform: uppercase; letter-spacing: .06em; }
+    .structured-status.fail, .structured-status.error, .structured-status.blocked { border-color: rgba(255, 122, 133, .35); color: var(--danger); }
+    .structured-section { display: grid; gap: 6px; }
+    .structured-label { color: var(--conductor-light); font: 10px ui-monospace, monospace; text-transform: uppercase; letter-spacing: .07em; }
+    .structured-list { margin: 0; padding-left: 19px; display: grid; gap: 5px; line-height: 1.5; }
+    .outcome { display: flex; flex-wrap: wrap; gap: 7px; padding: 12px 14px; border-top: 1px solid var(--circuit); background: rgba(10, 10, 10, .22); }
+    .stat { display: grid; gap: 2px; min-width: 68px; padding: 7px 10px; border: 1px solid var(--circuit); border-radius: 8px; background: rgba(22, 24, 28, .7); }
+    .stat-key { color: var(--signal); font: 9px ui-monospace, monospace; text-transform: uppercase; letter-spacing: .07em; }
+    .stat-value { color: var(--bright); font: 12px ui-monospace, monospace; }
+    .stat.cost .stat-value { color: var(--electric); }
+    .stat.warn .stat-value { color: var(--danger); }
+    .stat.good .stat-value { color: var(--electric-dark); }
+    .flags { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 12px; background: rgba(10, 10, 10, .22); }
+    .flag { border-radius: 999px; padding: 3px 9px; font: 10px ui-monospace, monospace; letter-spacing: .04em; border: 1px solid rgba(0, 255, 204, .3); color: var(--electric-dark); background: rgba(0, 255, 204, .06); }
+    .flag.miss { border-color: var(--circuit); color: var(--signal); background: transparent; }
+    .flag.alert { border-color: rgba(255, 122, 133, .4); color: var(--danger); background: rgba(255, 122, 133, .06); }
+    .terminal-error { border-top: 1px solid rgba(255, 122, 133, .25); padding: 12px 14px; color: #ffb3ba; background: rgba(255, 122, 133, .05); white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.55 ui-monospace, monospace; }
     code { background: rgba(42, 46, 53, .7); border-radius: 4px; padding: 1px 4px; font: .91em ui-monospace, monospace; color: var(--electric-light); }
     pre { min-width: 0; max-width: 100%; margin: 10px 0 0; padding: 12px; overflow: auto; border-radius: 8px; background: var(--void); border: 1px solid var(--circuit); }
     pre code { padding: 0; background: none; color: #d6d9dd; }
@@ -172,7 +203,7 @@
     }
     .menu-toggle:hover { color: var(--bright); border-color: rgba(155,128,248,.45); }
     @media (max-width: 1120px) {
-      .topbar { padding: 0 15px; gap: 10px; }
+      .topbar { padding: 10px 15px; gap: 10px; }
       .actions { display: none; }
     }
     @media (max-width: 760px) {
@@ -253,6 +284,114 @@
     const pick = (object, ...keys) => keys.find(key => object && object[key] !== undefined) ? object[keys.find(key => object && object[key] !== undefined)] : undefined;
     const pretty = value => JSON.stringify(value ?? {}, null, 2);
     const shortID = value => value ? String(value).slice(0, 8) : "—";
+
+    const STATUS_META = {
+      pass: { icon: "✓", label: "Passed", note: "task completed successfully" },
+      complete: { icon: "✓", label: "Complete", note: "task finished" },
+      fail: { icon: "✕", label: "Failed", note: "task did not complete" },
+      error: { icon: "✕", label: "Error", note: "task ended with an error" },
+      cancelled: { icon: "⊘", label: "Cancelled", note: "task was stopped" },
+      budget_exhausted: { icon: "⏱", label: "Budget exhausted", note: "stopped at the spend limit" },
+      input_required: { icon: "?", label: "Input required", note: "waiting on you" },
+      blocked: { icon: "⊘", label: "Blocked", note: "a prerequisite is missing" },
+    };
+
+    const formatDuration = ns => {
+      const ms = Number(ns) / 1e6;
+      if (!Number.isFinite(ms) || ms <= 0) return null;
+      if (ms < 1000) return `${Math.round(ms)}ms`;
+      const seconds = ms / 1000;
+      if (seconds < 60) return `${seconds.toFixed(1)}s`;
+      const minutes = Math.floor(seconds / 60);
+      return `${minutes}m ${Math.round(seconds % 60)}s`;
+    };
+
+    const formatCount = value => {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return null;
+      return number >= 1000 ? `${(number / 1000).toFixed(number >= 10000 ? 0 : 1)}K` : String(number);
+    };
+
+    function statCard(key, value, tone = "") {
+      if (value === null || value === undefined || value === "") return "";
+      return `<div class="stat ${tone}"><span class="stat-key">${escapeHTML(key)}</span><span class="stat-value">${escapeHTML(value)}</span></div>`;
+    }
+
+    function outcomeStats(outcome = {}) {
+      const errors = Number(outcome.tool_errors) || 0, retries = Number(outcome.edit_retries) || 0;
+      const stalls = Number(outcome.no_progress_turns) || 0, rejects = Number(outcome.completion_rejections) || 0;
+      const cards = [
+        statCard("cost", outcome.cost_usd !== undefined ? `$${Number(outcome.cost_usd).toFixed(4)}` : null, "cost"),
+        statCard("tokens", formatCount(outcome.tokens)),
+        statCard("elapsed", formatDuration(outcome.latency)),
+        statCard("tools", formatCount(outcome.tool_calls)),
+        statCard("tool errors", errors ? String(errors) : null, "warn"),
+        statCard("edits", formatCount(outcome.edit_attempts)),
+        statCard("edit retries", retries ? String(retries) : null, "warn"),
+        statCard("stalls", stalls ? String(stalls) : null, "warn"),
+        statCard("rejections", rejects ? String(rejects) : null, "warn"),
+        statCard("model", outcome.model),
+      ].join("");
+      return cards ? `<div class="outcome">${cards}</div>` : "";
+    }
+
+    function outcomeFlags(outcome = {}, status = "") {
+      const flags = [];
+      const succeeded = status === "pass" || status === "complete";
+      if (succeeded || outcome.verified !== undefined) flags.push(`<span class="flag ${outcome.verified ? "" : "miss"}">${outcome.verified ? "✓ verified" : "unverified"}</span>`);
+      if (outcome.independently_reviewed) flags.push(`<span class="flag">✓ independently reviewed</span>`);
+      if (outcome.exploration_worker) flags.push(`<span class="flag miss">exploration worker</span>`);
+      if (outcome.budget_reason) flags.push(`<span class="flag alert">budget: ${escapeHTML(outcome.budget_reason)}</span>`);
+      if (Number(outcome.duplicate_reads) || Number(outcome.duplicate_searches)) {
+        const total = (Number(outcome.duplicate_reads) || 0) + (Number(outcome.duplicate_searches) || 0);
+        flags.push(`<span class="flag alert">${total} duplicate lookup${total === 1 ? "" : "s"}</span>`);
+      }
+      return flags.length ? `<div class="flags">${flags.join("")}</div>` : "";
+    }
+
+    function listSection(label, items) {
+      const arr = Array.isArray(items) ? items : (items ? [items] : []);
+      if (!arr.length) return "";
+      const rows = arr.map(item => `<li>${escapeHTML(typeof item === "string" ? item : pretty(item))}</li>`).join("");
+      return `<div class="structured-section"><div class="structured-label">${escapeHTML(label)}</div><ul class="structured-list">${rows}</ul></div>`;
+    }
+
+    const STRUCTURED_LIST_FIELDS = [["changes", "Changes"], ["verification", "Verification"], ["blockers", "Blockers"], ["notes", "Notes"]];
+
+    function structuredCompletion(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+      const hasList = STRUCTURED_LIST_FIELDS.some(([key]) => Array.isArray(value[key]));
+      const hasStatus = typeof value.status === "string" && value.status.trim() !== "";
+      if (!hasList) return "";
+      const status = hasStatus ? `<div class="structured-status ${statusClass(value.status)}">${escapeHTML(value.status)}</div>` : "";
+      const sections = STRUCTURED_LIST_FIELDS.map(([key, label]) => listSection(label, value[key])).join("");
+      if (!status && !sections) return "";
+      return `<div class="structured-completion">${status}${sections}</div>`;
+    }
+
+    function terminalCard(result = {}, status) {
+      const meta = STATUS_META[status] || { icon: "•", label: status || "finished", note: "" };
+      const outcome = result.outcome || {};
+      const structured = structuredCompletion(result.result);
+      const summary = typeof result.result === "string" ? result.result : (structured ? "" : (result.result?.summary || result.summary || ""));
+      const body = result.error
+        ? `<div class="terminal-error">${escapeHTML(result.error)}</div>`
+        : (structured || (summary ? `<div class="bubble">${markdown(summary)}</div>` : ""));
+      const detail = result.result && typeof result.result === "object" && Object.keys(result.result).length
+        ? `<details class="card"><summary class="card-head"><div class="card-title"><span class="icon">{ }</span>Full result</div></summary><div class="detail-body">${escapeHTML(pretty(result.result))}</div></details>`
+        : "";
+      const note = meta.note ? `<span class="verdict-note">· ${escapeHTML(meta.note)}</span>` : "";
+      // A session stopped at its ceiling is one raise away from continuing, so
+      // offer the raise on the card that reports the stop.
+      const bump = status === "budget_exhausted"
+        ? `<div class="choices">${[5, 20].map(amount => `<button class="choice" data-bump="${amount}">+$${amount} and continue</button>`).join("")}</div>`
+        : "";
+      return `<div class="card terminal ${statusClass(status)}">
+        <div class="card-head"><div class="card-title"><span class="icon">${meta.icon}</span><span class="status-label">${escapeHTML(meta.label)}</span>${note}</div></div>
+        ${outcomeStats(outcome)}${outcomeFlags(outcome, status)}${bump}
+        ${body}${detail ? `<div style="padding:0 14px 13px">${detail}</div>` : ""}
+      </div>`;
+    }
     const statusClass = value => String(value || "").toLowerCase().replace(/[^a-z_]/g, "");
 
     function markdown(text = "") {
@@ -350,13 +489,19 @@
       }
       if (type === "assistant.message") {
         const message = data.message || {}, content = message.content || "", reasoning = message.reasoning || "";
+        let completion = "";
+        if (typeof content === "string") {
+          try { completion = structuredCompletion(JSON.parse(content)); } catch {}
+        }
         if (reasoning) addEvent("assistant", `${state.model} · thinking`, `<details class="card thinking-card"><summary class="card-head"><div class="card-title"><span class="icon">…</span>thinking</div><span class="card-meta">${reasoning.length} chars</span></summary><div class="thinking-body">${escapeHTML(reasoning)}</div></details>`);
-        if (content) addEvent("assistant", state.model, `<div class="bubble">${markdown(content)}</div>`);
+        if (content) addEvent("assistant", state.model, `<div class="bubble">${completion || markdown(content)}</div>`);
         return;
       }
       if (type === "tool.started") {
         const name = data.name || "tool", id = data.id || crypto.randomUUID();
-        const node = addEvent("tool", "tool", `<details class="card" data-call="${escapeHTML(id)}"><summary class="card-head"><div class="card-title"><span class="icon">›_</span>${escapeHTML(name)}</div><span class="card-meta tool-state">running</span></summary><div class="detail-body">${escapeHTML(pretty(data.arguments))}</div></details>`);
+        const execCommand = name === "exec" && data.arguments && typeof data.arguments.command === "string" ? data.arguments.command : null;
+        const commandLine = execCommand ? `<span class="card-command">${escapeHTML(execCommand)}</span>` : "";
+        const node = addEvent("tool", "tool", `<details class="card" data-call="${escapeHTML(id)}"><summary class="card-head"><div class="card-title"><span class="icon">›_</span>${escapeHTML(name)}${commandLine}</div><span class="card-meta tool-state">running</span></summary><div class="detail-body">${escapeHTML(pretty(data.arguments))}</div></details>`);
         node.dataset.call = id;
         return;
       }
@@ -382,7 +527,13 @@
       }
       if (type === "job.started" || type === "job.terminal") {
         const terminal = type.endsWith("terminal"), model = data.model || data.result?.outcome?.model || "worker";
-        addEvent("job", terminal ? "worker completed" : "worker started", `<details class="card"><summary class="card-head"><div class="card-title"><span class="icon">◇</span>${escapeHTML(model)}</div><span class="card-meta">${terminal ? escapeHTML(data.result?.status || "done") : shortID(data.id)}</span></summary><div class="detail-body">${escapeHTML(pretty(terminal ? data.result : { spec: data.spec, explanation: data.explanation }))}</div></details>`);
+        if (terminal) {
+          const result = data.result || {}, status = result.status || "complete";
+          const meta = STATUS_META[status] || { icon: "◇", label: status };
+          addEvent(`job terminal ${statusClass(status)}`, "worker completed", `<div class="card terminal ${statusClass(status)}"><div class="card-head"><div class="card-title"><span class="icon">${meta.icon}</span><span class="status-label">${escapeHTML(meta.label)}</span><span class="verdict-note">· worker · ${escapeHTML(model)}</span></div><span class="card-meta">${shortID(data.id)}</span></div>${outcomeStats(result.outcome || {})}${outcomeFlags(result.outcome || {}, status)}${result.error ? `<div class="terminal-error">${escapeHTML(result.error)}</div>` : ""}${result.result && Object.keys(result.result || {}).length ? `<details class="card" style="margin:0 14px 13px"><summary class="card-head"><div class="card-title"><span class="icon">{ }</span>Worker result</div></summary><div class="detail-body">${escapeHTML(pretty(result.result))}</div></details>` : ""}</div>`);
+          return;
+        }
+        addEvent("job", "worker started", `<details class="card"><summary class="card-head"><div class="card-title"><span class="icon">◇</span>${escapeHTML(model)}</div><span class="card-meta">${shortID(data.id)}</span></summary><div class="detail-body">${escapeHTML(pretty({ spec: data.spec, explanation: data.explanation }))}</div></details>`);
         return;
       }
       if (type === "context.compacted") {
@@ -396,13 +547,23 @@
         node.querySelectorAll("[data-answer]").forEach(button => button.addEventListener("click", () => answerInput(button.dataset.answer)));
         syncHeader(); loadSessions(); $("#prompt").focus(); return;
       }
+      if (type === "budget.increased") {
+        if (data.resumed !== false) { state.status = "running"; state.pending = true; }
+        addEvent("context", "budget", `<div class="card"><div class="card-head"><div class="card-title"><span class="icon">$</span>Budget raised by $${Number(data.added_usd || 0).toFixed(2)}</div><span class="card-meta">$${Number(data.spent_usd || 0).toFixed(4)} of $${Number(data.budget_usd || 0).toFixed(2)}</span></div></div>`);
+        syncHeader(); loadSessions(); return;
+      }
       if (type === "input.answered") { state.input = null; state.status = "running"; syncHeader(); return; }
       if (type === "session.restored") { addEvent("context","restored",`<div class="card"><div class="card-head"><div class="card-title"><span class="icon">↶</span>Checkpoint restored</div></div></div>`); return; }
       if (type === "session.terminal" || type === "terminal") {
         const result = data.status ? data : (data.terminal || data);
         state.status = result.status || "complete";
         state.pending = false;
-        addEvent(`terminal ${statusClass(state.status)}`, "complete", `<details class="card terminal ${statusClass(state.status)}" open><summary class="card-head"><div class="card-title"><span class="icon">${state.status === "pass" ? "✓" : "!"}</span>${escapeHTML(state.status)}</div><span class="card-meta">${result.outcome?.cost_usd ? `$${Number(result.outcome.cost_usd).toFixed(4)}` : ""}</span></summary><div class="detail-body">${escapeHTML(result.error || pretty(result.result || {}))}</div></details>`);
+        const node = addEvent(`terminal ${statusClass(state.status)}`, "complete", terminalCard(result, statusClass(state.status)));
+        node.querySelectorAll("[data-bump]").forEach(button => button.addEventListener("click", async () => {
+          node.querySelectorAll("[data-bump]").forEach(other => other.disabled = true);
+          try { await sessionAction("budget", { add_usd: Number(button.dataset.bump) }); }
+          catch { node.querySelectorAll("[data-bump]").forEach(other => other.disabled = false); }
+        }));
         syncHeader(); loadSessions();
         return;
       }
@@ -431,7 +592,7 @@
       state.stream = new EventSource(`/api/v1/sessions/${encodeURIComponent(id)}/events`);
       state.stream.onopen = () => { $("#connection").textContent = "live"; };
       state.stream.onerror = () => { $("#connection").textContent = "reconnecting"; };
-      ["routing.decision","routing.fallback","assistant.message","tool.started","tool.finished","todo.changed","job.started","job.terminal","usage.reported","artifact.created","link.created","session.terminal","context.compacted","context.compaction_failed","input.required","input.answered","session.restored","progress.intervention","completion.rejected","provider.error"].forEach(type => state.stream.addEventListener(type, renderEvent));
+      ["routing.decision","routing.fallback","assistant.message","tool.started","tool.finished","todo.changed","job.started","job.terminal","usage.reported","artifact.created","link.created","session.terminal","context.compacted","context.compaction_failed","input.required","input.answered","budget.increased","session.restored","progress.intervention","completion.rejected","provider.error"].forEach(type => state.stream.addEventListener(type, renderEvent));
       syncHeader(); loadSessions(); closeDrawer();
     }
 

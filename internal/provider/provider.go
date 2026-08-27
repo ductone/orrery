@@ -169,6 +169,13 @@ func New(cfg config.Config) *Registry {
 				base = "https://api.openai.com"
 			}
 			r.clients[name] = newOpenAI(base, keys, true)
+		case "ramp":
+			// Ramp Router fronts multiple vendors with the OpenAI Responses
+			// API, so it reuses the Responses client verbatim.
+			if base == "" {
+				base = "https://api.router.com"
+			}
+			r.clients[name] = newOpenAI(base, keys, true)
 		case "fireworks":
 			if base == "" {
 				base = "https://api.fireworks.ai/inference"

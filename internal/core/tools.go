@@ -30,15 +30,11 @@ import (
 // It is distinct from a genuine review rejection (pass:false).
 var ErrReviewInconclusive = errors.New("review inconclusive")
 
-// minReviewUSD is the smallest budget an independent review worker is given so
-// it can still read a large diff when the parent budget is small.
-const minReviewUSD = 0.50
-
 // reviewChildBudget applies the review-only budget floor to a child budget that
 // has already been computed as a fraction of the parent budget. The floor gives
 // reviewers enough budget to read large diffs while capping to available funds.
-func reviewChildBudget(childUSD, available float64) float64 {
-	return min(max(childUSD, minReviewUSD), available)
+func reviewChildBudget(childUSD, available, floor float64) float64 {
+	return min(max(childUSD, floor), available)
 }
 
 func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest, dialect model.EditDialect, discovery *instructionDiscovery, emit EmitFunc) *builtin.Registry {
@@ -276,7 +272,8 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 		// Independent reviewers need enough budget to read large diffs even when
 		// the parent budget is small; cap the floor so we never exceed what is
 		// actually available.
-		childUSD = reviewChildBudget(childUSD, available)
+		cfg, _, _, _, _ := e.runtimeSnapshot()
+		childUSD = reviewChildBudget(childUSD, available, cfg.Budget.ReviewFloorUSD())
 	}
 	child := agentproto.TaskRequest{Spec: spec, ResultSchema: schema, Budget: agentproto.Budget{MaxTokens: max(1000, int(float64(parentReq.Budget.MaxTokens)*fraction)), MaxUSD: childUSD, MaxWallClock: parentReq.Budget.MaxWallClock, MaxDepth: parentReq.Budget.MaxDepth}, Workspace: agentproto.Workspace{Path: parentReq.Workspace.Path, Mode: workspaceMode, Ownership: parentReq.Workspace.Ownership}, Depth: parentReq.Depth - 1}
 	child.Hints.Review = review

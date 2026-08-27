@@ -83,6 +83,7 @@ func newServer(addr string, e *core.Engine, viewOnly bool, version ...string) *S
 		mux.HandleFunc("POST /api/v1/sessions/{id}/restore", s.restoreCheckpoint)
 		mux.HandleFunc("POST /api/v1/sessions/{id}/fork", s.forkSession)
 		mux.HandleFunc("POST /api/v1/sessions/{id}/compact", s.compactSession)
+		mux.HandleFunc("POST /api/v1/sessions/{id}/budget", s.addBudget)
 		mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.deleteSession)
 		mux.HandleFunc("POST /api/v1/drain", s.drain)
 		mux.HandleFunc("POST /api/v1/runtime-config/reload", s.reloadRuntime)
@@ -303,6 +304,32 @@ func (s *Server) messageV1(w http.ResponseWriter, r *http.Request) {
 	writeStatus(w, http.StatusAccepted, map[string]any{"id": info.SessionID, "turn_id": info.TurnID, "accepted": info.Accepted, "duplicate": info.Duplicate, "queued": info.Queued}, nil)
 }
 func (s *Server) resumeV1(w http.ResponseWriter, r *http.Request) { s.messageV1(w, r) }
+
+// addBudget raises a session's spend ceiling. A session stopped at its ceiling
+// resumes as part of the same call, so a caller does not have to invent a
+// follow-up message just to restart work the budget interrupted.
+func (s *Server) addBudget(w http.ResponseWriter, r *http.Request) {
+	if s.rejectWhileDraining(w) {
+		return
+	}
+	var in struct {
+		AddUSD float64 `json:"add_usd"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeStatus(w, http.StatusBadRequest, nil, err)
+		return
+	}
+	session, resumed, err := s.engine.AddBudget(context.Background(), r.PathValue("id"), in.AddUSD, nil)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeStatus(w, http.StatusNotFound, nil, err)
+		return
+	}
+	if err != nil {
+		writeStatus(w, http.StatusBadRequest, nil, err)
+		return
+	}
+	write(w, map[string]any{"id": session.ID, "budget_usd": session.BudgetUSD, "spent_usd": session.SpentUSD, "resumed": resumed}, nil)
+}
 func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
 	write(w, map[string]bool{"cancelled": s.engine.Cancel(r.PathValue("id"))}, nil)
 }

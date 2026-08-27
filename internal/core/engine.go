@@ -275,6 +275,76 @@ func (e *Engine) CreateIdle(ctx context.Context, workspace string, budgetUSD flo
 	return e.store.Session(ctx, s.ID)
 }
 
+// maxBudgetIncreaseUSD bounds a single increase so a mistyped amount cannot
+// hand a session an effectively unbounded spend ceiling.
+const maxBudgetIncreaseUSD = 1000
+
+// AddBudget raises a session's dollar ceiling by addUSD and reports whether the
+// session was resumed as a result. A session stopped at its ceiling is
+// continued from where it left off without a new user message; a session that
+// is still running needs no restart, because the turn loop re-reads the ceiling
+// every turn. Sessions stopped for any other reason only get the raised
+// ceiling, so this cannot restart work that ended for an unrelated reason.
+func (e *Engine) AddBudget(ctx context.Context, id string, addUSD float64, emit EmitFunc) (store.Session, bool, error) {
+	// Written as a negated comparison so NaN, which compares false against
+	// everything, is rejected rather than accepted.
+	if !(addUSD > 0) {
+		return store.Session{}, false, errors.New("budget increase must be a positive amount")
+	}
+	if addUSD > maxBudgetIncreaseUSD {
+		return store.Session{}, false, fmt.Errorf("budget increase of $%.2f exceeds the $%d per-request limit", addUSD, maxBudgetIncreaseUSD)
+	}
+	if _, err := e.store.Session(ctx, id); err != nil {
+		return store.Session{}, false, err
+	}
+	if err := e.store.AddBudget(ctx, id, addUSD); err != nil {
+		return store.Session{}, false, err
+	}
+	s, err := e.store.Session(ctx, id)
+	if err != nil {
+		return store.Session{}, false, err
+	}
+	e.emit(ctx, id, "budget.increased", map[string]any{"added_usd": addUSD, "budget_usd": s.BudgetUSD, "spent_usd": s.SpentUSD}, emit)
+	if s.Status != string(agentproto.BudgetExhausted) {
+		return s, false, nil
+	}
+	req := agentproto.TaskRequest{}
+	if json.Unmarshal([]byte(s.RequestJSON), &req) != nil {
+		req = agentproto.TaskRequest{Spec: s.Spec, Workspace: agentproto.Workspace{Path: s.WorkspacePath, Mode: "shared-write", Ownership: s.WorkspaceOwnership}, Depth: 4}
+	}
+	req.Budget.MaxUSD = s.BudgetUSD - s.SpentUSD
+	if req.Budget.MaxTokens <= 0 {
+		req.Budget.MaxTokens = e.sessionTokenLimit()
+	}
+	// The wall clock is per-run, so a session stopped by the wall-clock budget
+	// gets a fresh window rather than resuming into an already-expired one.
+	req.Budget.MaxWallClock = 2 * time.Hour
+	if req.Workspace.Path == "" {
+		cfg, _, _, _, _ := e.runtimeSnapshot()
+		req.Workspace.Path = cfg.WorkspaceRoot
+	}
+	// Detach from the caller's context: an HTTP handler's context is cancelled
+	// once its response is written, which would kill the turn immediately.
+	turnID := uuid.NewString()
+	turnCtx, cancel := context.WithTimeout(withTurnID(context.WithoutCancel(ctx), turnID), req.Budget.MaxWallClock)
+	e.mu.Lock()
+	if _, active := e.cancels[id]; active {
+		e.mu.Unlock()
+		cancel()
+		return s, false, nil
+	}
+	if err := e.store.SetSessionStatus(ctx, id, "running"); err != nil {
+		e.mu.Unlock()
+		cancel()
+		return s, false, err
+	}
+	e.cancels[id] = cancel
+	e.turnIDs[id] = turnID
+	e.mu.Unlock()
+	e.launchExisting(turnCtx, cancel, id, req, emit)
+	return s, true, nil
+}
+
 func (e *Engine) Continue(ctx context.Context, id, instruction string, emit EmitFunc) (<-chan agentproto.TaskResult, error) {
 	info, err := e.ContinueIntegrated(ctx, id, instruction, uuid.NewString(), "standalone", emit)
 	return info.Result, err
@@ -689,8 +759,10 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		stall.PhaseTurns = progress.phaseTurns
 		stall.RepeatedReads = progress.repeatedReads
 		stall.RepeatedSearches = progress.repeatedSearch
-		if stall.FailedCommands >= 2 || stall.TestFailStreak >= 2 || stall.RepeatedEdits >= 3 || stall.NoProgressTurns >= 4 || stall.RepeatedReads >= 2 || stall.RepeatedSearches >= 2 {
-			point = router.Escalation
+		if signal, observed, tripped := escalationTrigger(stall, progress); tripped {
+			if e.allowIntervention(ctx, sid, "escalation", signal, observed, progress, emit) {
+				point = router.Escalation
+			}
 		}
 		// A compaction during the previous turn invalidated every warm prefix;
 		// clear current-model stickiness so routing picks by cost/quality fresh.
@@ -1081,11 +1153,14 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		}
 		progress.endTurn()
 		if reason := progress.terminalStallReason(); reason != "" {
-			progress.export(&outcome)
-			e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "terminal_stall", "reason": reason, "signals": progress.stall()}, emit)
-			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: reason}, emit)
+			if e.allowIntervention(ctx, sid, "terminal_stall", "no_progress_turns", progress.noProgressTurns, progress, emit) {
+				progress.export(&outcome)
+				e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "terminal_stall", "reason": reason, "signals": progress.stall()}, emit)
+				return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: reason}, emit)
+			}
 		}
-		if parentJob == "" && progress.shouldDelegate() && req.Depth > 0 && e.hasEfficientWorker() {
+		if parentJob == "" && progress.shouldDelegate() && req.Depth > 0 && e.hasEfficientWorker() &&
+			e.allowIntervention(ctx, sid, "exploration_worker", "no_progress_turns", progress.noProgressTurns, progress, emit) {
 			job, spawnErr := e.spawn(ctx, sid, parentJob, req, map[string]any{
 				"spec":            "You are a bounded read-only exploration worker assisting a parent agent. The parent's task is:\n\n" + s.Spec + "\n\nFind the smallest relevant code path for that task, collect decisive evidence, and return concise findings with exact file paths, symbols, and a recommended next action. Do not edit files and do not repeat broad repository scans.",
 				"result_schema":   map[string]any{"type": "object"},
@@ -1097,7 +1172,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				progress.delegated = true
 				progress.turnProgress = true
 				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Content: "Exploration has stalled, so Orrery delegated bounded repository discovery to a lower-cost worker: " + store.JSON(job) + ". Do not repeat broad reads while it runs. Continue with known evidence or retrieve job_result when ready."})
-				e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "exploration_worker", "job": job}, emit)
+				e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "exploration_worker", "job": job, "signals": progress.stall()}, emit)
 			}
 		}
 		if progress.shouldNudge() {

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadStrictAndSecrets(t *testing.T) {
@@ -70,5 +71,83 @@ func TestLoadWithEnvOverride(t *testing.T) {
 	}
 	if got := cfg.Providers["openai"].APIKey; got != "rotated" {
 		t.Fatalf("API key = %q, want override", got)
+	}
+}
+
+func TestBudgetDefaultsAndReviewFloor(t *testing.T) {
+	d := Default()
+	if d.Budget.ReviewFloorUSD() != 2 {
+		t.Fatalf("default review floor = %v, want 2", d.Budget.ReviewFloorUSD())
+	}
+	if d.Budget.SessionUSD != 25 {
+		t.Fatalf("default session budget = %v, want 25", d.Budget.SessionUSD)
+	}
+	for _, phase := range d.Router.FrontierFloorPhases {
+		if phase == "review" {
+			t.Fatal("review must not be in the default frontier_floor_phases")
+		}
+	}
+
+	// A config that sets other budget fields must not silently reset the
+	// review floor: it is the shape our own orrery.yaml uses.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "orrery.yaml")
+	if err := os.WriteFile(path, []byte("listen: \"127.0.0.1:7433\"\ndatabase: \".orrery/orrery.db\"\nbudget:\n  session_usd: 5\n  job_default_fraction: 0.2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Budget.ReviewFloorUSD() != 2 {
+		t.Fatalf("review floor after partial budget override = %v, want 2", cfg.Budget.ReviewFloorUSD())
+	}
+	if len(cfg.Router.FrontierFloorPhases) != 2 {
+		t.Fatalf("frontier floor phases = %v, want the 2 defaults", cfg.Router.FrontierFloorPhases)
+	}
+	if cfg.Budget.SessionUSD != 5 {
+		t.Fatalf("session budget override lost: %v", cfg.Budget.SessionUSD)
+	}
+}
+
+func TestInterventionDefaultsAndValidation(t *testing.T) {
+	d := Default()
+	if !d.Interventions.Enabled() {
+		t.Fatal("the judge must be on by default")
+	}
+	if d.Interventions.Backoff() != 1.5 {
+		t.Fatalf("default backoff = %v, want 1.5", d.Interventions.Backoff())
+	}
+	if d.Interventions.JudgeTimeout() != 20*time.Second {
+		t.Fatalf("default judge timeout = %v, want 20s", d.Interventions.JudgeTimeout())
+	}
+
+	dir := t.TempDir()
+	write := func(body string) (Config, error) {
+		path := filepath.Join(dir, "c.yaml")
+		if err := os.WriteFile(path, []byte("listen: '127.0.0.1:1'\ndatabase: 'x.db'\n"+body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return Load(path)
+	}
+
+	// A backoff at or below 1 sets a floor no higher than the value that tripped,
+	// so the judge would be re-asked every turn forever.
+	if _, err := write("interventions:\n  judge_backoff: 1.0\n"); err == nil {
+		t.Fatal("judge_backoff of 1.0 must be rejected")
+	}
+	if _, err := write("interventions:\n  judge_timeout_seconds: -1\n"); err == nil {
+		t.Fatal("negative judge timeout must be rejected")
+	}
+
+	cfg, err := write("interventions:\n  judge_enabled: false\n  judge_backoff: 2.5\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Interventions.Enabled() {
+		t.Fatal("judge_enabled: false must disable the judge")
+	}
+	if cfg.Interventions.Backoff() != 2.5 {
+		t.Fatalf("backoff override lost: %v", cfg.Interventions.Backoff())
 	}
 }

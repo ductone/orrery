@@ -291,6 +291,25 @@ func (s *Store) AddSpend(ctx context.Context, id string, usd float64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET spent_usd=spent_usd+?,updated_at=? WHERE id=?`, usd, time.Now().UTC().Format(time.RFC3339Nano), id)
 	return err
 }
+
+// AddBudget raises a session's dollar ceiling. The turn loop re-reads
+// budget_usd from this row every turn, so an increase applies to a session that
+// is still running as well as one already stopped at the ceiling.
+func (s *Store) AddBudget(ctx context.Context, id string, usd float64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET budget_usd=budget_usd+?,updated_at=? WHERE id=?`, usd, time.Now().UTC().Format(time.RFC3339Nano), id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (s *Store) ReservedJobUSD(ctx context.Context, sid string) (float64, error) {
 	var n float64
 	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(CAST(json_extract(budget_json,'$.max_usd') AS REAL)),0) FROM jobs WHERE session_id=? AND status='running'`, sid).Scan(&n)
