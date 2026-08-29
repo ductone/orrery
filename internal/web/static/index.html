@@ -390,6 +390,7 @@
       const remainder = structured ? omitStructuredFields(result.result) : result.result;
       const detail = remainder && typeof remainder === "object" && Object.keys(remainder).length
         ? `<details class="card"><summary class="card-head"><div class="card-title"><span class="icon">{ }</span>Full result</div></summary><div class="detail-body">${escapeHTML(pretty(remainder))}</div></details>`
+        : "";
       const note = meta.note ? `<span class="verdict-note">· ${escapeHTML(meta.note)}</span>` : "";
       // A session stopped at its ceiling is one raise away from continuing, so
       // offer the raise on the card that reports the stop.
