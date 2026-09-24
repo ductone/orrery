@@ -801,7 +801,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			if err != nil {
 				return provider.Request{}, err
 			}
-			system := systemPrompt(d, req.Depth, req.Workspace.Path)
+			system := systemPrompt(d, req.Depth, req.Workspace.Path, req.ResultSchema)
 			if len(runtimeCfg.Instructions) > 0 {
 				system += "\n\nDEPLOYMENT INSTRUCTIONS\n" + strings.Join(runtimeCfg.Instructions, "\n")
 			}
@@ -1006,7 +1006,14 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			e.inferPhase(ctx, sid, "", "", progress)
 			result := parseResult(resp.Message.Content)
 			if err := validateSchema(req.ResultSchema, result); err != nil {
-				return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "result schema: " + err.Error()}, emit)
+				progress.completionRejections++
+				e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "result schema validation failed", "error": err.Error(), "attempt": progress.completionRejections}, emit)
+				if progress.completionRejections >= 3 {
+					return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "result schema: " + err.Error()}, emit)
+				}
+				schemaBytes, _ := json.Marshal(req.ResultSchema)
+				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Content: "Completion rejected: your final result did not validate against the required result schema (" + err.Error() + "). The schema is:\n" + string(schemaBytes) + "\nReturn a corrected final JSON result that satisfies it exactly."})
+				continue
 			}
 			outcome.Latency = time.Since(started)
 			progress.export(&outcome)
