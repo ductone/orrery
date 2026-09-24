@@ -176,9 +176,11 @@
     .composer { max-width: 920px; margin: 0 auto; border: 1px solid var(--circuit); background: rgba(22, 24, 28, .96); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; transition: border-color .15s, box-shadow .15s; }
     .composer:focus-within { border-color: rgba(0, 255, 204, .46); box-shadow: 0 0 0 3px rgba(0, 255, 204, .06), var(--shadow); }
     textarea { display: block; width: 100%; min-height: 76px; max-height: 240px; resize: none; border: 0; outline: 0; background: transparent; color: var(--bright); padding: 15px 16px 8px; line-height: 1.5; }
+    .composer.new-session textarea { min-height: min(42vh, 420px); max-height: 56vh; }
     textarea::placeholder { color: #6f757d; }
     .composer-foot { display: flex; align-items: center; justify-content: space-between; padding: 7px 8px 8px 14px; color: var(--signal); font-size: 10px; }
     .send { min-width: 88px; border: 0; border-radius: 8px; padding: 9px 13px; color: var(--void); background: var(--electric); font-weight: 750; }
+    .queue-note { color: var(--electric); }
     .error-banner { margin-bottom: 10px; padding: 10px 12px; border: 1px solid rgba(255, 122, 133, .4); border-radius: 9px; color: var(--danger); background: rgba(255, 122, 133, .08); font-size: 12px; }
     .input-card { border-color: rgba(246,216,107,.4); }
     .working-banner { display: flex; align-items: center; gap: 10px; padding: 10px 20px; border-top: 1px solid rgba(0, 255, 204, .15); color: var(--electric); background: rgba(0, 255, 204, .06); font-size: 12px; font-weight: 650; }
@@ -264,15 +266,15 @@
         <div class="pinned-body"><div class="todo-list" id="pinned-plan-list"></div></div>
       </details>
       <div id="error"></div>
-      <form class="composer" id="composer">
+      <form class="composer new-session" id="composer">
         <textarea id="prompt" rows="3" placeholder="Ask Orrery to build, investigate, or review…" aria-label="Message"></textarea>
-        <div class="composer-foot"><span>Enter for newline · <span id="shortcut">⌘</span> Enter to send</span><button class="send" id="send">Start task</button></div>
+        <div class="composer-foot"><span id="composer-hint">Enter for newline · <span id="shortcut">⌘</span> Enter to start</span><button class="send" id="send">Start task</button></div>
       </form>
     </div>
   </main>
   <dialog id="history-dialog"><div class="dialog-head"><h2>Session checkpoints</h2><button class="action" id="close-history">Close</button></div><div class="checkpoint-list" id="checkpoint-list"></div></dialog>
   <script>
-    const state = { current: null, stream: null, sessions: [], cost: 0, model: "—", phase: "idle", status: "", pending: false, input: null };
+    const state = { current: null, stream: null, sessions: [], cost: 0, model: "—", phase: "idle", status: "", pending: false, sending: false, input: null };
     const params = new URLSearchParams(location.search);
     const $ = selector => document.querySelector(selector);
     if (params.get("embed") === "1") document.body.classList.add("embed");
@@ -432,8 +434,11 @@
       $("#meter").textContent = `$${state.cost.toFixed(4)}`;
       $("#model").textContent = state.model;
       $("#phase").textContent = state.phase || "idle";
-      $("#send").textContent = state.pending ? "Working…" : (state.current ? "Send" : "Start task");
-      $("#send").disabled = state.pending;
+      const conversation = Boolean(state.current);
+      $("#composer").classList.toggle("new-session", !conversation);
+      $("#composer-hint").innerHTML = conversation ? (state.pending ? '<span class="queue-note">Messages sent now are queued FIFO</span> · Enter to queue · Shift Enter for newline' : "Enter to send · Shift Enter for newline") : `Enter for newline · <span id="shortcut">${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl +"}</span> Enter to start`;
+      $("#send").textContent = state.sending ? "Sending…" : (state.pending && conversation ? "Queue" : (conversation ? "Send" : (state.pending ? "Starting…" : "Start task")));
+      $("#send").disabled = state.sending || (!conversation && state.pending);
       $("#cancel").hidden = !state.current || state.status !== "running";
       $("#actions").hidden = !state.current;
       document.querySelectorAll("#actions button").forEach(button => button.disabled = state.status === "running");
@@ -483,7 +488,11 @@
 
     function renderEvent(event) {
       const envelope = JSON.parse(event.data), type = envelope.type || event.type, data = envelope.data || {};
-      if (type === "session.created" || type === "session.started") return;
+      if (type === "session.created") return;
+      if (type === "session.started") {
+        state.status = "running"; state.pending = true; state.input = null;
+        syncHeader(); loadSessions(); return;
+      }
       if (type === "usage.reported") {
         state.cost += Number(data.cost_usd || 0);
         if (data.model) state.model = data.model.split("/").pop();
@@ -595,6 +604,7 @@
         const session = await request(`/api/v1/sessions/${encodeURIComponent(id)}`);
         state.phase = pick(session, "Phase", "phase") || "idle";
         state.status = pick(session, "Status", "status") || "";
+        state.pending = state.status === "running";
         state.model = (pick(session, "Model", "model") || "—").split("/").pop();
         state.cost = Number(pick(session, "SpentUSD", "spent_usd") || 0);
         $("#title").textContent = pick(session, "Title", "title") || pick(session, "Spec", "spec") || shortID(id);
@@ -603,7 +613,7 @@
       state.stream = new EventSource(`/api/v1/sessions/${encodeURIComponent(id)}/events`);
       state.stream.onopen = () => { $("#connection").textContent = "live"; };
       state.stream.onerror = () => { $("#connection").textContent = "reconnecting"; };
-      ["routing.decision","routing.fallback","assistant.message","tool.started","tool.finished","todo.changed","job.started","job.terminal","usage.reported","artifact.created","link.created","session.terminal","context.compacted","context.compaction_failed","input.required","input.answered","budget.increased","session.restored","progress.intervention","completion.rejected","provider.error"].forEach(type => state.stream.addEventListener(type, renderEvent));
+      ["session.started","routing.decision","routing.fallback","assistant.message","tool.started","tool.finished","todo.changed","job.started","job.terminal","usage.reported","artifact.created","link.created","session.terminal","context.compacted","context.compaction_failed","input.required","input.answered","budget.increased","session.restored","progress.intervention","completion.rejected","provider.error"].forEach(type => state.stream.addEventListener(type, renderEvent));
       syncHeader(); loadSessions(); closeDrawer();
     }
 
@@ -620,19 +630,24 @@
     async function send(event) {
       event?.preventDefault();
       const content = $("#prompt").value.trim();
-      if (!content || state.pending) return;
-      showError(); state.pending = true; syncHeader();
+      if (!content || state.sending || (!state.current && state.pending)) return;
+      const existingSession = Boolean(state.current);
+      const wasRunning = existingSession && state.pending;
+      showError(); state.sending = true;
+      if (!existingSession) state.pending = true;
+      syncHeader();
       try {
-        if (!state.current) {
+        if (!existingSession) {
           const created = await request("/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt: content }) });
           $("#prompt").value = ""; autoSize(); await openSession(created.id);
         } else {
-          addEvent("user", "you", `<div class="bubble">${markdown(content)}</div>`);
-          await request(`/sessions/${encodeURIComponent(state.current)}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content }) });
+          const result = await request(`/api/v1/sessions/${encodeURIComponent(state.current)}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ request_id: crypto.randomUUID(), content }) });
+          addEvent("user", "you", `<div class="bubble">${markdown(content)}</div>${result.queued ? '<div class="event-label queue-note">queued for the next turn</div>' : ""}`);
           $("#prompt").value = ""; state.input = null; autoSize();
+          state.status = "running"; state.pending = true;
         }
-      } catch (error) { state.pending = false; showError(error); }
-      syncHeader();
+      } catch (error) { if (!existingSession) state.pending = false; showError(error); }
+      finally { state.sending = false; if (wasRunning) state.pending = true; syncHeader(); }
     }
 
     function answerInput(answer) { $("#prompt").value = answer; send(); }
@@ -646,7 +661,9 @@
     $("#composer").addEventListener("submit", send);
     $("#prompt").addEventListener("input", autoSize);
     $("#prompt").addEventListener("keydown", event => {
-      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); send(); }
+      if (event.key !== "Enter" || event.isComposing) return;
+      if (!state.current && (event.metaKey || event.ctrlKey)) { event.preventDefault(); send(); return; }
+      if (state.current && !event.shiftKey) { event.preventDefault(); send(); }
     });
     $("#new-session").addEventListener("click", resetComposer);
     const menuToggle = $("#menu-toggle"), backdrop = $("#sidebar-backdrop");

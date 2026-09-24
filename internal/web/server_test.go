@@ -64,7 +64,7 @@ func TestWebUIUsesDarkBrandPaletteAndCommandEnterComposer(t *testing.T) {
 	defer res.Body.Close()
 	body, _ := io.ReadAll(res.Body)
 	html := string(body)
-	for _, expected := range []string{"--electric: #00ffcc", "--conductor: #5b39f5", "color-scheme: dark", "event.metaKey || event.ctrlKey", "Enter for newline", "input.required", "Session checkpoints", "data-restore"} {
+	for _, expected := range []string{"--electric: #00ffcc", "--conductor: #5b39f5", "color-scheme: dark", "event.metaKey || event.ctrlKey", "state.current && !event.shiftKey", "composer new-session", "Messages sent now are queued FIFO", "/api/v1/sessions/${encodeURIComponent(state.current)}/messages", "request_id: crypto.randomUUID()", "result.queued", "state.pending = state.status === \"running\"", "type === \"session.started\"", "state.status = \"running\"; state.pending = true", "input.required", "Session checkpoints", "data-restore"} {
 		if !strings.Contains(html, expected) {
 			t.Fatalf("UI missing %q", expected)
 		}
