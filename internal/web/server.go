@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/ductone/orrey/internal/agentproto"
 	"github.com/ductone/orrey/internal/core"
+	"github.com/ductone/orrey/internal/store"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -94,7 +95,25 @@ func newServer(addr string, e *core.Engine, viewOnly bool, version ...string) *S
 func (s *Server) ListenAndServe() error                           { return s.http.ListenAndServe() }
 func (s *Server) Shutdown(ctx context.Context) error              { return s.http.Shutdown(ctx) }
 func (s *Server) SetRuntimeReload(reload func(map[string]string)) { s.reload = reload }
+func (s *Server) Handler() http.Handler                           { return s.http.Handler }
+
+// sessions lists root sessions, or with external_id resolves the single
+// session bound to (integration, external_id, incarnation) as a 0/1 array.
 func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if externalID := q.Get("external_id"); externalID != "" {
+		integration := q.Get("integration")
+		if integration == "" {
+			integration = "squire"
+		}
+		x, err := s.engine.Store().SessionByExternalID(r.Context(), integration, externalID, q.Get("incarnation"))
+		if errors.Is(err, sql.ErrNoRows) {
+			write(w, []store.Session{}, nil)
+			return
+		}
+		write(w, []store.Session{x}, err)
+		return
+	}
 	xs, err := s.engine.Store().Sessions(r.Context())
 	write(w, xs, err)
 }
@@ -438,6 +457,8 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			b, _ := json.Marshal(e)
 			fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", e.EventID, e.Type, b)
 			after = e.Seq
+		}
+		if len(events) > 0 {
 			fl.Flush()
 		}
 		select {

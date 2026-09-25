@@ -62,6 +62,9 @@ func realMain() int {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	if cmd == "tui" {
+		return runTUI(ctx, *configPath, args)
+	}
 	rt, err := openRuntime(ctx, *configPath)
 	if err != nil {
 		slog.Error("startup", "error", err)
@@ -363,6 +366,7 @@ func usage() {
 commands:
   serve [--listen address]       run the web UI and HTTP/SSE transport
   run -p "task" [--workspace]    run one task; emit JSON TaskResult
+  tui [--session id] [prompt]    interactive terminal UI bound to one session
   rpc                            serve Orrery JSON-RPC 2.0 over stdio
   acp                            serve ACP v1 over stdio
   export [--since 24h]           emit routing records as JSONL

@@ -306,7 +306,7 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 		return nil, err
 	}
 	_ = os.WriteFile(filepath.Join(jobDir, "spec.json"), []byte(store.JSON(child)), 0600)
-	e.emit(ctx, sid, "job.started", map[string]any{"id": id, "parent_session_id": sid, "parent_job_id": parent, "spec": spec, "model": jobDecision.Model.ID, "workspace_mode": workspaceMode, "explanation": jobWhy}, emit)
+	e.emit(ctx, sid, "job.started", map[string]any{"id": id, "parent_session_id": sid, "parent_job_id": parent, "spec": spec, "model": jobDecision.Model.ID, "workspace_mode": workspaceMode, "review": review, "explanation": jobWhy}, emit)
 	runJob := func(runCtx context.Context) agentproto.TaskResult {
 		childSID := uuid.NewString()
 		if err := e.store.CreateSession(runCtx, store.Session{ID: childSID, Spec: spec, Phase: string(phase), Model: jobDecision.Model.ID, BudgetUSD: child.Budget.MaxUSD, WorkspacePath: child.Workspace.Path, WorkspaceOwnership: child.Workspace.Ownership, ParentSessionID: sid, RequestJSON: store.JSON(child)}); err != nil {

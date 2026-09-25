@@ -2,7 +2,7 @@
 
 Orrery is an opinionated Go agent harness that chooses models inside the agent loop. Routing accounts for task phase, progress and failure signals, compatibility constraints, and the real cost of abandoning a warm prompt cache.
 
-Its contract is one binary, one strict YAML config, a checked-in model catalog, durable SQLite state, built-in coding tools, context-isolated in-process worker jobs, MCP clients, a local SSE web UI, and routing telemetry suitable for training a later learned policy.
+Its contract is one binary, one strict YAML config, a checked-in model catalog, durable SQLite state, built-in coding tools, context-isolated in-process worker jobs, MCP clients, a local SSE web UI, a session-scoped terminal UI, and routing telemetry suitable for training a later learned policy.
 
 The project's goals, invariants, and intentional boundaries are recorded in the [design charter](docs/design.md). Architectural details are in [architecture](docs/architecture.md).
 
@@ -21,6 +21,10 @@ Provider keys may be literal strings or `!cmd <command>` values. Secret commands
 ```sh
 # Browser UI and SSE API on the configured localhost address
 ./orrery --config orrery.yaml serve
+
+# Terminal UI bound to one session; attaches to `serve` with --server
+./orrery --config orrery.yaml tui "Fix the failing tests"
+./orrery tui --server http://127.0.0.1:7433 --session SESSION_ID
 
 # CI-friendly headless task; TaskResult is JSON and status controls the exit code
 ./orrery --config orrery.yaml run -p "Fix the failing tests" --workspace "$PWD"
@@ -52,7 +56,9 @@ Only one root turn may hold write access to a workspace at a time. Read workers 
 
 The built-in tool set is `read`, `search`, hashline `edit`, `exec`, background `job`, `todo`, `spawn`, `ask`, `skill`, `web_search`, and `fetch`. Configuring a language server adds the read-only `lsp` tool for definitions, references, hover, symbols, and diagnostics. MCP tools are namespaced by server. Public fetches reject private, loopback, link-local, credential-bearing, and non-HTTP URLs.
 
-The `ask` tool transitions only the current turn to `input_required`; the session remains resumable through the next message. The typed state is available through HTTP/SSE, native JSON-RPC, ACP `_meta`, and the web composer. The web UI also supports explicit checkpoints, semantic compaction, conversational forks, and restore. Restore never rewrites workspace files.
+The `ask` tool transitions only the current turn to `input_required`; the session remains resumable through the next message. The typed state is available through HTTP/SSE, native JSON-RPC, ACP `_meta`, the web composer, and the terminal UI. The web UI also supports explicit checkpoints, semantic compaction, conversational forks, and restore. Restore never rewrites workspace files.
+
+The terminal UI renders one session's event log into scrollback and keeps a live region for the running turn, plan, queue, and composer. It embeds the engine or attaches to `serve`, and implements the harness side of Squire's agent contract: session binding, a prompt control socket, and an event journal. See [terminal UI](docs/tui.md).
 
 ## Routing
 
