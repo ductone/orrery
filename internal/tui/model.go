@@ -67,6 +67,9 @@ type (
 type outgoing struct {
 	text  string
 	reply chan<- error
+	// requestID is fixed when the message is queued, so a retry after an
+	// ambiguous failure is deduplicated by the engine instead of repeated.
+	requestID string
 }
 
 type completionItem struct{ label, detail, insert string }
@@ -103,6 +106,7 @@ type model struct {
 	inflight   *outgoing
 	stalled    bool
 	polling    bool
+	bound      bool
 	cancelling bool
 
 	flashText string
@@ -734,6 +738,7 @@ func contains(xs []string, v string) bool {
 // and the engine orders messages by arrival. The first delivery creates the
 // session when the TUI started without one.
 func (m *model) deliver(o outgoing) tea.Cmd {
+	o.requestID = uuid.NewString()
 	m.outbox = append(m.outbox, o)
 	m.stalled = false
 	return m.pump()
@@ -761,7 +766,7 @@ func (m *model) pump() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.ctx, time.Minute)
 		defer cancel()
-		res, err := m.backend.Send(ctx, id, o.text, uuid.NewString())
+		res, err := m.backend.Send(ctx, id, o.text, o.requestID)
 		return deliveredMsg{result: res, err: err}
 	}
 }
@@ -778,14 +783,19 @@ func (m *model) onDelivered(msg deliveredMsg) tea.Cmd {
 		m.creating = false
 		if err == nil {
 			m.sessionID = msg.created
-			if m.squire != nil {
-				if berr := m.squire.Bind(m.sessionID); berr != nil {
-					err = fmt.Errorf("session %s started, but publishing the Squire binding failed: %w", shortID(m.sessionID), berr)
-				}
-			}
 			cmds = append(cmds, m.startStream(), m.startPolling())
 		}
 		m.updatePlaceholder()
+	}
+	// The harness relies on the binding and journal, so a prompt is only
+	// acknowledged once they are published; a failed bind is retried with
+	// every later delivery.
+	if err == nil && m.squire != nil && m.sessionID != "" && !m.bound {
+		if berr := m.squire.Bind(m.sessionID); berr != nil {
+			err = fmt.Errorf("message delivered, but publishing the Squire binding failed: %w", berr)
+		} else {
+			m.bound = true
+		}
 	}
 	if o.reply != nil {
 		o.reply <- err
@@ -852,9 +862,9 @@ func (m *model) updatePlaceholder() {
 
 func (m *model) workspace() string {
 	if m.sessionSnapshot.WorkspacePath != "" {
-		return m.sessionSnapshot.WorkspacePath
+		return clean(m.sessionSnapshot.WorkspacePath)
 	}
-	return m.opts.Create.Workspace
+	return clean(m.opts.Create.Workspace)
 }
 
 func (m *model) integrationLabel() string {

@@ -92,6 +92,7 @@ func Run(ctx context.Context, opts Options) error {
 			if err := sq.Bind(sessionID); err != nil {
 				return err
 			}
+			m.bound = true
 		}
 		m.squire = sq
 	}

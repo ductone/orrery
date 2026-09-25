@@ -211,12 +211,13 @@ func (s *Squire) Close() error {
 }
 
 // privateDir creates dir with mode 0700, or tightens an existing one, and
-// refuses a directory owned by another user.
+// refuses symlinks and directories owned by another user. Ownership is
+// checked before chmod so a planted symlink can never redirect it.
 func privateDir(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 		return err
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 		return err
 	}
 	info, err := os.Lstat(dir)
@@ -229,5 +230,5 @@ func privateDir(dir string) error {
 	if !ownedByCurrentUser(info) {
 		return fmt.Errorf("%s is owned by another user", dir)
 	}
-	return nil
+	return os.Chmod(dir, 0o700)
 }

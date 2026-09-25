@@ -128,6 +128,7 @@ type fakeBackend struct {
 	sends    []string
 	failSend error
 	fetches  int
+	requests []string
 }
 
 func (f *fakeBackend) Describe() string { return "fake" }
@@ -147,9 +148,10 @@ func (f *fakeBackend) Create(_ context.Context, req CreateRequest) (string, erro
 	f.creates = append(f.creates, req)
 	return "s1", nil
 }
-func (f *fakeBackend) Send(_ context.Context, id, content, _ string) (SendResult, error) {
+func (f *fakeBackend) Send(_ context.Context, id, content, requestID string) (SendResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.requests = append(f.requests, content+"#"+requestID)
 	if f.failSend != nil {
 		return SendResult{}, f.failSend
 	}
@@ -321,6 +323,11 @@ func TestFailedDeliveryStallsLaterMessages(t *testing.T) {
 	drive(t, m, m.onKey(tea.KeyPressMsg{Code: tea.KeyEnter}), 0)
 	if got := fb.sent(); len(got) != 2 || got[0] != "s1:one" || got[1] != "s1:two" {
 		t.Fatalf("retry sends = %v", got)
+	}
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	if len(fb.requests) != 3 || fb.requests[0] != fb.requests[1] {
+		t.Fatalf("requests = %v, want the retry to reuse the failed attempt's request id", fb.requests)
 	}
 }
 
