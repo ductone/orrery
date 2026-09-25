@@ -40,8 +40,9 @@ type (
 	frameMsg    struct{}
 	sessionTick struct{}
 	sessionMsg  struct {
-		s   store.Session
-		err error
+		s         store.Session
+		err       error
+		recurring bool
 	}
 	resizeMsg   struct{ gen int }
 	printedMsg  struct{}
@@ -50,12 +51,9 @@ type (
 	filesMsg    []string
 	// deliveredMsg reports the engine's answer to a submitted message.
 	deliveredMsg struct {
-		text    string
 		created string
 		result  SendResult
 		err     error
-		reply   chan<- error
-		typed   bool
 	}
 	// controlMsg is a prompt that arrived over the Squire control socket.
 	controlMsg struct {
@@ -64,10 +62,11 @@ type (
 	}
 )
 
+// outgoing is a message waiting for delivery. reply is set for control
+// socket prompts, which learn the outcome; typed text is restored instead.
 type outgoing struct {
 	text  string
 	reply chan<- error
-	typed bool
 }
 
 type completionItem struct{ label, detail, insert string }
@@ -101,6 +100,9 @@ type model struct {
 	ticking    bool
 	creating   bool
 	outbox     []outgoing
+	inflight   *outgoing
+	stalled    bool
+	polling    bool
 	cancelling bool
 
 	flashText string
@@ -159,7 +161,7 @@ func newModel(ctx context.Context, opts Options, sessionID string) *model {
 func (m *model) Init() tea.Cmd {
 	cmds := []tea.Cmd{m.editor.Focus()}
 	if m.sessionID != "" {
-		cmds = append(cmds, m.startStream(), m.fetchSession())
+		cmds = append(cmds, m.startStream(), m.startPolling())
 	}
 	if strings.TrimSpace(m.opts.Prompt) != "" {
 		cmds = append(cmds, m.deliver(outgoing{text: m.opts.Prompt}))
@@ -200,7 +202,7 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		}
 		m.ticking = false
 	case sessionTick:
-		return m.fetchSession()
+		return m.fetchSession(true)
 	case sessionMsg:
 		if msg.err == nil {
 			m.sessionSnapshot = msg.s
@@ -208,6 +210,10 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 			if !m.st.running() {
 				m.cancelling = false
 			}
+			m.updatePlaceholder()
+		}
+		if !msg.recurring {
+			return m.tick()
 		}
 		return tea.Batch(m.tick(), tea.Tick(sessionInterval, func(time.Time) tea.Msg { return sessionTick{} }))
 	case deliveredMsg:
@@ -224,7 +230,7 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		if msg.panel != nil {
 			cmds = append(cmds, m.commit(*msg.panel))
 		}
-		cmds = append(cmds, m.flashTimer(), m.fetchSession())
+		cmds = append(cmds, m.flashTimer(), m.fetchSession(false))
 		return tea.Batch(cmds...)
 	case flashExpiry:
 		if msg.gen == m.flashGen {
@@ -236,8 +242,7 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 	case tea.PasteMsg:
 		var cmd tea.Cmd
 		m.editor, cmd = m.editor.Update(msg)
-		m.afterEdit()
-		return cmd
+		return tea.Batch(cmd, m.afterEdit())
 	case tea.KeyPressMsg:
 		return m.onKey(msg)
 	}
@@ -306,7 +311,17 @@ func (m *model) onEvents(evs []Event) tea.Cmd {
 	return tea.Batch(m.commit(blocks...), m.waitEvents(), m.tick())
 }
 
-func (m *model) fetchSession() tea.Cmd {
+// startPolling begins the single recurring snapshot refresh; one-shot
+// refreshes after commands use fetchSession(false) and never re-arm it.
+func (m *model) startPolling() tea.Cmd {
+	if m.polling {
+		return nil
+	}
+	m.polling = true
+	return m.fetchSession(true)
+}
+
+func (m *model) fetchSession(recurring bool) tea.Cmd {
 	if m.sessionID == "" {
 		return nil
 	}
@@ -315,7 +330,7 @@ func (m *model) fetchSession() tea.Cmd {
 		ctx, cancel := context.WithTimeout(m.ctx, 10*time.Second)
 		defer cancel()
 		s, err := m.backend.Session(ctx, id)
-		return sessionMsg{s: s, err: err}
+		return sessionMsg{s: s, err: err, recurring: recurring}
 	}
 }
 
@@ -476,7 +491,7 @@ func (m *model) quit() tea.Cmd {
 }
 
 func (m *model) flash(text string, t tone) {
-	m.flashText, m.flashTone = text, t
+	m.flashText, m.flashTone = firstLine(clean(text)), t
 	m.flashGen++
 }
 
@@ -542,6 +557,10 @@ func (m *model) onKey(msg tea.KeyPressMsg) tea.Cmd {
 			m.editor.MoveToEnd()
 			m.afterEdit()
 			return nil
+		}
+		if strings.TrimSpace(value) == "" && m.stalled {
+			m.stalled = false
+			return m.pump()
 		}
 		return m.submit(value)
 	case "esc":
@@ -698,7 +717,7 @@ func (m *model) submit(value string) tea.Cmd {
 		m.prompts = append(m.prompts, text)
 	}
 	m.browsing = false
-	return m.deliver(outgoing{text: text, typed: true})
+	return m.deliver(outgoing{text: text})
 }
 
 func contains(xs []string, v string) bool {
@@ -710,14 +729,23 @@ func contains(xs []string, v string) bool {
 	return false
 }
 
-// deliver sends a message to the session, creating the session on the first
-// message when the TUI started without one. Messages submitted while the
-// session is being created wait in the outbox so ordering is preserved.
+// deliver queues a message for the session. Deliveries run strictly one at
+// a time in submission order, because Bubble Tea runs commands concurrently
+// and the engine orders messages by arrival. The first delivery creates the
+// session when the TUI started without one.
 func (m *model) deliver(o outgoing) tea.Cmd {
-	if m.creating {
-		m.outbox = append(m.outbox, o)
+	m.outbox = append(m.outbox, o)
+	m.stalled = false
+	return m.pump()
+}
+
+func (m *model) pump() tea.Cmd {
+	if m.inflight != nil || m.stalled || len(m.outbox) == 0 {
 		return nil
 	}
+	o := m.outbox[0]
+	m.outbox = m.outbox[1:]
+	m.inflight = &o
 	if m.sessionID == "" {
 		m.creating = true
 		req := m.opts.Create
@@ -726,7 +754,7 @@ func (m *model) deliver(o outgoing) tea.Cmd {
 			ctx, cancel := context.WithTimeout(m.ctx, time.Minute)
 			defer cancel()
 			id, err := m.backend.Create(ctx, req)
-			return deliveredMsg{text: o.text, created: id, err: err, reply: o.reply, typed: o.typed}
+			return deliveredMsg{created: id, err: err}
 		})
 	}
 	id := m.sessionID
@@ -734,53 +762,75 @@ func (m *model) deliver(o outgoing) tea.Cmd {
 		ctx, cancel := context.WithTimeout(m.ctx, time.Minute)
 		defer cancel()
 		res, err := m.backend.Send(ctx, id, o.text, uuid.NewString())
-		return deliveredMsg{text: o.text, result: res, err: err, reply: o.reply, typed: o.typed}
+		return deliveredMsg{result: res, err: err}
 	}
 }
 
 func (m *model) onDelivered(msg deliveredMsg) tea.Cmd {
-	if msg.reply != nil {
-		msg.reply <- msg.err
+	o := m.inflight
+	m.inflight = nil
+	if o == nil {
+		return nil
 	}
 	var cmds []tea.Cmd
-	if msg.err != nil {
-		m.flash(msg.err.Error(), toneError)
-		if msg.typed && m.editor.Value() == "" {
-			m.editor.SetValue(msg.text)
-			m.editor.MoveToEnd()
-		}
-		cmds = append(cmds, m.flashTimer())
-	}
+	err := msg.err
 	if m.creating {
 		m.creating = false
-		pending := m.outbox
-		m.outbox = nil
-		if msg.err == nil {
+		if err == nil {
 			m.sessionID = msg.created
 			if m.squire != nil {
-				if err := m.squire.Bind(m.sessionID); err != nil {
-					m.flash("squire binding: "+err.Error(), toneWarn)
+				if berr := m.squire.Bind(m.sessionID); berr != nil {
+					err = fmt.Errorf("session %s started, but publishing the Squire binding failed: %w", shortID(m.sessionID), berr)
 				}
 			}
-			cmds = append(cmds, m.startStream(), m.fetchSession())
-		}
-		for _, o := range pending {
-			if msg.err != nil {
-				if o.reply != nil {
-					o.reply <- msg.err
-				}
-				continue
-			}
-			cmds = append(cmds, m.deliver(o))
+			cmds = append(cmds, m.startStream(), m.startPolling())
 		}
 		m.updatePlaceholder()
+	}
+	if o.reply != nil {
+		o.reply <- err
+	}
+	if msg.err != nil {
+		cmds = append(cmds, m.deliveryFailed(*o, msg.err))
 		return tea.Batch(cmds...)
 	}
-	if msg.err == nil && msg.result.Queued {
+	if err != nil {
+		m.flash(err.Error(), toneWarn)
+		cmds = append(cmds, m.flashTimer())
+	} else if msg.result.Queued {
 		m.flash("queued · delivered when the current turn ends", toneInfo)
 		cmds = append(cmds, m.flashTimer())
 	}
-	return tea.Batch(cmds...)
+	return tea.Batch(append(cmds, m.pump())...)
+}
+
+// deliveryFailed stalls the outbox so later messages cannot overtake the
+// failed one. Prompts from the control socket fail back to their sender,
+// which owns retries; typed messages stay pending until the user retries.
+func (m *model) deliveryFailed(o outgoing, err error) tea.Cmd {
+	kept := m.outbox[:0]
+	for _, p := range m.outbox {
+		if p.reply != nil {
+			p.reply <- fmt.Errorf("not delivered: an earlier message failed: %w", err)
+			continue
+		}
+		kept = append(kept, p)
+	}
+	m.outbox = kept
+	if o.reply == nil {
+		if m.editor.Value() == "" && len(m.outbox) == 0 {
+			m.editor.SetValue(o.text)
+			m.editor.MoveToEnd()
+		} else {
+			m.outbox = append([]outgoing{o}, m.outbox...)
+		}
+	}
+	m.stalled = len(m.outbox) > 0
+	text := err.Error()
+	if m.stalled {
+		text += " · enter retries pending messages"
+	}
+	return m.flashCmd(text, toneError)
 }
 
 func (m *model) updatePlaceholder() {
@@ -821,5 +871,5 @@ func (m *model) title() string {
 	if m.sessionSnapshot.ID == "" {
 		return ""
 	}
-	return m.sessionSnapshot.DisplayTitle()
+	return clean(m.sessionSnapshot.DisplayTitle())
 }

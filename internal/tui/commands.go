@@ -144,7 +144,7 @@ func (m *model) cmdStatus(string) tea.Cmd {
 				if row[1] == "" {
 					continue
 				}
-				out = append(out, ansi.Truncate("   "+r.st.muted.Render(fmt.Sprintf("%-12s", row[0]))+" "+r.st.bright.Render(row[1]), r.width, "…"))
+				out = append(out, ansi.Truncate("   "+r.st.muted.Render(fmt.Sprintf("%-12s", row[0]))+" "+r.st.bright.Render(clean(row[1])), r.width, "…"))
 			}
 			return strings.Join(out, "\n")
 		})}
@@ -229,7 +229,7 @@ func (m *model) cmdCheckpoints(string) tea.Cmd {
 		return actionMsg{panel: panel(func(r *renderer) string {
 			out := []string{" " + r.st.bold.Render("Checkpoints") + r.st.muted.Render("  /restore <#|id>")}
 			for i, cp := range cps {
-				line := fmt.Sprintf("   %s %s  %s %s", r.st.accent.Render(fmt.Sprintf("#%-2d", i+1)), r.st.muted.Render(shortID(cp.ID)), r.st.bright.Render(cp.Label), r.st.muted.Render("· "+joinNonEmpty(" · ", cp.Reason, cp.CreatedAt.Local().Format("Jan 2 15:04"))))
+				line := fmt.Sprintf("   %s %s  %s %s", r.st.accent.Render(fmt.Sprintf("#%-2d", i+1)), r.st.muted.Render(shortID(cp.ID)), r.st.bright.Render(clean(cp.Label)), r.st.muted.Render("· "+joinNonEmpty(" · ", clean(cp.Reason), cp.CreatedAt.Local().Format("Jan 2 15:04"))))
 				out = append(out, ansi.Truncate(line, r.width, "…"))
 			}
 			return strings.Join(out, "\n")

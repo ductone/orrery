@@ -179,8 +179,15 @@ func (m *model) pendingLines() []string {
 		}
 		out = append(out, "   "+st.accentDim.Render("↳ queued ")+st.signal.Render(firstLine(q.content)))
 	}
+	if o := m.inflight; o != nil && !m.creating {
+		out = append(out, "   "+st.accentDim.Render("↳ sending ")+st.signal.Render(firstLine(clean(o.text))))
+	}
 	for _, o := range m.outbox {
-		out = append(out, "   "+st.accentDim.Render("↳ pending ")+st.signal.Render(firstLine(o.text)))
+		label := "↳ pending "
+		if m.stalled {
+			label = "↳ not sent "
+		}
+		out = append(out, "   "+st.accentDim.Render(label)+st.signal.Render(firstLine(clean(o.text))))
 	}
 	return out
 }

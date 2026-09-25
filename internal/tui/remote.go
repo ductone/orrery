@@ -29,8 +29,10 @@ const (
 
 // Remote speaks the /api/v1 HTTP and SSE contract of `orrery serve`.
 type Remote struct {
-	base   string
-	client *http.Client
+	base string
+	// display is base with any userinfo password redacted.
+	display string
+	client  *http.Client
 }
 
 // NewRemote targets an orrery server at baseURL. A nil client gets one with
@@ -47,7 +49,7 @@ func NewRemote(baseURL string, client *http.Client) (*Remote, error) {
 	if client == nil {
 		client = &http.Client{}
 	}
-	return &Remote{base: strings.TrimRight(u.String(), "/"), client: client}, nil
+	return &Remote{base: strings.TrimRight(u.String(), "/"), display: strings.TrimRight(u.Redacted(), "/"), client: client}, nil
 }
 
 // remoteError carries a failed call's status and the server's plain-text
@@ -59,7 +61,7 @@ type remoteError struct {
 
 func (e *remoteError) Error() string { return e.message }
 
-func (r *Remote) Describe() string { return r.base }
+func (r *Remote) Describe() string { return r.display }
 
 func (r *Remote) Session(ctx context.Context, id string) (store.Session, error) {
 	var x store.Session

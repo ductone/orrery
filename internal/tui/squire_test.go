@@ -122,14 +122,19 @@ func TestSquireContract(t *testing.T) {
 // fakeBackend records calls; Create blocks until release is closed so tests
 // can submit more messages while the session is being created.
 type fakeBackend struct {
-	mu      sync.Mutex
-	release chan struct{}
-	creates []CreateRequest
-	sends   []string
+	mu       sync.Mutex
+	release  chan struct{}
+	creates  []CreateRequest
+	sends    []string
+	failSend error
+	fetches  int
 }
 
 func (f *fakeBackend) Describe() string { return "fake" }
 func (f *fakeBackend) Session(context.Context, string) (store.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fetches++
 	return store.Session{ID: "s1", Status: "running"}, nil
 }
 func (f *fakeBackend) Lookup(context.Context, string, string, string) (store.Session, error) {
@@ -145,8 +150,17 @@ func (f *fakeBackend) Create(_ context.Context, req CreateRequest) (string, erro
 func (f *fakeBackend) Send(_ context.Context, id, content, _ string) (SendResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failSend != nil {
+		return SendResult{}, f.failSend
+	}
 	f.sends = append(f.sends, id+":"+content)
 	return SendResult{Queued: true}, nil
+}
+
+func (f *fakeBackend) sent() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.sends...)
 }
 func (f *fakeBackend) Stream(ctx context.Context, _ string, _ int, _ chan<- []Event) error {
 	<-ctx.Done()
@@ -219,9 +233,7 @@ func TestFirstMessageCreatesSessionAndLaterMessagesWait(t *testing.T) {
 	if len(fb.creates) != 1 || fb.creates[0].Prompt != "first task" || fb.creates[0].ExternalID != "task" || fb.creates[0].Workspace != "/w" {
 		t.Fatalf("creates = %+v", fb.creates)
 	}
-	fb.mu.Lock()
-	sends := append([]string(nil), fb.sends...)
-	fb.mu.Unlock()
+	sends := fb.sent()
 	if len(sends) != 2 || sends[0] != "s1:second" || sends[1] != "s1:from squire" {
 		t.Fatalf("sends = %v, want outbox flushed in submission order", sends)
 	}
@@ -257,5 +269,117 @@ func TestInputChoicesRejectFreeformText(t *testing.T) {
 	defer fb.mu.Unlock()
 	if len(fb.sends) != 1 || fb.sends[0] != "s1:sqlite" {
 		t.Fatalf("sends = %v, want the selected choice", fb.sends)
+	}
+}
+
+func TestSendsAreSerializedInSubmissionOrder(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fb := &fakeBackend{release: make(chan struct{})}
+	m := newModel(ctx, Options{Backend: fb}, "s1")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	first := m.submit("one")
+	if second := m.submit("two"); second != nil {
+		t.Fatal("a second message must wait until the first is delivered")
+	}
+	if len(m.outbox) != 1 || m.inflight == nil || m.inflight.text != "one" {
+		t.Fatalf("inflight = %+v outbox = %+v", m.inflight, m.outbox)
+	}
+	drive(t, m, first, 0)
+	if got := fb.sent(); len(got) != 2 || got[0] != "s1:one" || got[1] != "s1:two" {
+		t.Fatalf("sends = %v", got)
+	}
+}
+
+func TestFailedDeliveryStallsLaterMessages(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fb := &fakeBackend{release: make(chan struct{}), failSend: errors.New("server unavailable")}
+	m := newModel(ctx, Options{Backend: fb}, "s1")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	first := m.submit("one")
+	m.submit("two")
+	reply := make(chan error, 1)
+	m.Update(controlMsg{text: "from squire", reply: reply})
+	drive(t, m, first, 0)
+
+	if len(fb.sent()) != 0 {
+		t.Fatal("nothing should have been sent")
+	}
+	if err := <-reply; err == nil {
+		t.Fatal("a control prompt behind a failed message must fail back to its sender")
+	}
+	if !m.stalled || len(m.outbox) != 2 || m.outbox[0].text != "one" || m.outbox[1].text != "two" {
+		t.Fatalf("stalled = %v outbox = %+v, want the failed message kept ahead of later ones", m.stalled, m.outbox)
+	}
+
+	fb.mu.Lock()
+	fb.failSend = nil
+	fb.mu.Unlock()
+	drive(t, m, m.onKey(tea.KeyPressMsg{Code: tea.KeyEnter}), 0)
+	if got := fb.sent(); len(got) != 2 || got[0] != "s1:one" || got[1] != "s1:two" {
+		t.Fatalf("retry sends = %v", got)
+	}
+}
+
+func TestCommandsDoNotMultiplySessionPolling(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fb := &fakeBackend{release: make(chan struct{})}
+	m := newModel(ctx, Options{Backend: fb}, "s1")
+	for range 3 {
+		cmd := m.update(actionMsg{flash: "done"})
+		if msg := findSessionMsg(cmd); msg == nil || msg.recurring {
+			t.Fatalf("an action refresh must be one-shot, got %+v", msg)
+		} else if next := m.update(*msg); findSessionTick(next) {
+			t.Fatal("a one-shot refresh must not schedule the recurring poll")
+		}
+	}
+}
+
+func findSessionMsg(cmd tea.Cmd) *sessionMsg {
+	if cmd == nil {
+		return nil
+	}
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	select {
+	case msg := <-done:
+		switch x := msg.(type) {
+		case sessionMsg:
+			return &x
+		case tea.BatchMsg:
+			for _, c := range x {
+				if found := findSessionMsg(c); found != nil {
+					return found
+				}
+			}
+		}
+	case <-time.After(50 * time.Millisecond):
+	}
+	return nil
+}
+
+func findSessionTick(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	select {
+	case msg := <-done:
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			for _, c := range batch {
+				if findSessionTick(c) {
+					return true
+				}
+			}
+		}
+		_, ok := msg.(sessionTick)
+		return ok
+	case <-time.After(2*sessionInterval + 100*time.Millisecond):
+		return false
 	}
 }

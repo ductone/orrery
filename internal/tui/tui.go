@@ -8,6 +8,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/ductone/orrey/internal/store"
 )
 
 // Options configures one TUI process. Exactly one session is in scope: an
@@ -31,26 +33,19 @@ type Options struct {
 	Output       io.Writer
 }
 
-// Resolve returns the session the TUI is scoped to, or "" when the session
-// will be created from the first message.
-func Resolve(ctx context.Context, b Backend, opts Options) (string, error) {
+// Resolve returns the session the TUI is scoped to, or a zero Session when
+// the session will be created from the first message.
+func Resolve(ctx context.Context, b Backend, opts Options) (store.Session, error) {
 	if opts.SessionID != "" {
-		s, err := b.Session(ctx, opts.SessionID)
-		if err != nil {
-			return "", err
-		}
-		return s.ID, nil
+		return b.Session(ctx, opts.SessionID)
 	}
 	if opts.Create.ExternalID != "" {
 		s, err := b.Lookup(ctx, opts.Create.Integration, opts.Create.ExternalID, opts.Create.ExternalIncarnation)
-		switch {
-		case err == nil:
-			return s.ID, nil
-		case !errors.Is(err, ErrNotFound):
-			return "", err
+		if err == nil || !errors.Is(err, ErrNotFound) {
+			return s, err
 		}
 	}
-	return "", nil
+	return store.Session{}, nil
 }
 
 func Run(ctx context.Context, opts Options) error {
@@ -60,12 +55,14 @@ func Run(ctx context.Context, opts Options) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	lookup, stop := context.WithTimeout(ctx, 30*time.Second)
-	sessionID, err := Resolve(lookup, opts.Backend, opts)
+	session, err := Resolve(lookup, opts.Backend, opts)
 	stop()
 	if err != nil {
 		return fmt.Errorf("resolve session: %w", err)
 	}
+	sessionID := session.ID
 	m := newModel(ctx, opts, sessionID)
+	m.sessionSnapshot = session
 	progOpts := []tea.ProgramOption{tea.WithContext(ctx)}
 	if opts.Input != nil {
 		progOpts = append(progOpts, tea.WithInput(opts.Input))

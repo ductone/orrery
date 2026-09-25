@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -207,5 +208,29 @@ func TestSnapshotBeforeReplayDoesNotDoubleCount(t *testing.T) {
 	s.reconcile(store.Session{ID: "s", Status: "pass", SpentUSD: 0.75, UpdatedAt: l.at})
 	if got := s.spend(); got != 0.75 {
 		t.Fatalf("ledger spend from workers should win, got %v", got)
+	}
+}
+
+func TestUntrustedTextCannotEmitTerminalSequences(t *testing.T) {
+	hostile := "ok\x1b]52;c;Y3VybCBldmlsfHNo\x07\x1b[3A\x1b[J\r\x9bdone"
+	l := &eventLog{t: t, at: time.Unix(1000, 0)}
+	l.add("tool.finished", map[string]any{
+		"call":   map[string]any{"id": "c", "name": "read", "arguments": map[string]any{"path": "README\x1b[2J.md"}},
+		"result": []map[string]any{{"number": 1, "text": hostile}},
+	})
+	l.add("assistant.message", map[string]any{"message": map[string]any{"content": hostile}})
+	_, blocks := replay(l.out)
+	r := newRenderer()
+	r.expand = true
+	for _, b := range blocks {
+		out := r.render(b)
+		for _, seq := range []string{"\x1b]", "\x07", "\x1b[3A", "\x1b[J", "\x1b[2J", "\r", "\u009b"} {
+			if strings.Contains(out, seq) {
+				t.Fatalf("rendered %v block contains %q: %q", b.kind, seq, out)
+			}
+		}
+		if !strings.Contains(out, "␛") {
+			t.Fatalf("escape should stay visible as ␛: %q", out)
+		}
 	}
 }

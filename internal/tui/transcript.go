@@ -118,6 +118,7 @@ func (s *state) apply(ev Event) []block {
 	}
 	s.lastSeq = ev.Seq
 	s.lastEventAt = ev.CreatedAt
+	ev.Data = cleanJSON(ev.Data)
 	switch ev.Type {
 	case "turn.accepted":
 		s.beginTurn(ev.CreatedAt)

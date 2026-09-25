@@ -49,11 +49,12 @@ func StartSquire(dir, taskID string, submit func(string) error) (*Squire, error)
 	s := &Squire{dir: dir, taskID: taskID, started: time.Now().UTC()}
 	s.pidPath = filepath.Join(dir, "pids", strconv.Itoa(os.Getpid())+".json")
 	ipc := filepath.Join(dir, "ipc")
-	if err := os.MkdirAll(ipc, 0o700); err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(ipc, 0o700); err != nil {
-		return nil, err
+	// Every file here is written by path, so each directory must be private
+	// to this user before anything is created in it.
+	for _, d := range []string{dir, ipc, filepath.Dir(s.pidPath), filepath.Join(dir, "sessions")} {
+		if err := privateDir(d); err != nil {
+			return nil, err
+		}
 	}
 	s.socketPath = filepath.Join(ipc, taskID+".sock")
 	if err := os.Remove(s.socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -142,9 +143,6 @@ func dispatchControl(line []byte, submit func(string) error) controlResponse {
 // session. The TUI replays the full event log after binding, so truncating
 // keeps the journal an exact mirror.
 func (s *Squire) Bind(sessionID string) error {
-	if err := os.MkdirAll(filepath.Dir(s.pidPath), 0o700); err != nil {
-		return err
-	}
 	body, err := json.Marshal(map[string]any{
 		"pid":             os.Getpid(),
 		"started_at":      s.started.Format(time.RFC3339Nano),
@@ -154,18 +152,22 @@ func (s *Squire) Bind(sessionID string) error {
 	if err != nil {
 		return err
 	}
-	tmp := s.pidPath + ".tmp"
-	if err := os.WriteFile(tmp, body, 0o600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(s.pidPath), ".binding-*")
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, s.pidPath); err != nil {
-		return err
+	_, werr := tmp.Write(body)
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
 	}
-	sessions := filepath.Join(s.dir, "sessions")
-	if err := os.MkdirAll(sessions, 0o700); err != nil {
-		return err
+	if werr == nil {
+		werr = os.Rename(tmp.Name(), s.pidPath)
 	}
-	f, err := os.OpenFile(filepath.Join(sessions, sessionID+".jsonl"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if werr != nil {
+		_ = os.Remove(tmp.Name())
+		return werr
+	}
+	f, err := os.OpenFile(filepath.Join(s.dir, "sessions", filepath.Base(sessionID)+".jsonl"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
@@ -206,4 +208,26 @@ func (s *Squire) Close() error {
 	}
 	s.mu.Unlock()
 	return err
+}
+
+// privateDir creates dir with mode 0700, or tightens an existing one, and
+// refuses a directory owned by another user.
+func privateDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return err
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	if !ownedByCurrentUser(info) {
+		return fmt.Errorf("%s is owned by another user", dir)
+	}
+	return nil
 }
