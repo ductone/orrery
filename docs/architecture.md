@@ -1,6 +1,6 @@
 # Architecture
 
-Orrery's root session and worker sessions execute through the same `TaskRequest → AgentEvent → TaskResult` contract. The web server, headless CLI, native JSON-RPC stdio server, and ACP v1 stdio server are adapters around that contract. The proto definition remains the typed recursive boundary for a later gRPC deployment.
+Orrery's root session and worker sessions execute through the same `TaskRequest → AgentEvent → TaskResult` contract. The web server, terminal UI, headless CLI, native JSON-RPC stdio server, and ACP v1 stdio server are adapters around that contract. The terminal UI is scoped to one session: it replays that session's event log from the store or over SSE, so attaching mid-turn or after a restart shows the same transcript, and it submits through the same queue-aware continuation path as the HTTP API. The proto definition remains the typed recursive boundary for a later gRPC deployment.
 
 Model selection happens before request assembly. The v1 policy filters incompatible candidates, then scores `(model, effort)` pairs using phase quality, ledger-priced next-call cost, and switch penalties. The chosen model determines system layout, strict tool behavior, reasoning fields, and hashline dialect. Retryable provider failures produce a fresh recorded decision with the failed model excluded.
 

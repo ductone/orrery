@@ -121,10 +121,11 @@ does not install executable code.
 
 ### Thin, typed transports
 
-HTTP/SSE, headless execution, native JSON-RPC, ACP, and future transports are
-adapters over the same engine contract. Transport lifecycle operations must not
-rewrite an already successful terminal result. A request for missing user input
-ends only the current turn and leaves the session resumable.
+HTTP/SSE, the terminal UI, headless execution, native JSON-RPC, ACP, and future
+transports are adapters over the same engine contract. Transport lifecycle
+operations must not rewrite an already successful terminal result. A request
+for missing user input ends only the current turn and leaves the session
+resumable.
 
 ### Observable behavior without private reasoning
 

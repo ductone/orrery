@@ -3,6 +3,7 @@ package web
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -279,5 +280,56 @@ func TestAddBudgetEndpoint(t *testing.T) {
 	}
 	if s, err = st.Session(ctx, sid); err != nil || s.BudgetUSD != 15 {
 		t.Fatalf("increases must accumulate: %v %v", s.BudgetUSD, err)
+	}
+}
+
+func TestSessionsExternalIDLookup(t *testing.T) {
+	ts, st := testServer(t)
+	defer ts.Close()
+	defer st.Close()
+	ctx := context.Background()
+	for _, x := range []store.Session{
+		{ID: "a", Spec: "a", Integration: "squire", ExternalID: "task-1"},
+		{ID: "b", Spec: "b", Integration: "squire", ExternalID: "task-1", ExternalIncarnation: "2"},
+		{ID: "c", Spec: "c", Integration: "other", ExternalID: "task-1"},
+	} {
+		if err := st.CreateSession(ctx, x); err != nil {
+			t.Fatal(err)
+		}
+	}
+	get := func(query string) []store.Session {
+		t.Helper()
+		res, err := http.Get(ts.URL + "/api/v1/sessions" + query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		raw, _ := io.ReadAll(res.Body)
+		var xs []store.Session
+		if res.StatusCode != http.StatusOK || json.Unmarshal(raw, &xs) != nil || xs == nil {
+			t.Fatalf("%s: status=%d body=%s", query, res.StatusCode, raw)
+		}
+		return xs
+	}
+	ids := func(xs []store.Session) string {
+		out := []string{}
+		for _, x := range xs {
+			out = append(out, x.ID)
+		}
+		return strings.Join(out, ",")
+	}
+	for query, want := range map[string]string{
+		"?external_id=task-1":                                 "a",
+		"?external_id=task-1&incarnation=2":                   "b",
+		"?integration=other&external_id=task-1":               "c",
+		"?external_id=task-2":                                 "",
+		"?integration=other&external_id=task-1&incarnation=2": "",
+	} {
+		if got := ids(get(query)); got != want {
+			t.Errorf("%s = %q, want %q", query, got, want)
+		}
+	}
+	if got := len(get("")); got != 3 {
+		t.Fatalf("unfiltered list returned %d sessions, want 3", got)
 	}
 }
