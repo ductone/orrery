@@ -75,7 +75,7 @@ func (m *model) layout() ([]string, int) {
 	top := len(lines)
 	lines = append(lines, strings.Split(m.editor.View(), "\n")...)
 	add(m.ruleStyle().Render(strings.Repeat("─", w)))
-	add(m.footer())
+	add(m.footer()...)
 	return lines, top
 }
 
@@ -243,7 +243,7 @@ func (m *model) rule() string {
 	return style.Render(head + strings.Repeat("─", max(0, m.width-ansi.StringWidth(head))))
 }
 
-func (m *model) footer() string {
+func (m *model) footer() []string {
 	st := m.r.st
 	sep := st.muted.Render(" · ")
 	var left []string
@@ -296,15 +296,30 @@ func (m *model) footer() string {
 	}
 	right = append(right, st.muted.Render(badge))
 
-	l := " " + strings.Join(left, sep)
-	r := strings.Join(right, sep) + " "
-	gap := m.width - ansi.StringWidth(l) - ansi.StringWidth(r)
+	return []string{
+		footerRow(left, nil, sep, m.width),
+		footerRow(nil, right, sep, m.width),
+	}
+}
+
+// footerRow joins left- and right-aligned segments on one row, padding the
+// gap between them and truncating the left side first if they don't fit.
+func footerRow(left, right []string, sep string, width int) string {
+	l := ""
+	if len(left) > 0 {
+		l = " " + strings.Join(left, sep)
+	}
+	r := ""
+	if len(right) > 0 {
+		r = strings.Join(right, sep) + " "
+	}
+	gap := width - ansi.StringWidth(l) - ansi.StringWidth(r)
 	if gap < 2 {
-		l = ansi.Truncate(l, max(0, m.width-ansi.StringWidth(r)-2), "…")
-		gap = m.width - ansi.StringWidth(l) - ansi.StringWidth(r)
+		l = ansi.Truncate(l, max(0, width-ansi.StringWidth(r)-2), "…")
+		gap = width - ansi.StringWidth(l) - ansi.StringWidth(r)
 	}
 	if gap < 1 {
-		return ansi.Truncate(r, m.width, "…")
+		return ansi.Truncate(r, width, "…")
 	}
 	return l + strings.Repeat(" ", gap) + r
 }
