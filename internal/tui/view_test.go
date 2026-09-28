@@ -40,6 +40,18 @@ func TestFooterUsesSeparateIdentityAndUsageRows(t *testing.T) {
 	if strings.Contains(usage, "gpt-5.6-terra") {
 		t.Errorf("usage row contains model: %q", usage)
 	}
+	if !strings.HasPrefix(identity, " /repo") {
+		t.Errorf("identity row is not left-justified on workspace: %q", identity)
+	}
+	if !strings.HasSuffix(strings.TrimRight(identity, " "), "high") {
+		t.Errorf("identity row does not right-justify the model: %q", identity)
+	}
+	if !strings.HasPrefix(usage, " ↑1.2K") {
+		t.Errorf("usage row is not left-justified on token usage: %q", usage)
+	}
+	if !strings.HasSuffix(strings.TrimRight(usage, " "), "remote") {
+		t.Errorf("usage row does not right-justify the backend badge: %q", usage)
+	}
 	for i, row := range rows {
 		if got := ansi.StringWidth(row); got != m.width {
 			t.Errorf("row %d width = %d, want %d", i, got, m.width)

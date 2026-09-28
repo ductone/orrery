@@ -253,20 +253,22 @@ func (m *model) footer() []string {
 	if m.sessionID != "" {
 		left = append(left, st.muted.Render(shortID(m.sessionID)))
 	}
+	var ident []string
 	if m.st.model != "" {
 		mdl := st.accent.Render(shortModel(m.st.model))
 		if m.st.effort != "" {
 			mdl += st.muted.Render(" " + m.st.effort)
 		}
-		left = append(left, mdl)
+		ident = append(ident, mdl)
 	}
 	var right []string
+	var usageLeft []string
 	if m.st.tokensIn+m.st.tokensOut > 0 {
 		usage := "↑" + tokens(m.st.tokensIn) + " ↓" + tokens(m.st.tokensOut)
 		if m.st.cacheRead > 0 {
 			usage += " ⟲" + tokens(m.st.cacheRead)
 		}
-		right = append(right, st.muted.Render(usage))
+		usageLeft = append(usageLeft, st.muted.Render(usage))
 	}
 	spend := usd(m.st.spend())
 	if b := m.sessionSnapshot.BudgetUSD; b > 0 {
@@ -276,7 +278,7 @@ func (m *model) footer() []string {
 	if b := m.sessionSnapshot.BudgetUSD; b > 0 && m.st.spend() >= b*0.8 {
 		spendStyle = st.warning
 	}
-	right = append(right, spendStyle.Render(spend))
+	usageLeft = append(usageLeft, spendStyle.Render(spend))
 	if pct, ok := contextPercent(m.st.model, m.st.contextTokens); ok {
 		style, label := st.muted, fmt.Sprintf("ctx %d%%", pct)
 		if pct == 0 {
@@ -285,7 +287,7 @@ func (m *model) footer() []string {
 		if pct >= 60 {
 			style = st.warning
 		}
-		right = append(right, style.Render(label))
+		usageLeft = append(usageLeft, style.Render(label))
 	}
 	badge := "local"
 	if _, local := m.backend.(*Local); !local {
@@ -297,8 +299,8 @@ func (m *model) footer() []string {
 	right = append(right, st.muted.Render(badge))
 
 	return []string{
-		footerRow(left, nil, sep, m.width),
-		footerRow(nil, right, sep, m.width),
+		footerRow(left, ident, sep, m.width),
+		footerRow(usageLeft, right, sep, m.width),
 	}
 }
 
