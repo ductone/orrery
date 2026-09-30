@@ -7,6 +7,8 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -154,6 +156,80 @@ func (p *pool) available(now time.Time) bool {
 
 type availability interface {
 	Available(time.Time) bool
+	// ReadyAt is when the client's earliest credential leaves backoff.
+	ReadyAt() time.Time
+}
+
+const (
+	defaultCredentialBackoff = 30 * time.Second
+	maxCredentialBackoff     = 5 * time.Minute
+)
+
+// backoffFor is how long a credential rests after a rate limit or server
+// error: the provider's Retry-After when it sends one (bounded), otherwise a
+// default.
+func backoffFor(resp *http.Response) time.Duration {
+	if v := strings.TrimSpace(resp.Header.Get("Retry-After")); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
+			return min(time.Duration(secs)*time.Second, maxCredentialBackoff)
+		}
+		if at, err := http.ParseTime(v); err == nil {
+			return min(max(time.Until(at), 0), maxCredentialBackoff)
+		}
+	}
+	return defaultCredentialBackoff
+}
+
+// readyAt returns when the earliest credential leaves backoff; the zero time
+// means one is usable now.
+func (p *pool) readyAt(now time.Time) time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var earliest time.Time
+	for _, cred := range p.creds {
+		if !now.Before(cred.backoffUntil) {
+			return time.Time{}
+		}
+		if earliest.IsZero() || cred.backoffUntil.Before(earliest) {
+			earliest = cred.backoffUntil
+		}
+	}
+	return earliest
+}
+
+// WaitForCredentials blocks until some configured provider has a usable
+// credential, when that will happen within maxWait. Credential backoff is a
+// short, known wait (a rate limit, or credits reserved by requests still in
+// flight); failing the whole task over it would throw away the work done so
+// far. It returns ErrCredentialsBackoff when the wait would be longer, and
+// the context's error if it ends first.
+func (r *Registry) WaitForCredentials(ctx context.Context, maxWait time.Duration) error {
+	now := time.Now()
+	var earliest time.Time
+	for _, c := range r.clients {
+		a, ok := c.(availability)
+		if !ok || a.Available(now) {
+			return nil
+		}
+		if at := a.ReadyAt(); earliest.IsZero() || at.Before(earliest) {
+			earliest = at
+		}
+	}
+	if len(r.clients) == 0 {
+		return nil
+	}
+	wait := earliest.Sub(now)
+	if wait > maxWait {
+		return ErrCredentialsBackoff
+	}
+	timer := time.NewTimer(max(wait, 0) + 10*time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 type Registry struct {

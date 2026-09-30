@@ -218,3 +218,54 @@ func TestEmptyResponsesReportTheStopReason(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 }
+
+func TestTurnWaitsOutARateLimitOnTheOnlyCredential(t *testing.T) {
+	var calls int
+	// The credential rests longer than the engine's retry pause, as a real
+	// 30-second backoff outlasts the 5-second one.
+	restore := retryDelay
+	retryDelay = func(int) time.Duration { return 50 * time.Millisecond }
+	t.Cleanup(func() { retryDelay = restore })
+	e, _ := testEngine(t)
+	workspace := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if instructions, _ := body["instructions"].(string); !strings.Contains(instructions, "TOOL CALL DISCIPLINE") {
+			_ = json.NewEncoder(w).Encode(responsesText("Title"))
+			return
+		}
+		calls++
+		if calls == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(responsesText("done"))
+	}))
+	t.Cleanup(srv.Close)
+	cfg := config.Config{
+		WorkspaceRoot: workspace,
+		Providers:     map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: srv.URL}},
+		Router:        config.RouterConfig{DisableSwitch: true, DefaultModel: "openai/gpt-5.6-terra"},
+		Interventions: config.InterventionConfig{JudgeEnabled: new(bool)},
+	}
+	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
+	req := agentproto.TaskRequest{Spec: "answer", Budget: agentproto.Budget{MaxUSD: 5, MaxTokens: 1_000_000, MaxWallClock: time.Minute}, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"}}
+	sid, results, err := e.Start(context.Background(), req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := <-results
+	if r.Status != agentproto.Pass {
+		t.Fatalf("result = %+v", r)
+	}
+	var waited bool
+	es, _ := e.store.EventsAfter(context.Background(), sid, 0)
+	for _, ev := range es {
+		waited = waited || ev.Type == "routing.credential_wait" && strings.Contains(string(ev.Data), "resumed")
+	}
+	if !waited {
+		t.Fatal("the turn must record that it waited for a credential")
+	}
+}

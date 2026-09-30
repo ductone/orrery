@@ -21,7 +21,7 @@ import (
 var verificationCommands = parseVerificationCommands(
 	// Build systems and task runners.
 	"go test", "go vet", "go build",
-	"cargo test", "cargo check", "cargo clippy", "cargo build", "cargo fmt --check",
+	"cargo test", "cargo check", "cargo clippy", "cargo build",
 	"bazel test", "bazel build", "bazelisk test", "bazelisk build",
 	"make test", "make build", "make lint", "make typecheck", "make check", "make ci", "make vet",
 	"npm test", "npm run test", "npm run build", "npm run lint", "npm run typecheck", "npm run check",
@@ -35,11 +35,17 @@ var verificationCommands = parseVerificationCommands(
 	"deno test", "deno check", "deno lint", "bun test",
 	// Test runners, type checkers, and linters invoked directly.
 	"pytest", "rspec", "phpunit", "jest", "vitest", "mocha", "playwright test",
-	"tsc", "vue-tsc", "mypy", "pyright", "ruff", "flake8", "pylint", "black --check",
-	"eslint", "stylelint", "golangci-lint", "staticcheck", "gofmt -l", "shellcheck", "hadolint", "actionlint",
-	"markdownlint", "markdownlint-cli2", "prettier --check", "prettier -c", "yamllint",
+	"tsc", "vue-tsc", "mypy", "pyright", "ruff", "flake8", "pylint",
+	"eslint", "stylelint", "golangci-lint", "staticcheck", "shellcheck", "hadolint", "actionlint",
 	"buf lint", "buf build", "buf breaking",
 	"terraform validate", "tflint", "rubocop", "clang-tidy", "swiftlint", "ktlint", "detekt",
+)
+
+// formatCheckCommands check formatting or document style, not behaviour. They
+// verify prose and configuration, but a code change needs a real check.
+var formatCheckCommands = parseVerificationCommands(
+	"cargo fmt --check", "gofmt -l", "prettier --check", "prettier -c", "black --check",
+	"markdownlint", "markdownlint-cli2", "yamllint", "taplo check", "taplo fmt --check",
 )
 
 type verificationPattern struct {
@@ -77,17 +83,28 @@ var runnerValueFlags = map[string][]string{
 	"nice": {"-n"}, "xargs": {"-I", "-n", "-P", "-L", "-s", "-d", "-E", "-a"}, "npx": {"-p", "--package"},
 }
 
-// isVerificationCommand reports whether any simple command in a shell command
-// line is a recognised check. Commands are parsed, so a file name that merely
-// contains a tool's name (cat tsconfig.json) does not count.
-func isVerificationCommand(command string) bool {
+// Kinds of recognised check.
+const (
+	notACheck   = ""
+	formatCheck = "format"
+	fullCheck   = "check"
+)
+
+// isVerificationCommand reports whether a command line runs a recognised
+// check of either kind.
+func isVerificationCommand(command string) bool { return verificationKind(command) != notACheck }
+
+// verificationKind classifies a command line by the strongest recognised
+// check among its simple commands. Commands are parsed, so a file name that
+// merely contains a tool's name (cat tsconfig.json) does not count.
+func verificationKind(command string) string {
 	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(command), "")
 	if err != nil {
-		return false
+		return notACheck
 	}
-	found := false
+	kind := notACheck
 	syntax.Walk(file, func(node syntax.Node) bool {
-		if found {
+		if kind == fullCheck {
 			return false
 		}
 		if call, ok := node.(*syntax.CallExpr); ok {
@@ -99,11 +116,17 @@ func isVerificationCommand(command string) bool {
 					words = append(words, "")
 				}
 			}
-			found = matchesVerification(unwrapRunner(words))
+			words = unwrapRunner(words)
+			switch {
+			case matchesVerification(words, verificationCommands):
+				kind = fullCheck
+			case matchesVerification(words, formatCheckCommands):
+				kind = formatCheck
+			}
 		}
-		return !found
+		return kind != fullCheck
 	})
-	return found
+	return kind
 }
 
 // unwrapRunner strips package runners and wrappers: npx eslint, pnpm exec
@@ -148,7 +171,7 @@ func runnerCommand(name string, args []string) []string {
 	return nil
 }
 
-func matchesVerification(words []string) bool {
+func matchesVerification(words []string, patterns []verificationPattern) bool {
 	if len(words) == 0 {
 		return false
 	}
@@ -161,7 +184,7 @@ func matchesVerification(words []string) bool {
 			positional = append(positional, w)
 		}
 	}
-	for _, p := range verificationCommands {
+	for _, p := range patterns {
 		if p.name != name || len(positional) < len(p.positional) {
 			continue
 		}
@@ -224,8 +247,8 @@ var proseExtensions = []string{".md", ".mdx", ".markdown", ".rst", ".txt", ".ado
 
 var checkQuestion = map[string]jev.Question{"meaningful_check": jev.Noul(
 	"Did this command meaningfully check the changed files for correctness?",
-	"It ran, and it would have failed or reported problems if the changed files were broken: a test, build, type check, linter, schema or format validation, or dry run covering them.",
-	"It only displayed, listed, searched, or inspected files, or checked something unrelated to the changed files.",
+	"It ran, and it would have failed or reported problems if the changed files were broken: a test, build, type check, linter, schema validation, or dry run covering them.",
+	"It only displayed, listed, searched, or inspected files, only checked formatting or style, or checked something unrelated to the changed files.",
 )}
 
 // changedPaths is what this run changed: the workspace delta when knowable,
@@ -275,6 +298,19 @@ func needsVerification(paths []string) bool {
 	return false
 }
 
+// changesCode reports whether any changed file is code, which a formatting
+// check cannot verify.
+func changesCode(paths []string) bool {
+	for _, p := range paths {
+		f := review.File{Path: p}
+		review.Classify(&f)
+		if f.Class == review.Code {
+			return true
+		}
+	}
+	return false
+}
+
 // verificationSatisfied decides whether an edited run may complete without a
 // recognised verification command: when it changed only prose and assets, or
 // when the classifier judges a command it did run to be a meaningful check.
@@ -282,6 +318,10 @@ func (e *Engine) verificationSatisfied(ctx context.Context, sid, root string, pr
 	changed := e.changedPaths(ctx, sid, root, progress)
 	if !needsVerification(changed) {
 		e.emit(ctx, sid, "verification.accepted", map[string]any{"reason": "only prose and asset files changed", "changed": changed}, emit)
+		return true
+	}
+	if progress.formatVerified && !changesCode(changed) {
+		e.emit(ctx, sid, "verification.accepted", map[string]any{"reason": "a format or style check covers configuration changes", "changed": changed}, emit)
 		return true
 	}
 	cfg, _, _, _, _ := e.runtimeSnapshot()

@@ -27,6 +27,7 @@ func newAnthropic(base string, keys []string) *anthropicClient {
 	return &anthropicClient{strings.TrimSuffix(base, "/"), p, httpClient(15 * time.Minute)}
 }
 func (c *anthropicClient) Available(now time.Time) bool { return c.pool.available(now) }
+func (c *anthropicClient) ReadyAt() time.Time           { return c.pool.readyAt(time.Now()) }
 func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Request) (Response, error) {
 	key, ok := c.pool.take(time.Now())
 	if !ok {
@@ -104,7 +105,7 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode/100 != 2 {
 		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
-			c.pool.backoff(key, 30*time.Second)
+			c.pool.backoff(key, backoffFor(resp))
 		}
 		return Response{}, &HTTPError{resp.StatusCode, string(raw)}
 	}

@@ -115,7 +115,7 @@ func runSyntheticDialect(dialect string) SyntheticEditDialectMetrics {
 	}}}, mode)
 	if err == nil {
 		m.FirstAttemptSuccesses++
-	} else if isStale(err) {
+	} else if isAmbiguous(err) {
 		m.AmbiguitiesDetected++
 	}
 
@@ -220,5 +220,10 @@ func isStale(err error) bool {
 		return false
 	}
 	var stale *hashline.StaleError
-	return errors.As(err, &stale) || strings.Contains(err.Error(), "stale or ambiguous anchor")
+	return errors.As(err, &stale) || strings.Contains(err.Error(), "stale anchor")
+}
+
+func isAmbiguous(err error) bool {
+	var amb *hashline.AmbiguousError
+	return errors.As(err, &amb)
 }

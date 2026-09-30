@@ -77,9 +77,13 @@ func TestAmbiguousAnchorRejected(t *testing.T) {
 	_ = os.WriteFile(p, []byte("same\nsame\n"), 0600)
 	ls, _ := Read(p)
 	_, err := Apply(Patch{Path: p, Hunks: []Hunk{{Anchor: ls[0].Hash, Delete: 1}}})
+	var amb *AmbiguousError
+	if !errors.As(err, &amb) || len(amb.Lines) != 2 || amb.Lines[0] != 1 || amb.Lines[1] != 2 || len(amb.Windows) != 2 {
+		t.Fatalf("expected ambiguity listing both lines: %v", err)
+	}
 	var stale *StaleError
-	if !errors.As(err, &stale) {
-		t.Fatalf("expected ambiguity: %v", err)
+	if errors.As(err, &stale) {
+		t.Fatal("an ambiguous anchor is not stale")
 	}
 }
 
@@ -282,5 +286,81 @@ func TestTextAnchorDialectUsesExactLineText(t *testing.T) {
 	b, _ := os.ReadFile(p)
 	if string(b) != "alpha\nBETA\ngamma\n" {
 		t.Fatalf("content=%q", b)
+	}
+}
+
+func TestLineHintSettlesAmbiguousAnchors(t *testing.T) {
+	body := "func New() {\n\tstate_dir,\n\trt,\n}\n\nfunc WithEffects() {\n\tstate_dir,\n\trt,\n}\n"
+	write := func(t *testing.T) (string, []Line) {
+		p := filepath.Join(t.TempDir(), "lock.rs")
+		_ = os.WriteFile(p, []byte(body), 0600)
+		ls, _ := Read(p)
+		return p, ls
+	}
+	read := func(p string) string { b, _ := os.ReadFile(p); return string(b) }
+	t.Run("exact line picks the second copy for a delete", func(t *testing.T) {
+		p, ls := write(t)
+		if _, err := Apply(Patch{Path: p, Hunks: []Hunk{{Anchor: ls[6].Hash, Line: 7, Delete: 1, Insert: []string{"\tstate_dir: dir,"}}}}); err != nil {
+			t.Fatal(err)
+		}
+		if got := read(p); !strings.Contains(got, "func New() {\n\tstate_dir,\n") || !strings.Contains(got, "WithEffects() {\n\tstate_dir: dir,\n") {
+			t.Fatalf("wrong copy edited:\n%s", got)
+		}
+	})
+	t.Run("a near line picks the closer copy for an insert", func(t *testing.T) {
+		p, ls := write(t)
+		if _, err := Apply(Patch{Path: p, Hunks: []Hunk{{Anchor: ls[1].Hash, Line: 3, Offset: 1, Insert: []string{"\tgate,"}}}}); err != nil {
+			t.Fatal(err)
+		}
+		if got := read(p); !strings.Contains(got, "func New() {\n\tstate_dir,\n\tgate,\n") {
+			t.Fatalf("insert went to the wrong copy:\n%s", got)
+		}
+	})
+	t.Run("a near line does not license a delete", func(t *testing.T) {
+		p, ls := write(t)
+		var amb *AmbiguousError
+		if _, err := Apply(Patch{Path: p, Hunks: []Hunk{{Anchor: ls[1].Hash, Line: 3, Delete: 1}}}); !errors.As(err, &amb) {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("a hint halfway between copies stays ambiguous", func(t *testing.T) {
+		p, ls := write(t)
+		var amb *AmbiguousError
+		if _, err := Apply(Patch{Path: p, Hunks: []Hunk{{Anchor: ls[1].Hash, Line: 5, Insert: []string{"x"}}}}); !errors.As(err, &amb) || !strings.Contains(err.Error(), `set "line"`) {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("a unique anchor ignores a wrong hint", func(t *testing.T) {
+		p, ls := write(t)
+		if _, err := Apply(Patch{Path: p, Hunks: []Hunk{{Anchor: ls[0].Hash, Line: 99, Offset: 1, Insert: []string{"\t// first"}}}}); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestHunksApplyInFileOrderWhateverTheirOrder(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "x.txt")
+	_ = os.WriteFile(p, []byte("a\nb\nc\nd\n"), 0600)
+	ls, _ := Read(p)
+	if _, err := Apply(Patch{Path: p, Hunks: []Hunk{{Anchor: ls[3].Hash, Delete: 1, Insert: []string{"D"}}, {Anchor: ls[0].Hash, Delete: 1, Insert: []string{"A"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "A\nb\nc\nD\n" {
+		t.Fatalf("content = %q", b)
+	}
+	// Overlap is still refused.
+	ls, _ = Read(p)
+	if _, err := Apply(Patch{Path: p, Hunks: []Hunk{{Anchor: ls[1].Hash, Delete: 2, Insert: []string{"x"}}, {Anchor: ls[0].Hash, Delete: 2, Insert: []string{"y"}}}}); err == nil || !strings.Contains(err.Error(), "overlapping") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestNewFileAnchorOnExistingFileExplainsItself(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "spec.ts")
+	_ = os.WriteFile(p, []byte("a\n\nb\n\nc\n"), 0600)
+	var amb *AmbiguousError
+	_, err := Apply(Patch{Path: p, Hunks: []Hunk{{Anchor: "e3b0c442", Insert: []string{"new"}}}})
+	if !errors.As(err, &amb) || !amb.NewFileAnchor || !strings.Contains(err.Error(), "new-file anchor") {
+		t.Fatalf("err = %v", err)
 	}
 }

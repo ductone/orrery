@@ -334,3 +334,42 @@ func TestJevRejectsACommandThatCheckedNothing(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 }
+
+func TestVerificationKinds(t *testing.T) {
+	for cmd, want := range map[string]string{
+		"cargo fmt --manifest-path src-tauri/Cargo.toml -- --check": formatCheck,
+		"npx prettier --check docs/rfc.md":                          formatCheck,
+		"gofmt -l .":                                                formatCheck,
+		"npx markdownlint-cli2 --no-globs docs/rfc.md":              formatCheck,
+		"yamllint ci.yaml":                                          formatCheck,
+		"cargo check --manifest-path src-tauri/Cargo.toml":          fullCheck,
+		"gofmt -l . && go test ./...":                               fullCheck,
+		"go test ./... && gofmt -l .":                               fullCheck,
+		"pnpm typecheck":                                            fullCheck,
+		"cat Cargo.toml":                                            notACheck,
+	} {
+		if got := verificationKind(cmd); got != want {
+			t.Errorf("verificationKind(%q) = %q, want %q", cmd, got, want)
+		}
+	}
+	if changesCode([]string{"ci/pipeline.yaml", "docs/a.md"}) || !changesCode([]string{"ci/pipeline.yaml", "src/lib.rs"}) {
+		t.Fatal("changesCode misclassified")
+	}
+}
+
+func TestFormatCheckDoesNotVerifyCode(t *testing.T) {
+	result, _, _, _ := gateRun(t, "main.go", "gofmt -l .", -1)
+	if result.Outcome.Verified || result.Outcome.CompletionRejects != maxVerificationRejections {
+		t.Fatalf("a format check must not verify a code change: %+v", result.Outcome)
+	}
+}
+
+func TestFormatCheckVerifiesConfiguration(t *testing.T) {
+	result, _, e, sid := gateRun(t, "pipeline.yaml", "gofmt -l .", -1)
+	if result.Outcome.CompletionRejects != 0 {
+		t.Fatalf("a format check covers a configuration change: %+v", result.Outcome)
+	}
+	if !slices.Contains(eventTypes(t, e, sid), "verification.accepted") {
+		t.Fatal("the acceptance must be recorded")
+	}
+}

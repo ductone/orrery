@@ -89,7 +89,7 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if resp.StatusCode/100 != 2 {
 		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
-			c.pool.backoff(key, 30*time.Second)
+			c.pool.backoff(key, backoffFor(resp))
 		}
 		return Response{}, &HTTPError{resp.StatusCode, string(raw)}
 	}

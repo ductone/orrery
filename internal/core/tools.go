@@ -173,6 +173,9 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 			return nil, errors.New("action must be list or load")
 		}
 	})
+	r.SetJobFallback(func(ctx context.Context, id, action string) (any, error) {
+		return e.workerJob(ctx, sid, id, action)
+	})
 	r.AddScheme("job", func(ctx context.Context, a map[string]any) (any, error) {
 		parts := strings.SplitN(fmt.Sprint(a["path"]), "/", 2)
 		j, err := e.store.Job(ctx, parts[0])
@@ -320,7 +323,7 @@ func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq ag
 		child.Budget.MaxTokens = min(child.Budget.MaxTokens, 150_000)
 		child.Budget.MaxUSD = min(child.Budget.MaxUSD, 0.35)
 	}
-	jobDecision, jobWhy, err := runtimePolicy.Decide(ctx, jobState)
+	jobDecision, jobWhy, err := e.decideWaiting(ctx, sid, runtimePolicy, runtimeProviders, &jobState, emit)
 	if err != nil && (opts.tierPin != "" || len(opts.excludeFamilies) > 0) {
 		// Harness preferences (a cheaper tier, a different family for a retry)
 		// are not requirements: fall back to ordinary routing when nothing

@@ -71,7 +71,14 @@ func newReviewHarness(t *testing.T, withJev bool) *reviewHarness {
 		h.attempts[instructions]++
 		attempt := h.attempts[instructions]
 		h.mu.Unlock()
-		_ = json.NewEncoder(w).Encode(h.reviewer(instructions, attempt))
+		reply := h.reviewer(instructions, attempt)
+		if status, ok := reply["__status"].(int); ok {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"error":{"code":"credits_reserved"}}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(reply)
 	}))
 	t.Cleanup(models.Close)
 	cfg := config.Config{
@@ -376,5 +383,30 @@ func TestLargeReviewsAreShardedAndMerged(t *testing.T) {
 		if !strings.Contains(spec, " of ") {
 			t.Fatal("each shard's spec must say which part it is")
 		}
+	}
+}
+
+// A reviewer whose only credential is rate limited waits for it instead of
+// failing the review, as a transient 429 once did.
+func TestReviewerWaitsOutARateLimit(t *testing.T) {
+	h := newReviewHarness(t, false)
+	// The credential rests longer than the engine's retry pause, as a real
+	// 30-second backoff outlasts the 5-second one.
+	restore := retryDelay
+	retryDelay = func(int) time.Duration { return 50 * time.Millisecond }
+	t.Cleanup(func() { retryDelay = restore })
+	h.write("internal/feature.go", "package internal\n")
+	h.reviewer = func(_ string, attempt int) map[string]any {
+		if attempt == 1 {
+			return map[string]any{"__status": 429}
+		}
+		return verdictJSON(true)
+	}
+	passed, _, err := h.run()
+	if err != nil || !passed {
+		t.Fatalf("passed=%v err=%v", passed, err)
+	}
+	if jobs, _ := h.st.Jobs(context.Background(), h.sid); len(jobs) != 1 {
+		t.Fatalf("the first reviewer must finish; got %d reviewers", len(jobs))
 	}
 }

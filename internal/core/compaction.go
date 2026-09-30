@@ -157,7 +157,7 @@ func (e *Engine) semanticSummary(ctx context.Context, s store.Session, todos []s
 	transcript := compactTranscript(old, 96_000)
 	system := `Summarize an autonomous coding session for lossless continuation. Return one JSON object only with these exact keys: objective, current_objective, pending_report, resolved_requests, requirements, decisions, completed, files, verification, open_work, blockers, instructions, worker_results. objective, current_objective, and pending_report are strings; every other field is an array of concise strings. current_objective and pending_report must preserve the supplied LIVE TODO ANCHOR rather than an older request. resolved_requests lists requests already answered or superseded; never make them active again. Preserve concrete paths, symbols, commands, test outcomes, constraints, unresolved hypotheses, loaded instruction/skill names, and worker findings. Do not invent completion or evidence.`
 	prompt := "ORIGINAL TASK\n" + s.Spec + "\n\nLIVE TODO ANCHOR (authoritative)\n" + durableTaskAnchor(s, todos, cont, workItems) + "\n\nPRIOR DURABLE STATE\n" + s.DurableSummary + "\n\nACTIVITY TO COMPACT\n" + transcript
-	estimatedCost := spec.Pricing.Estimate(estimate(prompt), 2200, 0)
+	estimatedCost := spec.Pricing.Estimate(estimate(prompt), summaryOutputLimits[0], 0)
 	if s.BudgetUSD > 0 && estimatedCost > s.BudgetUSD-s.SpentUSD {
 		return DurableState{}, nil, errors.New("insufficient remaining budget for semantic summary")
 	}
@@ -171,26 +171,42 @@ func (e *Engine) semanticSummary(ctx context.Context, s store.Session, todos []s
 		}
 	}
 	decision := router.Decision{Model: spec, Effort: effort, EditDialect: spec.EditDialect, ToolsetVariant: "portable"}
-	resp, err := providers.CompleteOne(ctx, decision, func(m model.ModelSpec, d router.Decision) (provider.Request, error) {
-		return provider.Request{System: system, DurableSpec: "Compaction is an internal state transition.", Messages: []provider.Message{{Role: "user", Content: prompt}}, MaxOutput: min(2200, m.MaxOutput), Effort: d.Effort, Strict: m.Compat.SupportsStrictTools}, nil
-	})
-	if err != nil {
-		return DurableState{}, nil, err
-	}
+	// A summary cut off at its output limit is unparseable JSON, and a
+	// reasoning model can spend much of a small limit before writing any.
+	// Retry once with more room; every attempt is charged to the session.
+	var resp provider.Response
 	var state DurableState
-	content := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(resp.Message.Content), "```json"), "```"))
-	if err := json.Unmarshal([]byte(content), &state); err != nil {
-		return DurableState{}, nil, fmt.Errorf("decode semantic summary: %w", err)
+	var cost float64
+	for attempt, limit := range summaryOutputLimits {
+		var err error
+		resp, err = providers.CompleteOne(ctx, decision, func(m model.ModelSpec, d router.Decision) (provider.Request, error) {
+			return provider.Request{System: system, DurableSpec: "Compaction is an internal state transition.", Messages: []provider.Message{{Role: "user", Content: prompt}}, MaxOutput: min(limit, m.MaxOutput), Effort: d.Effort, Strict: m.Compat.SupportsStrictTools}, nil
+		})
+		if err != nil {
+			return DurableState{}, nil, err
+		}
+		attemptCost := spec.Pricing.EstimateDetailed(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CacheReadTokens, resp.Usage.CacheWriteTokens)
+		cost += attemptCost
+		_ = e.store.AddSpend(ctx, s.ID, attemptCost)
+		content := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(resp.Message.Content), "```json"), "```"))
+		err = json.Unmarshal([]byte(content), &state)
+		if err == nil {
+			break
+		}
+		if !resp.Truncated || attempt == len(summaryOutputLimits)-1 {
+			return DurableState{}, nil, fmt.Errorf("decode semantic summary (stop reason %q): %w", resp.StopReason, err)
+		}
 	}
 	state.PriorSummary = truncate(s.DurableSummary, 4000)
 	state.CompactedAt = time.Now().UTC().Format(time.RFC3339)
 	if !state.valid() {
 		return DurableState{}, nil, errors.New("semantic summary omitted recovery state")
 	}
-	cost := spec.Pricing.EstimateDetailed(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CacheReadTokens, resp.Usage.CacheWriteTokens)
-	_ = e.store.AddSpend(ctx, s.ID, cost)
 	return state, map[string]any{"strategy": "semantic", "model": spec.ID, "input_tokens": resp.Usage.InputTokens, "output_tokens": resp.Usage.OutputTokens, "cost_usd": cost}, nil
 }
+
+// summaryOutputLimits are the output limits of successive summary attempts.
+var summaryOutputLimits = []int{4_000, 12_000}
 
 func fallbackDurableState(s store.Session, old []store.Message) DurableState {
 	completed, open, decisions, verification, files, instructions, workers := []string{}, []string{}, []string{}, []string{}, []string{}, []string{}, []string{}

@@ -790,7 +790,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			state.Phase = state.InstructionPhase.Phase
 		}
 		applyHints(&state, req.Hints)
-		decision, why, err := runtimePolicy.Decide(ctx, state)
+		decision, why, err := e.decideWaiting(ctx, sid, runtimePolicy, runtimeProviders, &state, emit)
 		if err != nil {
 			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: err.Error()}, emit)
 		}
@@ -858,6 +858,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		failed := []string{}
 		modelAttempts := 0
 		malformedAttempts := 0
+		credentialWaits := 0
 		for {
 			resp, err = runtimeProviders.CompleteOne(ctx, decision, build)
 			if err == nil {
@@ -887,6 +888,12 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			// the router does not reroute to a sibling model on the same cooled
 			// provider.
 			if errors.Is(err, provider.ErrCredentialsBackoff) {
+				// With nothing else to route to, wait for a credential and
+				// retry the same decision rather than failing the turn.
+				if credentialWaits < maxCredentialWaitsPerTurn && e.waitForCredentials(ctx, sid, runtimeProviders, emit) {
+					credentialWaits++
+					continue
+				}
 				failed = append(failed, decision.Model.ID)
 				state.ExcludeModels = failed
 				if !slices.Contains(state.ExcludeFamilies, decision.Model.Family) {
@@ -910,7 +917,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			select {
 			case <-ctx.Done():
 				return e.finish(sid, agentproto.TaskResult{Status: agentproto.Cancelled, Outcome: outcome, Error: ctx.Err().Error()}, emit)
-			case <-time.After(providerRetryBackoff(modelAttempts)):
+			case <-time.After(retryDelay(modelAttempts)):
 			}
 			if modelAttempts <= 2 {
 				state.CurrentModel = decision.Model.ID
@@ -1274,6 +1281,10 @@ func shouldBlockEditForInstructions(call provider.ToolCall, instructionBoundaryH
 
 // providerRetryBackoff grows per consecutive retryable failure on the same
 // turn so transient provider errors are absorbed locally before a reroute.
+// retryDelay is the pause before retrying a failed provider call; tests
+// shorten it.
+var retryDelay = providerRetryBackoff
+
 func providerRetryBackoff(attempt int) time.Duration {
 	switch {
 	case attempt <= 0:

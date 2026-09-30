@@ -43,6 +43,14 @@ type Registry struct {
 	state    *SessionState
 	dialect  anchorDialect
 	ranker   SearchRanker
+	// jobFallback serves job ids this registry did not start, such as the
+	// worker jobs spawn creates.
+	jobFallback func(ctx context.Context, id, action string) (any, error)
+}
+
+// SetJobFallback lets the job tool serve ids it did not start itself.
+func (r *Registry) SetJobFallback(f func(ctx context.Context, id, action string) (any, error)) {
+	r.jobFallback = f
 }
 
 // SessionState holds edit recovery state across model turns. Engine tool
@@ -107,7 +115,7 @@ func editDescription(d anchorDialect) string {
 	if d == anchorText {
 		return "Apply exact-text anchor hunks. Copy the complete line text from the latest read into anchor; repeated identical lines are ambiguous. For a new file use an empty anchor with delete=0."
 	}
-	return "Apply content-anchored hashline hunks. You MUST read the exact target window immediately before editing and copy its latest 8-character hash into anchor. To create a new file, use anchor e3b0c442 with delete=0. Re-read after compaction or a stale error. Structural declaration deletion is rejected unless explicitly allowed."
+	return "Apply content-anchored hashline hunks. You MUST read the exact target window immediately before editing and copy its latest 8-character hash into anchor. To create a new file, use anchor e3b0c442 with delete=0. Identical lines share a hash; when an anchor is ambiguous, also pass its line number from the read as line. Re-read after compaction or a stale error. Structural declaration deletion is rejected unless explicitly allowed."
 }
 
 func readDescription(d anchorDialect) string {
@@ -140,9 +148,9 @@ func NewWithStateDialect(root string, state *SessionState, dialect string) *Regi
 	if r.dialect == anchorText {
 		anchor = map[string]any{"type": "string", "description": "Complete exact line text copied from the latest read result. Never use a line number or placeholder."}
 	}
-	r.add("edit", editDescription(r.dialect), schema(map[string]any{"path": str(), "hunks": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"anchor": anchor, "offset": num(), "delete": num(), "insert": map[string]any{"type": "array", "items": str()}, "allow_structural_change": boolean()}, "required": []string{"anchor", "delete", "insert"}, "additionalProperties": false}}}, "path", "hunks"), r.edit)
+	r.add("edit", editDescription(r.dialect), schema(map[string]any{"path": str(), "hunks": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"anchor": anchor, "line": map[string]any{"type": "integer", "description": "The anchor's line number from the latest read. Needed only when identical lines share a hash."}, "offset": num(), "delete": num(), "insert": map[string]any{"type": "array", "items": str()}, "allow_structural_change": boolean()}, "required": []string{"anchor", "delete", "insert"}, "additionalProperties": false}}}, "path", "hunks"), r.edit)
 	r.add("exec", "Run a shell command in the workspace. Use background=true for long jobs.", schema(map[string]any{"command": str(), "background": boolean(), "timeout_seconds": num()}, "command"), r.run)
-	r.add("job", "Wait for, cancel, or read logs from a background exec job.", schema(map[string]any{"id": str(), "action": map[string]any{"type": "string", "enum": []string{"wait", "cancel", "logs"}}}, "id", "action"), r.job)
+	r.add("job", "Wait for, cancel, or read logs from a background exec job, or wait for (or check on) a worker job started by spawn.", schema(map[string]any{"id": str(), "action": map[string]any{"type": "string", "enum": []string{"wait", "cancel", "logs"}}}, "id", "action"), r.job)
 	return r
 }
 
@@ -447,6 +455,14 @@ func (r *Registry) edit(_ context.Context, a map[string]any) (any, error) {
 	// even when the file changed externally and the same patch is now stale.
 	r.state.noop = noopState{}
 	if err != nil {
+		var amb *hashline.AmbiguousError
+		if errors.As(err, &amb) {
+			matches := make([]map[string]any, 0, len(amb.Windows))
+			for i, w := range amb.Windows {
+				matches = append(matches, map[string]any{"line": amb.Lines[i], "window": w})
+			}
+			return map[string]any{"error": err.Error(), "matching_lines": amb.Lines, "matches": matches, "directive": `retry with "line" set to the intended match, or anchor to a unique neighbouring line`}, err
+		}
 		var stale *hashline.StaleError
 		if errors.As(err, &stale) {
 			key := p.Path + "|" + stale.Anchor
@@ -579,6 +595,9 @@ func (r *Registry) job(ctx context.Context, a map[string]any) (any, error) {
 	j := r.jobs[id]
 	r.mu.Unlock()
 	if j == nil {
+		if r.jobFallback != nil {
+			return r.jobFallback(ctx, id, asString(a["action"]))
+		}
 		return nil, errors.New("job not found")
 	}
 	switch asString(a["action"]) {

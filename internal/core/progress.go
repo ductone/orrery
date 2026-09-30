@@ -40,6 +40,9 @@ type progressTracker struct {
 	// missing verification, so an unverifiable change cannot loop.
 	verificationRejections int
 	verificationWaived     bool
+	// formatVerified is set by a successful formatting or style check, which
+	// verifies only non-code changes.
+	formatVerified bool
 }
 
 // commandRecord is a command and the tail of its output.
@@ -114,6 +117,7 @@ func (p *progressTracker) observe(call provider.ToolCall, value any, callErr err
 			p.verified = false
 			p.reviewed = false
 			p.checksSinceEdit = nil
+			p.formatVerified = false
 			if path := stringArg(call.Arguments, "path"); path != "" {
 				if p.editedPaths == nil {
 					p.editedPaths = map[string]bool{}
@@ -122,11 +126,20 @@ func (p *progressTracker) observe(call provider.ToolCall, value any, callErr err
 			}
 		case "exec":
 			command := stringArg(call.Arguments, "command")
-			if isVerificationCommand(strings.ToLower(command)) {
+			switch verificationKind(command) {
+			case fullCheck:
 				p.turnProgress = true
 				p.turnVerified = true
 				p.verified = true
-			} else if p.edited {
+			case formatCheck:
+				// Counts for prose and configuration, not for code; see
+				// verificationSatisfied.
+				p.turnProgress = true
+				p.formatVerified = true
+			default:
+				if !p.edited {
+					break
+				}
 				p.checksSinceEdit = append(p.checksSinceEdit, commandRecord{Command: command, Output: outputTail(value)})
 				if len(p.checksSinceEdit) > maxChecksSinceEdit {
 					p.checksSinceEdit = p.checksSinceEdit[1:]

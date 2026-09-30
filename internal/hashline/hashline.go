@@ -17,7 +17,10 @@ type Line struct {
 	Text   string `json:"text"`
 }
 type Hunk struct {
-	Anchor                string   `json:"anchor"`
+	Anchor string `json:"anchor"`
+	// Line is the anchor's line number as the latest read showed it. It is
+	// optional, and only consulted when the anchor matches more than one line.
+	Line                  int      `json:"line,omitempty"`
 	Offset                int      `json:"offset"`
 	Delete                int      `json:"delete"`
 	Insert                []string `json:"insert"`
@@ -43,8 +46,88 @@ type StaleError struct {
 
 var ErrNoChanges = errors.New("hashline: patch makes no changes")
 
-func (e *StaleError) Error() string { return fmt.Sprintf("stale or ambiguous anchor %q", e.Anchor) }
-func hash(s string) string          { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:])[:8] }
+func (e *StaleError) Error() string {
+	return fmt.Sprintf("stale anchor %q: no line in the current file has this hash", e.Anchor)
+}
+
+// AmbiguousError reports an anchor that matches several lines, as identical
+// lines do, and which the hunk's line number did not settle. It is not stale:
+// every listed line is current.
+type AmbiguousError struct {
+	Anchor  string
+	Lines   []int
+	Windows [][]Line
+	// NewFileAnchor marks the empty-line hash, which creates files but also
+	// matches every blank line of an existing one.
+	NewFileAnchor bool
+}
+
+func (e *AmbiguousError) Error() string {
+	nums := make([]string, len(e.Lines))
+	for i, n := range e.Lines {
+		nums[i] = fmt.Sprint(n)
+	}
+	msg := fmt.Sprintf("ambiguous anchor %q: it matches lines %s", e.Anchor, strings.Join(nums, ", "))
+	if e.NewFileAnchor {
+		return msg + "; this is the new-file anchor, which on an existing file matches every blank line. Anchor to a line with content instead"
+	}
+	return msg + `; set "line" to the intended line number from your read, or anchor to a nearby unique line with an offset`
+}
+
+// lineTolerance bounds how far a line hint may be from its match when the
+// file has shifted since the read.
+const lineTolerance = 40
+
+// pickOccurrence settles an ambiguous anchor with the hunk's line hint. An
+// exact line match always wins. Otherwise an insert may take the nearest match
+// when it is within tolerance and clearly nearer than the next; a delete must
+// match exactly, since deleting at a near guess would destroy the wrong lines.
+func pickOccurrence(occurrences []int, line int, deleting bool) (int, bool) {
+	if line <= 0 {
+		return 0, false
+	}
+	want := line - 1
+	for _, idx := range occurrences {
+		if idx == want {
+			return idx, true
+		}
+	}
+	if deleting {
+		return 0, false
+	}
+	best, second := -1, -1
+	for _, idx := range occurrences {
+		d := abs(idx - want)
+		if best < 0 || d < abs(best-want) {
+			best, second = idx, best
+		} else if second < 0 || d < abs(second-want) {
+			second = idx
+		}
+	}
+	if d := abs(best - want); d <= lineTolerance && (second < 0 || 2*d < abs(second-want)) {
+		return best, true
+	}
+	return 0, false
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
+
+func ambiguous(anchor string, lines []Line, occurrences []int, newFileAnchor bool) *AmbiguousError {
+	e := &AmbiguousError{Anchor: anchor, NewFileAnchor: newFileAnchor}
+	for _, idx := range occurrences {
+		e.Lines = append(e.Lines, idx+1)
+		if len(e.Windows) < 6 {
+			e.Windows = append(e.Windows, window(lines, idx))
+		}
+	}
+	return e
+}
+func hash(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:])[:8] }
 
 func hashes(text []string, mode AnchorMode) []Line {
 	out := make([]Line, len(text))
@@ -143,11 +226,15 @@ func ApplyWithMode(p Patch, mode AnchorMode) (*ApplyResult, error) {
 			return nil, &StaleError{h.Anchor, window(lines, 0)}
 		}
 
-		// A delete hunk must anchor unambiguously: if the anchor matches more than
-		// one line, deleting at a "best guess" location destroys information. Insert
-		// hunks may instead auto-rebase to a uniquely in-bounds occurrence below.
-		if h.Delete > 0 && len(occurrences) > 1 {
-			return nil, &StaleError{h.Anchor, window(lines, occurrences[0])}
+		// Identical lines share a hash. The read's line number settles which
+		// one was meant; without it, a delete must not guess (that destroys
+		// information) and an insert may only use a uniquely in-bounds match.
+		if len(occurrences) > 1 {
+			if idx, ok := pickOccurrence(occurrences, h.Line, h.Delete > 0); ok {
+				occurrences = []int{idx}
+			} else if h.Delete > 0 {
+				return nil, ambiguous(h.Anchor, lines, occurrences, h.Anchor == newFileAnchor)
+			}
 		}
 
 		// Filter to occurrences that give valid targets
@@ -167,8 +254,7 @@ func ApplyWithMode(p Patch, mode AnchorMode) (*ApplyResult, error) {
 		}
 
 		if len(validOccurrences) > 1 {
-			// Multiple valid targets - ambiguous
-			return nil, &StaleError{h.Anchor, window(lines, validOccurrences[0])}
+			return nil, ambiguous(h.Anchor, lines, validOccurrences, h.Anchor == newFileAnchor)
 		}
 
 		// Exactly one valid target - use it (auto-rebase if needed)
@@ -185,10 +271,10 @@ func ApplyWithMode(p Patch, mode AnchorMode) (*ApplyResult, error) {
 		}
 		loc = append(loc, located{at, h})
 	}
+	// Hunks resolve against the same snapshot, so their order in the patch
+	// carries no meaning; apply them in file order.
+	slices.SortStableFunc(loc, func(a, b located) int { return a.at - b.at })
 	for i := 1; i < len(loc); i++ {
-		if loc[i].at < loc[i-1].at {
-			return nil, errors.New("hashline: hunks must be ordered")
-		}
 		if loc[i].at < loc[i-1].at+loc[i-1].h.Delete {
 			return nil, errors.New("hashline: overlapping delete ranges")
 		}
