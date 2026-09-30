@@ -34,6 +34,24 @@ interventions:
   judge_backoff: 1.5
   judge_timeout_seconds: 20
   # judge_model: ramp/gpt-5.6-luna   # default: cheapest configured model
+# Shadow observations from TypeSafe's Jev classifier. Answers are recorded next
+# to the harness's own decision and never change behaviour. Each listed site
+# sends session content (task text, plan, tool calls, diffs) to TypeSafe.
+# jev:
+#   api_key: "!env TYPESAFE_API_KEY"
+#   shadow: [stall_judge, phase, difficulty, review]
+#   # Adds an intent parameter to search; broad matches are ranked by relevance.
+#   # Sends each matching file's path and sampled matching lines to TypeSafe.
+#   search_ranking: true
+#   # Jev-assisted independent review: triage the diff, size reviewers, downgrade
+#   # findings that are not bugs, decide when read-only workers have converged,
+#   # and accept low-risk parts of an inconclusive review. Sends changed files'
+#   # patches and reviewer findings to TypeSafe.
+#   review: true
+#   # Choose the phase of a turn that starts with a new user message, instead
+#   # of always planning it. Sends the message, task, and todo plan to TypeSafe.
+#   routing: true
+#   timeout_seconds: 5
 telemetry:
   otlp_endpoint: "http://localhost:4318"
 web_search:

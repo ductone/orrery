@@ -11,6 +11,8 @@ import (
 	"github.com/ductone/orrey/internal/model"
 	"github.com/ductone/orrey/internal/provider"
 	"github.com/ductone/orrey/internal/router"
+	"github.com/ductone/orrey/internal/shadow"
+	"github.com/ductone/orrey/internal/store"
 )
 
 // judgeMaxOutput bounds the verdict response. The judge answers a yes/no
@@ -76,6 +78,12 @@ func (e *Engine) judgeIntervention(ctx context.Context, sid, kind string, signal
 	}
 	content := fmt.Sprintf("Task:\n%s\n\nProposed intervention: %s\n\nCounter signals:\n%s\n\nRecent tool calls (oldest first):\n%s",
 		spec, kind, formatSignals(signals), digest)
+	// The shadow sees exactly the judge's evidence, so the two are comparable.
+	shadowID := ""
+	if cfg.Jev.Shadows("stall_judge") {
+		view := map[string]any{"task": truncate(spec, shadowSpecChars), "proposed_intervention": kind, "counter_signals": signals, "recent_tool_calls": digest}
+		shadowID = e.shadowAsk(ctx, sid, shadow.StallJudge, shadow.StallJudgeVersion, 0, view, shadow.StallQuestions(), map[string]any{"kind": kind})
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, cfg.Interventions.JudgeTimeout())
 	defer cancel()
@@ -92,6 +100,7 @@ func (e *Engine) judgeIntervention(ctx context.Context, sid, kind string, signal
 	resp, err := registry.CompleteOne(ctx, decision, build)
 	if err != nil {
 		e.emit(ctx, sid, "progress.judge", map[string]any{"kind": kind, "signals": signals, "model": m.ID, "error": err.Error()}, emit)
+		e.shadowUpdate(shadowID, e.store.SetShadowBaseline, map[string]any{"kind": kind, "judge_model": m.ID, "judge_error": err.Error()})
 		return judgeVerdict{}, false
 	}
 	cost := m.Pricing.EstimateDetailed(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CacheReadTokens, resp.Usage.CacheWriteTokens)
@@ -106,11 +115,13 @@ func (e *Engine) judgeIntervention(ctx context.Context, sid, kind string, signal
 	if !parsed {
 		payload["error"] = "unparseable verdict"
 		e.emit(ctx, sid, "progress.judge", payload, emit)
+		e.shadowUpdate(shadowID, e.store.SetShadowBaseline, map[string]any{"kind": kind, "judge_model": m.ID, "judge_error": "unparseable verdict"})
 		return judgeVerdict{}, false
 	}
 	payload["intervene"] = verdict.Intervene
 	payload["reason"] = verdict.Reason
 	e.emit(ctx, sid, "progress.judge", payload, emit)
+	e.shadowUpdate(shadowID, e.store.SetShadowBaseline, map[string]any{"kind": kind, "judge_model": m.ID, "intervene": verdict.Intervene, "reason": verdict.Reason})
 	return verdict, true
 }
 
@@ -167,6 +178,10 @@ func (e *Engine) recentActivityDigest(ctx context.Context, sid string) string {
 	if err != nil {
 		return ""
 	}
+	return activityDigest(messages)
+}
+
+func activityDigest(messages []store.Message) string {
 	var turns []string
 	for _, stored := range messages {
 		if stored.Role != "assistant" {

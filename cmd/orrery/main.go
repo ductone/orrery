@@ -13,6 +13,7 @@ import (
 	"github.com/ductone/orrey/internal/mcp"
 	"github.com/ductone/orrey/internal/provider"
 	rpcserver "github.com/ductone/orrey/internal/rpc"
+	"github.com/ductone/orrey/internal/shadow"
 	"github.com/ductone/orrey/internal/store"
 	"github.com/ductone/orrey/internal/telemetry"
 	"github.com/ductone/orrey/internal/web"
@@ -21,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -45,8 +47,10 @@ type runtime struct {
 func main() { os.Exit(realMain()) }
 func realMain() int {
 	global := flag.NewFlagSet("orrery", flag.ContinueOnError)
-	configPath := global.String("config", "orrery.yaml", "configuration file")
+	global.Usage = usage
+	configFlag := global.String("config", "", "configuration file (default: ./orrery.yaml, then ~/.orrery/orrery.yaml)")
 	showVersion := global.Bool("version", false, "print version")
+	prompt := global.String("p", "", "with no command, start the terminal UI and send this message")
 	if err := global.Parse(os.Args[1:]); err != nil {
 		return 2
 	}
@@ -55,20 +59,63 @@ func realMain() int {
 		return 0
 	}
 	args := global.Args()
-	cmd := "serve"
+	var cmd string
 	if len(args) > 0 {
-		cmd = args[0]
-		args = args[1:]
+		cmd, args = args[0], args[1:]
+		if *prompt != "" {
+			fmt.Fprintf(os.Stderr, "-p before a command is only for starting the terminal UI; use `orrery %s -p ...`\n", cmd)
+			return 2
+		}
+	} else {
+		// Bare orrery is an interactive session in the current directory. It
+		// never falls back to serve: a command that silently changes mode with
+		// its environment is harder to reason about than one that refuses.
+		if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
+			fmt.Fprintln(os.Stderr, "orrery with no command starts the terminal UI, which needs a terminal; name a command instead")
+			usage()
+			return 2
+		}
+		cmd = "tui"
+		if *prompt != "" {
+			args = []string{"-p", *prompt}
+		}
 	}
+	if !slices.Contains(commands, cmd) {
+		fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
+		if guess := closestCommand(cmd); guess != "" {
+			fmt.Fprintf(os.Stderr, "did you mean %q?\n", guess)
+		}
+		usage()
+		return 2
+	}
+	if cmd == "help" || cmd == "-h" || cmd == "--help" {
+		usage()
+		return 0
+	}
+	cfgPath, found, searched, err := config.Resolve(*configFlag)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	ref := configRef{path: cfgPath, found: found, searched: searched}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if cmd == "tui" {
-		return runTUI(ctx, *configPath, args)
+		return runTUI(ctx, ref, args)
 	}
-	rt, err := openRuntime(ctx, *configPath)
+	rt, err := openRuntime(ctx, cfgPath)
 	if err != nil {
 		slog.Error("startup", "error", err)
 		return 2
+	}
+	if cmd != "export" && cmd != "shadow" {
+		if err := ref.requireProviders(rt.cfg); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = rt.close(c)
+			return 2
+		}
 	}
 	defer func() {
 		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -82,15 +129,14 @@ func realMain() int {
 		return run(ctx, rt, args)
 	case "export":
 		return export(ctx, rt, args)
+	case "shadow":
+		return exportShadow(ctx, rt, args)
 	case "eval", "benchmark":
 		return evaluate(ctx, rt, args)
 	case "rpc":
 		return serveRPC(ctx, rt, rpcserver.Native)
 	case "acp":
 		return serveRPC(ctx, rt, rpcserver.ACP)
-	case "help", "-h", "--help":
-		usage()
-		return 0
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
 		usage()
@@ -124,7 +170,7 @@ func openRuntime(ctx context.Context, path string) (*runtime, error) {
 		s.Close()
 		return nil, err
 	}
-	mc, err := mcp.New(ctx, cfg.MCP, filepath.Join(".orrery", "logs"))
+	mc, err := mcp.New(ctx, cfg.MCP, logDir())
 	if err != nil {
 		s.Close()
 		return nil, err
@@ -195,7 +241,7 @@ func (rt *runtime) phaseBoundary(ctx context.Context) error {
 		rt.pending.Store(true)
 		return fmt.Errorf("reload config: %w", err)
 	}
-	nextMCP, err := mcp.New(ctx, nextCfg.MCP, filepath.Join(".orrery", "logs"))
+	nextMCP, err := mcp.New(ctx, nextCfg.MCP, logDir())
 	if err != nil {
 		rt.pending.Store(true)
 		return fmt.Errorf("reload MCP: %w", err)
@@ -291,6 +337,46 @@ func export(ctx context.Context, rt *runtime, args []string) int {
 	}
 	return 0
 }
+
+// exportShadow emits shadow observations as JSONL, each with the checks it
+// supports, or summarises them. Recorded state carries source content, so it
+// is withheld unless asked for.
+func exportShadow(ctx context.Context, rt *runtime, args []string) int {
+	fs := flag.NewFlagSet("shadow", flag.ContinueOnError)
+	sinceArg := fs.String("since", "0", "RFC3339 timestamp or duration such as 24h")
+	site := fs.String("site", "", "only this site: stall_judge, turn, spawn, review_risk, or review_verdict")
+	includeState := fs.Bool("include-state", false, "include the state sent to Jev (contains source content)")
+	report := fs.Bool("report", false, "print an agreement and calibration summary instead of JSONL")
+	if fs.Parse(args) != nil {
+		return 2
+	}
+	since, err := parseSince(*sinceArg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	records, err := rt.store.ShadowRecords(ctx, since, *site, *includeState && !*report)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if *report {
+		shadow.WriteReport(os.Stdout, records)
+		return 0
+	}
+	enc := json.NewEncoder(os.Stdout)
+	for _, r := range records {
+		row := struct {
+			store.ShadowRecord
+			Checks []shadow.Check `json:"checks"`
+		}{r, shadow.Checks(r)}
+		if err := enc.Encode(row); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
+	return 0
+}
 func evaluate(ctx context.Context, rt *runtime, args []string) int {
 	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
 	set := fs.String("set", "", "replay set JSONL")
@@ -361,8 +447,78 @@ func parseSince(v string) (time.Time, error) {
 	}
 	return time.Parse(time.RFC3339, v)
 }
+
+// commands lists every subcommand, for dispatch and typo suggestions.
+var commands = []string{"serve", "run", "tui", "rpc", "acp", "export", "shadow", "eval", "benchmark", "help", "-h", "--help"}
+
+// configRef records where the configuration came from, so startup errors can
+// say where Orrery looked.
+type configRef struct {
+	path     string
+	found    bool
+	searched []string
+}
+
+// requireProviders fails commands that call models when none are configured.
+// Without it, a missing config yields defaults with no providers and the first
+// turn fails deep inside routing.
+func (c configRef) requireProviders(cfg config.Config) error {
+	if len(cfg.Providers) > 0 {
+		return nil
+	}
+	if !c.found {
+		return fmt.Errorf("no configuration found (looked for %s); create %s from orrery.example.yaml", strings.Join(c.searched, " and "), filepath.Join(config.Home(), "orrery.yaml"))
+	}
+	return fmt.Errorf("config %s configures no model providers", c.path)
+}
+
+// logDir holds engine, MCP, and terminal UI logs. They live beside the user
+// database rather than in whichever directory Orrery was started from.
+func logDir() string { return filepath.Join(config.Home(), "logs") }
+
+func isTerminal(f *os.File) bool {
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+// closestCommand suggests a command within two edits of a typo.
+func closestCommand(typo string) string {
+	best, bestDist := "", 3
+	for _, c := range commands {
+		if strings.HasPrefix(c, "-") {
+			continue
+		}
+		if d := editDistance(typo, c); d < bestDist {
+			best, bestDist = c, d
+		}
+	}
+	return best
+}
+
+func editDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur := make([]int, len(b)+1)
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(b)]
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, `usage: orrery [--config path] <command>
+	fmt.Fprintln(os.Stderr, `usage: orrery [--config path] [-p "message"]   start a terminal UI session here
+       orrery [--config path] <command>
+config: --config, else $ORRERY_CONFIG, else ./orrery.yaml, else ~/.orrery/orrery.yaml
 commands:
   serve [--listen address]       run the web UI and HTTP/SSE transport
   run -p "task" [--workspace]    run one task; emit JSON TaskResult
@@ -370,6 +526,7 @@ commands:
   rpc                            serve Orrery JSON-RPC 2.0 over stdio
   acp                            serve ACP v1 over stdio
   export [--since 24h]           emit routing records as JSONL
+  shadow [--report] [--since]    emit or summarise Jev shadow observations
   eval --set tasks.jsonl         run a replay set
   benchmark --set cases.jsonl    run isolated engineering cases and compare trends`)
 }

@@ -13,13 +13,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/ductone/orrey/internal/agentproto"
+	"github.com/ductone/orrey/internal/jev"
 	"github.com/ductone/orrey/internal/lsp"
 	"github.com/ductone/orrey/internal/model"
 	"github.com/ductone/orrey/internal/provider"
 	"github.com/ductone/orrey/internal/router"
+	"github.com/ductone/orrey/internal/shadow"
 	"github.com/ductone/orrey/internal/store"
 	builtin "github.com/ductone/orrey/internal/tools"
 	"github.com/google/uuid"
@@ -56,6 +57,9 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 	r := builtin.NewWithStateDialect(root, state, string(dialect))
 	if req.Workspace.Mode == "read" {
 		r = builtin.NewReadOnlyWithStateDialect(root, state, string(dialect))
+	}
+	if runtimeCfg.Jev.SearchRanking && runtimeCfg.Jev.APIKey != "" {
+		r.EnableSearchRanking(builtin.JevRanker{Client: jev.New(runtimeCfg.Jev.APIKey, runtimeCfg.Jev.BaseURL, runtimeCfg.Jev.Model, runtimeCfg.Jev.Timeout()), Concurrency: 16})
 	}
 	r.Add("ask", "Pause safely and request information that is genuinely required to continue. Do not use for permission or questions answerable from the workspace.", obj(map[string]any{"question": str(), "choices": map[string]any{"type": "array", "items": str()}, "allow_freeform": map[string]any{"type": "boolean"}}, "question"), func(ctx context.Context, a map[string]any) (any, error) {
 		var choices []string
@@ -221,7 +225,19 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 	return r
 }
 
+// spawnOptions carry harness-only worker settings that the spawn tool's
+// arguments do not expose to models.
+type spawnOptions struct {
+	tierPin         string
+	workerTurns     int
+	excludeFamilies []string
+}
+
 func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentproto.TaskRequest, a map[string]any, emit EmitFunc) (any, error) {
+	return e.spawnWith(ctx, sid, parent, parentReq, a, spawnOptions{}, emit)
+}
+
+func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq agentproto.TaskRequest, a map[string]any, opts spawnOptions, emit EmitFunc) (any, error) {
 	fraction := .0
 	if x, ok := a["budget_fraction"].(float64); ok {
 		fraction = x
@@ -290,6 +306,14 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 	}
 	_, runtimeProviders, runtimePolicy, _, _ := e.runtimeSnapshot()
 	jobState := router.RoutingState{SessionID: sid, Turn: parentSession.Turn, Point: point, Phase: phase, InputTokens: estimate(spec), EstimatedOutput: 4000, AvailableModels: runtimeProviders.AvailableIDs(), ImplementerFamily: model.Family(child.Hints.ImplementerFamily)}
+	if opts.workerTurns > 0 {
+		child.Hints.WorkerTurns = opts.workerTurns
+	}
+	child.Hints.FamilyExcludes = append(child.Hints.FamilyExcludes, opts.excludeFamilies...)
+	for _, f := range opts.excludeFamilies {
+		jobState.ExcludeFamilies = append(jobState.ExcludeFamilies, model.Family(f))
+	}
+	jobState.TierPin = model.Tier(opts.tierPin)
 	if phase == router.Explore {
 		child.Depth = 0
 		child.Budget.MaxDepth = 0
@@ -297,10 +321,24 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 		child.Budget.MaxUSD = min(child.Budget.MaxUSD, 0.35)
 	}
 	jobDecision, jobWhy, err := runtimePolicy.Decide(ctx, jobState)
+	if err != nil && (opts.tierPin != "" || len(opts.excludeFamilies) > 0) {
+		// Harness preferences (a cheaper tier, a different family for a retry)
+		// are not requirements: fall back to ordinary routing when nothing
+		// satisfies them, as on a single-provider deployment.
+		jobState.TierPin = ""
+		jobState.ExcludeFamilies = jobState.ExcludeFamilies[:len(jobState.ExcludeFamilies)-len(opts.excludeFamilies)]
+		child.Hints.FamilyExcludes = child.Hints.FamilyExcludes[:len(child.Hints.FamilyExcludes)-len(opts.excludeFamilies)]
+		jobDecision, jobWhy, err = runtimePolicy.Decide(ctx, jobState)
+	}
 	if err != nil {
 		return nil, err
 	}
 	child.Hints.TierPin = string(jobDecision.Model.Tier)
+	spawnShadow := ""
+	if cfg, _, _, _, _ := e.runtimeSnapshot(); !review && cfg.Jev.Shadows("difficulty") {
+		view := map[string]any{"worker_spec": truncate(spec, shadowSpecChars), "phase": string(phase), "workspace_mode": workspaceMode}
+		spawnShadow = e.shadowAsk(ctx, sid, shadow.Spawn, shadow.SpawnVersion, parentSession.Turn, view, shadow.SpawnQuestions(), map[string]any{"job_id": id, "model": jobDecision.Model.ID, "tier": string(jobDecision.Model.Tier), "effort": string(jobDecision.Effort), "phase": string(phase)})
+	}
 	j := store.Job{ID: id, SessionID: sid, ParentJobID: parent, Spec: spec, ResultSchemaJSON: store.JSON(schema), BudgetJSON: store.JSON(child.Budget), WorkspaceJSON: store.JSON(child.Workspace), HintsJSON: store.JSON(child.Hints), Depth: int(child.Depth), Model: jobDecision.Model.ID, Status: "running"}
 	if err := e.store.CreateJob(ctx, j); err != nil {
 		return nil, err
@@ -320,10 +358,11 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 		_ = e.store.FinishJob(context.Background(), id, string(result.Status), result.Result, result.Outcome)
 		_ = e.store.AddSpend(context.Background(), sid, result.Outcome.CostUSD)
 		_ = e.store.UpdateLatestJobRoutingOutcome(context.Background(), sid, result)
+		e.shadowUpdate(spawnShadow, e.store.SetShadowOutcome, map[string]any{"status": string(result.Status), "cost_usd": result.Outcome.CostUSD, "tool_errors": result.Outcome.ToolErrors, "no_progress_turns": result.Outcome.NoProgressTurns})
 		_ = os.WriteFile(filepath.Join(jobDir, "result.json"), []byte(store.JSON(result)), 0600)
 		_ = os.WriteFile(filepath.Join(jobDir, "status"), []byte(string(result.Status)+"\n"), 0600)
 		if injectHandoff {
-			_ = e.store.AddMessage(context.Background(), sid, "user", provider.Message{Role: "user", Content: "Worker job " + id + " completed. Treat this durable result as a worker handoff and advance the todo without repeating completed work: " + store.JSON(result)})
+			_ = e.store.AddMessage(context.Background(), sid, "user", provider.Message{Role: "user", Harness: true, Content: "Worker job " + id + " completed. Treat this durable result as a worker handoff and advance the todo without repeating completed work: " + store.JSON(result)})
 		}
 		e.emit(context.Background(), sid, "job.terminal", map[string]any{"id": id, "parent_session_id": sid, "parent_job_id": parent, "result": result}, emit)
 	}
@@ -334,42 +373,6 @@ func (e *Engine) spawn(ctx context.Context, sid, parent string, parentReq agentp
 	}
 	go func() { finishJob(runJob(context.Background()), true) }()
 	return map[string]any{"id": id, "status": "running", "uri": "job://" + id + "/result"}, nil
-}
-
-func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req agentproto.TaskRequest, emit EmitFunc) (bool, string, error) {
-	diff, err := collectWorkspaceDiff(ctx, req.Workspace.Path)
-	if err != nil {
-		return false, "", fmt.Errorf("collect diff: %w", err)
-	}
-	if len(diff) == 0 {
-		return true, "no diff", nil
-	}
-	job, err := e.spawn(ctx, sid, parent, req, map[string]any{
-		"spec":            "Review this proposed workspace diff. Report only correctness bugs introduced by the patch. Return JSON with pass=true only if there are no correctness findings.\n\nDIFF\n" + string(diff),
-		"result_schema":   map[string]any{"type": "object", "properties": map[string]any{"pass": map[string]any{"type": "boolean"}, "findings": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "required": []string{"pass", "findings"}},
-		"budget_fraction": 0.10,
-		"workspace_mode":  "read",
-		"review":          true,
-		"phase":           "review",
-	}, emit)
-	if err != nil {
-		return false, "", fmt.Errorf("%w: spawn review worker: %v", ErrReviewInconclusive, err)
-	}
-	id := fmt.Sprint(job.(map[string]any)["id"])
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return false, "", fmt.Errorf("%w: review context cancelled: %v", ErrReviewInconclusive, ctx.Err())
-		case <-ticker.C:
-			j, getErr := e.store.Job(ctx, id)
-			if getErr != nil || j.Status == "running" {
-				continue
-			}
-			return classifyReviewJob(j)
-		}
-	}
 }
 
 // classifyReviewJob interprets a completed review job.
@@ -391,7 +394,10 @@ func classifyReviewJob(j store.Job) (bool, string, error) {
 	return passed, store.JSON(result), nil
 }
 
-const maxReviewDiff = 120_000
+// maxReviewDiff bounds how much diff is collected for review planning. The
+// plan decides what each reviewer reads, so this is a memory bound, not a
+// reviewer budget.
+const maxReviewDiff = 4 << 20
 
 func workspaceHasReviewableChanges(ctx context.Context, workspace string) (bool, error) {
 	if !isGitWorkspace(ctx, workspace) {

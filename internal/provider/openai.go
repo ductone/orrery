@@ -102,6 +102,9 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 			ts = append(ts, map[string]any{"type": "function", "function": fn})
 		}
 		body["tools"] = ts
+		if r.NoToolCalls {
+			body["tool_choice"] = "none"
+		}
 	}
 	b, _ := json.Marshal(body)
 	start := time.Now()
@@ -166,7 +169,7 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 		}
 		msg.ToolCalls = append(msg.ToolCalls, ToolCall{tc.ID, name, args})
 	}
-	return Response{Message: msg, Usage: Usage{InputTokens: out.Usage.Prompt, OutputTokens: out.Usage.Completion, CacheReadTokens: out.Usage.Details.Cached, CacheWriteTokens: out.Usage.Details.CacheWrite}, StopReason: ch.Finish, Latency: time.Since(start), Model: out.Model}, nil
+	return Response{Message: msg, Usage: Usage{InputTokens: out.Usage.Prompt, OutputTokens: out.Usage.Completion, CacheReadTokens: out.Usage.Details.Cached, CacheWriteTokens: out.Usage.Details.CacheWrite}, StopReason: ch.Finish, Truncated: ch.Finish == "length", OutputKinds: chatOutputKinds(msg), Latency: time.Since(start), Model: out.Model}, nil
 }
 
 func imageURL(image Image) string {
@@ -245,4 +248,20 @@ func strictify(v any, nullable bool) any {
 		return map[string]any{"anyOf": []any{out, map[string]any{"type": "null"}}}
 	}
 	return out
+}
+
+// chatOutputKinds describes a chat completion's message in the same terms as
+// the Responses and Messages adapters report output items.
+func chatOutputKinds(m Message) []string {
+	var kinds []string
+	if m.Reasoning != "" {
+		kinds = append(kinds, "reasoning")
+	}
+	if m.Content != "" {
+		kinds = append(kinds, "message")
+	}
+	for range m.ToolCalls {
+		kinds = append(kinds, "function_call")
+	}
+	return kinds
 }

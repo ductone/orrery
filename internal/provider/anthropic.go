@@ -67,6 +67,13 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 		if x.Role == "tool" {
 			content = []any{map[string]any{"type": "tool_result", "tool_use_id": x.ToolCallID, "content": x.Content}}
 		}
+		// Tool results travel as user messages, so a user message after them
+		// would repeat the role; merge instead, keeping tool results first.
+		if n := len(msgs); n > 0 && msgs[n-1].(map[string]any)["role"] == mapRole(x.Role) {
+			prev := msgs[n-1].(map[string]any)
+			prev["content"] = append(prev["content"].([]any), content...)
+			continue
+		}
 		msgs = append(msgs, map[string]any{"role": mapRole(x.Role), "content": content})
 	}
 	body := map[string]any{"model": wireModel(m.ID), "max_tokens": min(r.MaxOutput, m.MaxOutput), "system": system, "messages": msgs}
@@ -79,6 +86,9 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 			ts = append(ts, map[string]any{"name": toWire[t.Name], "description": t.Description, "input_schema": toolInputSchema(t.InputSchema)})
 		}
 		body["tools"] = ts
+		if r.NoToolCalls {
+			body["tool_choice"] = map[string]any{"type": "none"}
+		}
 	}
 	b, _ := json.Marshal(body)
 	start := time.Now()
@@ -120,7 +130,9 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 		return Response{}, err
 	}
 	msg := Message{Role: "assistant"}
+	kinds := make([]string, 0, len(wire.Content))
 	for _, b := range wire.Content {
+		kinds = append(kinds, b.Type)
 		if b.Type == "text" {
 			msg.Content += b.Text
 		}
@@ -135,7 +147,7 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 			msg.ToolCalls = append(msg.ToolCalls, ToolCall{b.ID, name, b.Input})
 		}
 	}
-	return Response{Message: msg, Usage: Usage{wire.Usage.Input + wire.Usage.CacheRead + wire.Usage.CacheWrite, wire.Usage.Output, wire.Usage.CacheRead, wire.Usage.CacheWrite}, StopReason: wire.StopReason, Latency: time.Since(start), Model: wire.Model}, nil
+	return Response{Message: msg, Usage: Usage{wire.Usage.Input + wire.Usage.CacheRead + wire.Usage.CacheWrite, wire.Usage.Output, wire.Usage.CacheRead, wire.Usage.CacheWrite}, StopReason: wire.StopReason, Truncated: wire.StopReason == "max_tokens", OutputKinds: kinds, Latency: time.Since(start), Model: wire.Model}, nil
 }
 
 func wireToolName(name string) string {

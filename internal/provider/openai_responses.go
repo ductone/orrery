@@ -72,6 +72,9 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 			tools = append(tools, tool)
 		}
 		body["tools"] = tools
+		if r.NoToolCalls {
+			body["tool_choice"] = "none"
+		}
 	}
 	b, _ := json.Marshal(body)
 	start := time.Now()
@@ -91,8 +94,11 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 		return Response{}, &HTTPError{resp.StatusCode, string(raw)}
 	}
 	var out struct {
-		Model  string `json:"model"`
-		Status string `json:"status"`
+		Model             string `json:"model"`
+		Status            string `json:"status"`
+		IncompleteDetails struct {
+			Reason string `json:"reason"`
+		} `json:"incomplete_details"`
 		Output []struct {
 			Type      string `json:"type"`
 			CallID    string `json:"call_id"`
@@ -120,7 +126,9 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 		return Response{}, &ResponseDecodeError{Err: err}
 	}
 	msg := Message{Role: "assistant"}
+	kinds := make([]string, 0, len(out.Output))
 	for _, item := range out.Output {
+		kinds = append(kinds, item.Type)
 		switch item.Type {
 		case "message":
 			for _, part := range item.Content {
@@ -149,5 +157,9 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 			msg.ToolCalls = append(msg.ToolCalls, ToolCall{item.CallID, name, args})
 		}
 	}
-	return Response{Message: msg, Usage: Usage{InputTokens: out.Usage.Input, OutputTokens: out.Usage.Output, CacheReadTokens: out.Usage.Details.Cached, CacheWriteTokens: out.Usage.Details.CacheWrite}, StopReason: out.Status, Latency: time.Since(start), Model: out.Model}, nil
+	stop := out.Status
+	if out.IncompleteDetails.Reason != "" {
+		stop += ":" + out.IncompleteDetails.Reason
+	}
+	return Response{Message: msg, Usage: Usage{InputTokens: out.Usage.Input, OutputTokens: out.Usage.Output, CacheReadTokens: out.Usage.Details.Cached, CacheWriteTokens: out.Usage.Details.CacheWrite}, StopReason: stop, Truncated: out.IncompleteDetails.Reason == "max_output_tokens", OutputKinds: kinds, Latency: time.Since(start), Model: out.Model}, nil
 }

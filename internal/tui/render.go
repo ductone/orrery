@@ -376,16 +376,48 @@ func (r *renderer) readLines(result any) []string {
 	return r.genericLines(result)
 }
 
+// searchLines renders a search result: a plain list of matches, a truncated
+// page with totals, or files ranked by relevance to an intent.
 func (r *renderer) searchLines(result any) []string {
-	items, ok := result.([]any)
-	if !ok {
-		return r.genericLines(result)
-	}
-	out := make([]string, 0, len(items))
-	for _, raw := range items {
+	var out []string
+	match := func(path any, raw any) {
 		m, _ := raw.(map[string]any)
+		if path == nil {
+			path = m["path"]
+		}
 		line, _ := m["line"].(float64)
-		out = append(out, r.st.accentDim.Render(formatAny(m["path"])+":"+strconv.Itoa(int(line)))+" "+r.st.signal.Render(strings.TrimSpace(formatAny(m["text"]))))
+		out = append(out, r.st.accentDim.Render(formatAny(path)+":"+strconv.Itoa(int(line)))+" "+r.st.signal.Render(strings.TrimSpace(formatAny(m["text"]))))
+	}
+	switch x := result.(type) {
+	case []any:
+		for _, raw := range x {
+			match(nil, raw)
+		}
+	case map[string]any:
+		if files, ok := x["files"].([]any); ok {
+			for _, raw := range files {
+				f, _ := raw.(map[string]any)
+				out = append(out, r.st.muted.Render(fmt.Sprintf("%s  relevance %.2f", formatAny(f["path"]), f["relevance"])))
+				lines, _ := f["matches"].([]any)
+				for _, l := range lines {
+					match(f["path"], l)
+				}
+			}
+			if n, _ := x["below_cutoff_count"].(float64); n > 0 {
+				out = append(out, r.st.muted.Render(fmt.Sprintf("%d lower-relevance files not shown", int(n))))
+			}
+		} else if matches, ok := x["matches"].([]any); ok {
+			for _, raw := range matches {
+				match(nil, raw)
+			}
+			if total, _ := x["total_matches"].(float64); int(total) > len(matches) {
+				out = append(out, r.st.muted.Render(fmt.Sprintf("showing %d of %d matches", len(matches), int(total))))
+			}
+		} else {
+			return r.genericLines(result)
+		}
+	default:
+		return r.genericLines(result)
 	}
 	if len(out) == 0 {
 		return []string{r.st.muted.Render("no matches")}
@@ -438,6 +470,9 @@ func toolArgSummary(name string, args map[string]any) string {
 		p := "/" + str("pattern") + "/"
 		if g := str("glob"); g != "" {
 			p += " " + g
+		}
+		if i := str("intent"); i != "" {
+			p += " · " + i
 		}
 		return p
 	case "edit":

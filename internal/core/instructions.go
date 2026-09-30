@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ductone/orrey/internal/provider"
+	builtin "github.com/ductone/orrey/internal/tools"
 	"gopkg.in/yaml.v3"
 )
 
@@ -244,17 +245,13 @@ func (d *instructionDiscovery) forPath(raw string, forceFile bool) []workspaceIn
 }
 
 func (d *instructionDiscovery) ForSearchResults(value any) []workspaceInstruction {
-	rows, ok := value.([]map[string]any)
-	if !ok {
-		return nil
-	}
 	var out []workspaceInstruction
 	seen := map[string]bool{}
-	for i, row := range rows {
+	for i, path := range builtin.SearchResultPaths(value) {
 		if i >= 32 {
 			break
 		}
-		for _, doc := range d.ForPath(fmt.Sprint(row["path"])) {
+		for _, doc := range d.ForPath(path) {
 			if !seen[doc.Path] {
 				seen[doc.Path] = true
 				out = append(out, doc)

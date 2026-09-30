@@ -207,6 +207,7 @@ type RoutingHints struct {
 	FamilyExcludes    []string               `protobuf:"bytes,2,rep,name=family_excludes,json=familyExcludes,proto3" json:"family_excludes,omitempty"`
 	Review            bool                   `protobuf:"varint,3,opt,name=review,proto3" json:"review,omitempty"`
 	ImplementerFamily string                 `protobuf:"bytes,4,opt,name=implementer_family,json=implementerFamily,proto3" json:"implementer_family,omitempty"`
+	WorkerTurns       uint32                 `protobuf:"varint,5,opt,name=worker_turns,json=workerTurns,proto3" json:"worker_turns,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -267,6 +268,13 @@ func (x *RoutingHints) GetImplementerFamily() string {
 		return x.ImplementerFamily
 	}
 	return ""
+}
+
+func (x *RoutingHints) GetWorkerTurns() uint32 {
+	if x != nil {
+		return x.WorkerTurns
+	}
+	return 0
 }
 
 type AttachmentRef struct {
@@ -990,12 +998,13 @@ const file_agent_proto_rawDesc = "" +
 	"\tmax_depth\x18\x04 \x01(\rR\bmaxDepth\"3\n" +
 	"\tWorkspace\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n" +
-	"\x04mode\x18\x02 \x01(\tR\x04mode\"\x99\x01\n" +
+	"\x04mode\x18\x02 \x01(\tR\x04mode\"\xbc\x01\n" +
 	"\fRoutingHints\x12\x19\n" +
 	"\btier_pin\x18\x01 \x01(\tR\atierPin\x12'\n" +
 	"\x0ffamily_excludes\x18\x02 \x03(\tR\x0efamilyExcludes\x12\x16\n" +
 	"\x06review\x18\x03 \x01(\bR\x06review\x12-\n" +
-	"\x12implementer_family\x18\x04 \x01(\tR\x11implementerFamily\"n\n" +
+	"\x12implementer_family\x18\x04 \x01(\tR\x11implementerFamily\x12!\n" +
+	"\fworker_turns\x18\x05 \x01(\rR\vworkerTurns\"n\n" +
 	"\rAttachmentRef\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x1d\n" +

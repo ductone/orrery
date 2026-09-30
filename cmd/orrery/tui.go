@@ -16,7 +16,7 @@ import (
 // attaches to a running `orrery serve` and never opens the local store, so a
 // TUI can share a session with the web UI without two processes owning one
 // SQLite database.
-func runTUI(ctx context.Context, configPath string, args []string) int {
+func runTUI(ctx context.Context, ref configRef, args []string) int {
 	squireTask := os.Getenv("SQUIRE_TASK_ID")
 	home, _ := os.UserHomeDir()
 	fs := flag.NewFlagSet("tui", flag.ContinueOnError)
@@ -79,16 +79,24 @@ func runTUI(ctx context.Context, configPath string, args []string) int {
 
 	// The embedded engine, MCP servers, and language servers log to stderr;
 	// route that to a file so it cannot tear the terminal UI.
-	logPath := filepath.Join(".orrery", "logs", "tui.log")
+	logPath := filepath.Join(logDir(), "tui.log")
 	restore, err := redirectStderr(logPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "redirect logs:", err)
 		return 1
 	}
-	rt, err := openRuntime(ctx, configPath)
+	rt, err := openRuntime(ctx, ref.path)
 	if err != nil {
 		restore()
 		fmt.Fprintln(os.Stderr, "startup:", err)
+		return 2
+	}
+	if err := ref.requireProviders(rt.cfg); err != nil {
+		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = rt.close(c)
+		cancel()
+		restore()
+		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
 	opts.Backend = tui.NewLocal(ctx, rt.engine)

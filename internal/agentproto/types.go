@@ -36,6 +36,9 @@ type RoutingHints struct {
 	FamilyExcludes    []string `json:"family_excludes,omitempty"`
 	Review            bool     `json:"review,omitempty"`
 	ImplementerFamily string   `json:"implementer_family,omitempty"`
+	// WorkerTurns is the turn at which a read-only worker must start
+	// synthesising its result. Zero selects the harness default.
+	WorkerTurns int `json:"worker_turns,omitempty"`
 }
 type AttachmentRef struct {
 	ID        string `json:"id"`

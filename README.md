@@ -10,9 +10,12 @@ The project's goals, invariants, and intentional boundaries are recorded in the 
 
 ```sh
 go build ./cmd/orrery
-cp orrery.example.yaml orrery.yaml
-./orrery
+mkdir -p ~/.orrery && cp orrery.example.yaml ~/.orrery/orrery.yaml
+cd ~/code/some-repo && orrery        # terminal UI session in this directory
+orrery -p "Fix the failing tests"    # same, sending a first message
 ```
+
+Bare `orrery` starts a terminal UI session in the current directory; it needs a terminal, and scripts should name a command. Configuration is `--config`, else `$ORRERY_CONFIG`, else `./orrery.yaml` (a per-directory override), else `~/.orrery/orrery.yaml`. Relative paths inside a config file resolve against that file's directory. The database defaults to `~/.orrery/orrery.db` and logs go to `~/.orrery/logs/`; `$ORRERY_HOME` moves both. Commands that call models fail at startup when no providers are configured.
 
 Provider keys may be literal strings or `!cmd <command>` values. Secret commands are executed at startup and only their trimmed stdout is retained.
 
@@ -20,31 +23,31 @@ Provider keys may be literal strings or `!cmd <command>` values. Secret commands
 
 ```sh
 # Browser UI and SSE API on the configured localhost address
-./orrery --config orrery.yaml serve
+./orrery serve
 
 # Terminal UI bound to one session; attaches to `serve` with --server
-./orrery --config orrery.yaml tui "Fix the failing tests"
+./orrery tui "Fix the failing tests"
 ./orrery tui --server http://127.0.0.1:7433 --session SESSION_ID
 
 # CI-friendly headless task; TaskResult is JSON and status controls the exit code
-./orrery --config orrery.yaml run -p "Fix the failing tests" --workspace "$PWD"
+./orrery run -p "Fix the failing tests" --workspace "$PWD"
 
 # Embedding transports: newline-delimited JSON-RPC 2.0 or ACP v1 over stdio
-./orrery --config orrery.yaml rpc
-./orrery --config orrery.yaml acp
+./orrery rpc
+./orrery acp
 
 # Canonical learning dataset, with source content excluded
-./orrery --config orrery.yaml export --since 24h > routing.jsonl
+./orrery export --since 24h > routing.jsonl
 
 # Turn a completed session into a replay case, then compare policies
-./orrery --config orrery.yaml eval --build-session SESSION_ID --acceptance "go test ./..." >> replay.jsonl
-./orrery --config orrery.yaml eval --set replay.jsonl --policy frontier-pinned
-./orrery --config orrery.yaml eval --set replay.jsonl --policy v1
+./orrery eval --build-session SESSION_ID --acceptance "go test ./..." >> replay.jsonl
+./orrery eval --set replay.jsonl --policy frontier-pinned
+./orrery eval --set replay.jsonl --policy v1
 
 # Run the public-safe engineering suite and compare a candidate to a baseline
-./orrery --config orrery.yaml benchmark --set benchmarks/engineering/cases.jsonl \
+./orrery benchmark --set benchmarks/engineering/cases.jsonl \
   --policy v1 --output .orrery/benchmarks/baseline.json
-./orrery --config orrery.yaml benchmark --set benchmarks/engineering/cases.jsonl \
+./orrery benchmark --set benchmarks/engineering/cases.jsonl \
   --policy candidate --baseline .orrery/benchmarks/baseline.json
 ```
 
@@ -88,6 +91,53 @@ router:
   frontier_floor_phases: [plan, diagnose, review]
   disable_switch: false                        # true pins the session to one model
 ```
+
+## Jev shadow observations
+
+Orrery can ask TypeSafe's [Jev](https://docs.typesafe.ai/) classifier the same questions its own heuristics answer, and record the answers without acting on them. Enable sites under `jev.shadow`; nothing is sent unless a site is listed.
+
+| Site | Asked when | Compared with |
+|---|---|---|
+| `stall_judge` | the LLM stall judge runs, on the same evidence | the judge's verdict; also records a stall kind (capability, discipline, environment, missing information) |
+| `phase` | every turn, after routing | the phase the router used (review workers excluded, since their phase is fixed) |
+| `difficulty` | every turn and every worker spawn | the tier the router chose, and the worker's final status |
+| `review` | before each independent review (bug risk of the diff) and after an inconclusive one (reading the reviewer's output) | the review verdict, and the next conclusive review attempt |
+
+Calls run asynchronously on their own timeout, failures are recorded rather than surfaced, and shadow spend is not charged to the session budget. Observations live in the `shadow_observations` table with their question version, so changed wording never mixes with earlier data.
+
+```sh
+./orrery shadow --report                     # volume, latency, agreement by classifier certainty
+./orrery shadow --since 72h --site turn      # JSONL with per-record checks
+./orrery shadow --include-state | jq 'select(.checks[]?.agree == false)'   # disagreements to label by hand
+```
+
+`--include-state` adds the exact state sent to Jev, which contains source content; it is omitted by default.
+
+### Search ranking
+
+With `jev.search_ranking: true`, `search` gains an optional `intent` parameter. When the model passes one and the pattern matches more than 20 lines across several files, each matching file (up to 200) is scored by Jev for relevance to the intent, from its path and up to ten matching lines sampled across the file with surrounding context. Files come back in relevance order with their lines; files below 0.3 relevance are listed by path, score, and match count without their lines, so nothing disappears silently. The top three files always keep their lines. If ranking fails or times out, search returns its ordinary result with a `ranking_error`.
+
+Independently of Jev, a search that hits `max_results` now reports the total match count, the number of matching files, and the files with the most matches, instead of silently truncating in walk order.
+
+## Verification and review scope
+
+At the start of every run Orrery records the workspace's uncommitted state. Verification and independent review then look only at what the run changed: untracked notes, edits in progress, and staged work already in the checkout are left out, so they are neither reviewed nor sent to a reviewer or classifier.
+
+A run that changed files must run a successful check before it completes, unless it changed only prose documents (Markdown, reStructuredText, plain text) and assets. Checks are recognised by parsing the command, not by substring, so `npx markdownlint-cli2 doc.md`, `pnpm exec tsc`, `python -m pytest`, and `make lint/md` count while `cat tsconfig.json` does not. With `jev.review`, a successful command that is not recognised, such as a repository's own check script, counts when Jev judges it a meaningful check of the changed files. Completion is refused at most three times for missing verification; after that the gate is waived and the outcome records the change as unverified, since further refusals only teach a model to manufacture a check.
+
+A turn that starts with a message a person sent has been routed as planning, which floors it to a frontier model at high effort. Messages the harness writes itself (rejections, nudges, worker handoffs) are marked and never count as new instructions. With `jev.routing`, Jev reads a real message against the current plan and chooses the phase, so "keep going" or "also fix the typo" is routed as implementation rather than planning; below 0.8 confidence, or if Jev is unavailable, the turn is planned as before. Only the arriving turn is affected, and the choice is recorded in the routing record as `instruction_phase`.
+
+Phase changes compact history only at real boundaries: not when the history is small, not within six turns of the last compaction, and not when a session returns to a phase it left a few turns earlier.
+
+## Independent review
+
+When a worker changes the workspace, Orrery plans an independent review before any reviewer runs. The diff is split into files and classified: code (by extension and well-known names such as `Makefile` and `Dockerfile`) is always shown in full; assets, lockfiles, generated files, and binaries are listed without their patch; everything else (prose, data, configuration) is shown in full unless Jev judges it not to need a correctness review. A diff with nothing left to review is not reviewed.
+
+The rest is packed by top-level directory into at most four parallel reviewers of about 60K characters each; oversized patches are truncated with a pointer to the file, and code is never dropped. Each reviewer's turn limit grows with its share of the diff and with Jev's risk score, and a small low-risk review may use an efficient-tier model. Every reviewer's spec lists the files it was not shown, so it can read one when a finding depends on it.
+
+A part without a verdict is accepted when Jev finds the change low risk and every file in it clean; otherwise it is reviewed once more by another model family with more room. Findings Jev is fairly sure are not correctness bugs (style, naming, pre-existing problems) become notes, and a review whose findings are all notes passes. Read-only workers, reviewers included, synthesise when Jev judges they have enough evidence or have stopped covering new ground, between their soft turn limit and a hard one. Without `jev.review`, prose is reviewed in full, inconclusive parts are retried once, findings stand, and synthesis is forced at the soft limit. The plan, each decision, and every score are recorded as `review.*` and `worker.convergence` events.
+
+Turns that force a result or restrict tools keep the tool definitions and system prompt unchanged, so the cached prefix survives: the directive travels as a trailing message and calls are forbidden with `tool_choice`. A response cut off at the output limit is retried with a larger limit, and every response's stop reason and output kinds are recorded.
 
 ## Language servers
 

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ductone/orrey/internal/agentproto"
 	"github.com/ductone/orrey/internal/provider"
 )
 
@@ -116,7 +117,7 @@ func TestRootReviewAndDiagnosisHaveTerminalBounds(t *testing.T) {
 }
 
 func TestBoundedPhaseTransitions(t *testing.T) {
-	if shouldForceWorkerSynthesis(3) || !shouldForceWorkerSynthesis(4) {
+	if soft, _ := workerTurnLimits(agentproto.TaskRequest{}); soft != 4 {
 		t.Fatal("read-only worker synthesis boundary is not enforced")
 	}
 	p := newProgressTracker()

@@ -30,7 +30,25 @@ type progressTracker struct {
 	lastTodo                 string
 	turnProgress             bool
 	turnEdited, turnVerified bool
+	// editedPaths are files changed through the edit tool this run.
+	editedPaths map[string]bool
+	// checksSinceEdit are successful commands run since the last edit that
+	// were not recognised as verification; a classifier may still judge one a
+	// meaningful check of the change.
+	checksSinceEdit []commandRecord
+	// verificationRejections bounds how often completion is refused for
+	// missing verification, so an unverifiable change cannot loop.
+	verificationRejections int
+	verificationWaived     bool
 }
+
+// commandRecord is a command and the tail of its output.
+type commandRecord struct {
+	Command string `json:"command"`
+	Output  string `json:"output"`
+}
+
+const maxChecksSinceEdit = 8
 
 func newProgressTracker() *progressTracker {
 	return &progressTracker{seenResults: map[string]string{}, floors: map[string]int{}}
@@ -95,32 +113,41 @@ func (p *progressTracker) observe(call provider.ToolCall, value any, callErr err
 			p.edited = true
 			p.verified = false
 			p.reviewed = false
+			p.checksSinceEdit = nil
+			if path := stringArg(call.Arguments, "path"); path != "" {
+				if p.editedPaths == nil {
+					p.editedPaths = map[string]bool{}
+				}
+				p.editedPaths[path] = true
+			}
 		case "exec":
-			cmd := strings.ToLower(stringArg(call.Arguments, "command"))
-			if isVerificationCommand(cmd) {
+			command := stringArg(call.Arguments, "command")
+			if isVerificationCommand(strings.ToLower(command)) {
 				p.turnProgress = true
 				p.turnVerified = true
 				p.verified = true
+			} else if p.edited {
+				p.checksSinceEdit = append(p.checksSinceEdit, commandRecord{Command: command, Output: outputTail(value)})
+				if len(p.checksSinceEdit) > maxChecksSinceEdit {
+					p.checksSinceEdit = p.checksSinceEdit[1:]
+				}
 			}
 		}
 	}
 	return value
 }
 
-func isVerificationCommand(command string) bool {
-	command = strings.TrimSpace(strings.ToLower(command))
-	if command == "" || strings.Contains(command, "git diff --check") && !containsAny(command, "go test", "go vet", "go build", "cargo ", "pytest", "bazel ", "make ", "npm ", "pnpm ", "yarn ") {
-		return false
+// outputTail keeps the end of a command's summarised output for a classifier.
+func outputTail(value any) string {
+	m, ok := value.(map[string]any)
+	if !ok {
+		return ""
 	}
-	return containsAny(command,
-		"go test", "go vet", "go build",
-		"cargo test", "cargo check", "cargo clippy", "cargo build",
-		"pytest", "bazel test", "bazel build",
-		"make test", "make build", "make lint", "make typecheck", "make check",
-		"npm test", "npm run test", "npm run build", "npm run lint", "npm run typecheck",
-		"pnpm test", "pnpm build", "pnpm lint", "pnpm typecheck",
-		"yarn test", "yarn build", "yarn lint", "yarn typecheck",
-	)
+	s, _ := m["summary"].(string)
+	if len(s) > 1500 {
+		s = s[len(s)-1500:]
+	}
+	return s
 }
 
 func (p *progressTracker) endTurn() {
@@ -143,8 +170,6 @@ func (p *progressTracker) shouldDelegate() bool {
 func (p *progressTracker) shouldNudge() bool {
 	return p.nudges == 0 && (p.phase == "explore" || p.phase == "plan") && (p.noProgressTurns >= 4 || p.phaseTurns >= 7)
 }
-
-func shouldForceWorkerSynthesis(turn int) bool { return turn >= 4 }
 
 func (p *progressTracker) shouldForcePlanExecution() bool {
 	return p.repeatedTodos >= 2 || p.phaseTurns >= 6

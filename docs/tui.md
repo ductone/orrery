@@ -4,10 +4,10 @@
 
 ```sh
 # Embedded engine: start a session in the current directory
-./orrery --config orrery.yaml tui "Fix the failing tests"
+./orrery tui "Fix the failing tests"   # or just: orrery -p "Fix the failing tests"
 
 # Attach to (or resume) a session
-./orrery --config orrery.yaml tui --session SESSION_ID
+./orrery tui --session SESSION_ID
 
 # Attach to a running `orrery serve` instead of embedding the engine
 ./orrery tui --server http://127.0.0.1:7433 --external-id TASK_ID
@@ -17,7 +17,7 @@ The session in scope is, in order: `--session`; the session bound to `--external
 
 ## Local and remote modes
 
-Without `--server` (or `$ORRERY_SERVER`), the TUI embeds the engine and opens the configured database, like `orrery run`. Engine, MCP, and language-server stderr goes to `.orrery/logs/tui.log`. Quitting while a turn runs stops that turn; the session is marked interrupted and resumes with the next message.
+Without `--server` (or `$ORRERY_SERVER`), the TUI embeds the engine and opens the configured database, like `orrery run`. Engine, MCP, and language-server stderr goes to `~/.orrery/logs/tui.log`. Quitting while a turn runs stops that turn; the session is marked interrupted and resumes with the next message.
 
 With `--server`, the TUI never opens a local store. It streams `/api/v1/sessions/{id}/events` over SSE and uses the `/api/v1` session endpoints, so a TUI and the web UI can watch and drive the same session. Remote sessions are keyed by an external identity, so remote mode requires `--session` or `--external-id`. Quitting leaves a running turn running on the server.
 

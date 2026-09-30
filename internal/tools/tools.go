@@ -12,7 +12,6 @@ import (
 	"github.com/ductone/orrey/internal/provider"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path"
@@ -43,6 +42,7 @@ type Registry struct {
 	jobs     map[string]*commandJob
 	state    *SessionState
 	dialect  anchorDialect
+	ranker   SearchRanker
 }
 
 // SessionState holds edit recovery state across model turns. Engine tool
@@ -168,7 +168,7 @@ func NewReadOnlyWithStateDialect(root string, state *SessionState, dialect strin
 	state.mu.Unlock()
 	r := &Registry{root: root, handlers: map[string]Handler{}, schemes: map[string]Handler{}, jobs: map[string]*commandJob{}, state: state, dialect: anchorDialect(dialect)}
 	r.add("read", readDescription(r.dialect), schema(map[string]any{"path": str(), "start": num(), "limit": num(), "around_line": num()}, "path"), r.read)
-	r.add("search", "Regex search file contents with optional glob.", schema(map[string]any{"pattern": str(), "glob": str(), "max_results": num()}, "pattern"), r.search)
+	r.add("search", searchDescription, searchSchema(false), r.search)
 	return r
 }
 func (r *Registry) add(n, d string, s map[string]any, h Handler) {
@@ -334,54 +334,6 @@ func (r *Registry) read(ctx context.Context, a map[string]any) (any, error) {
 	hi := min(len(lines), lo+limit)
 	return lines[lo:hi], nil
 }
-func (r *Registry) search(ctx context.Context, a map[string]any) (any, error) {
-	re, err := regexp.Compile(asString(a["pattern"]))
-	if err != nil {
-		return nil, err
-	}
-	glob := asString(a["glob"])
-	maxResults := asInt(a["max_results"], 200)
-	out := []map[string]any{}
-	err = filepath.WalkDir(r.root, func(p string, d fs.DirEntry, e error) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if e != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if ignoredSearchDir(d.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		rel, _ := filepath.Rel(r.root, p)
-		if glob != "" {
-			ok := globMatch(glob, filepath.ToSlash(rel))
-			if !ok {
-				return nil
-			}
-		}
-		b, e := os.ReadFile(p)
-		if e != nil || len(b) > 4<<20 {
-			return nil
-		}
-		for i, line := range strings.Split(string(b), "\n") {
-			if re.MatchString(line) {
-				out = append(out, map[string]any{"path": rel, "line": i + 1, "text": line})
-				if len(out) >= maxResults {
-					return fs.SkipAll
-				}
-			}
-		}
-		return nil
-	})
-	return out, err
-}
-
 func ignoredSearchDir(name string) bool {
 	switch name {
 	case ".git", ".orrery", ".task-worktrees", "node_modules", "vendor", "local_vendor", "bazel-bin", "bazel-out", "bazel-testlogs", ".cache":
@@ -580,8 +532,8 @@ func (r *Registry) run(ctx context.Context, a map[string]any) (any, error) {
 	if cmdText == "" {
 		return nil, errors.New("command required")
 	}
-	if execMutatesSource(cmdText) {
-		return nil, errors.New("exec source mutation rejected; use the edit tool so changes are anchored, reviewable, and measured")
+	if reason := sourceMutation(cmdText, r.root); reason != "" {
+		return nil, fmt.Errorf("exec rejected: %s would modify workspace files. Use the edit tool for source changes so they are anchored, reviewable, and measured. Read-only commands, and writes to /dev/null, .orrery/, or paths outside the workspace, are allowed", reason)
 	}
 	cmd := exec.CommandContext(ctx, "sh", "-lc", cmdText)
 	cmd.Dir = r.root
@@ -621,28 +573,6 @@ func (r *Registry) run(ctx context.Context, a map[string]any) (any, error) {
 	}
 }
 
-func execMutatesSource(command string) bool {
-	s := strings.ToLower(command)
-	patterns := []string{
-		".write_text(", "os.writefile(", "ioutil.writefile(", "os.create(",
-		"sed -i", "sed --in-place", "perl -pi", "gofmt -w", "go fmt ",
-	}
-	for _, pattern := range patterns {
-		if strings.Contains(s, pattern) {
-			return true
-		}
-	}
-	for _, re := range []*regexp.Regexp{
-		regexp.MustCompile(`(^|[;&|]\s*)touch\s+`),
-		regexp.MustCompile(`(^|[;&|]\s*)(cat|printf|echo)\b[^\n]*>{1,2}\s*[^&]`),
-		regexp.MustCompile(`(^|[;&|]\s*)tee\s+`),
-	} {
-		if re.MatchString(s) {
-			return true
-		}
-	}
-	return false
-}
 func (r *Registry) job(ctx context.Context, a map[string]any) (any, error) {
 	id := asString(a["id"])
 	r.mu.Lock()

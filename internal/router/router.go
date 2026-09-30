@@ -58,23 +58,37 @@ type CacheEstimate struct {
 	TokensToCliff   int     `json:"tokens_to_cliff,omitempty"`
 }
 type RoutingState struct {
-	SessionID         string         `json:"session_id"`
-	Turn              int            `json:"turn"`
-	Point             DecisionPoint  `json:"decision_point"`
-	Phase             Phase          `json:"phase"`
-	CurrentModel      string         `json:"current_model,omitempty"`
-	InputTokens       int            `json:"input_tokens"`
-	EstimatedOutput   int            `json:"estimated_output"`
-	HasImage          bool           `json:"has_image,omitempty"`
-	ToolContinuation  bool           `json:"tool_continuation,omitempty"`
-	NewInstruction    bool           `json:"new_instruction,omitempty"`
-	Stall             StallSignals   `json:"stall"`
-	ExcludeFamilies   []model.Family `json:"exclude_families,omitempty"`
-	ExcludeModels     []string       `json:"exclude_models,omitempty"`
-	AvailableModels   []string       `json:"available_models,omitempty"`
-	TierPin           model.Tier     `json:"tier_pin,omitempty"`
-	ImplementerFamily model.Family   `json:"implementer_family,omitempty"`
+	SessionID        string        `json:"session_id"`
+	Turn             int           `json:"turn"`
+	Point            DecisionPoint `json:"decision_point"`
+	Phase            Phase         `json:"phase"`
+	CurrentModel     string        `json:"current_model,omitempty"`
+	InputTokens      int           `json:"input_tokens"`
+	EstimatedOutput  int           `json:"estimated_output"`
+	HasImage         bool          `json:"has_image,omitempty"`
+	ToolContinuation bool          `json:"tool_continuation,omitempty"`
+	NewInstruction   bool          `json:"new_instruction,omitempty"`
+	// InstructionPhase records how a new instruction's phase was chosen:
+	// "plan" by default, or a classifier's answer and its confidence.
+	InstructionPhase  *InstructionPhase `json:"instruction_phase,omitempty"`
+	Stall             StallSignals      `json:"stall"`
+	ExcludeFamilies   []model.Family    `json:"exclude_families,omitempty"`
+	ExcludeModels     []string          `json:"exclude_models,omitempty"`
+	AvailableModels   []string          `json:"available_models,omitempty"`
+	TierPin           model.Tier        `json:"tier_pin,omitempty"`
+	ImplementerFamily model.Family      `json:"implementer_family,omitempty"`
 }
+
+// InstructionPhase is the phase chosen for a turn that starts with a new user
+// message, and where the choice came from.
+type InstructionPhase struct {
+	Phase      Phase   `json:"phase"`
+	Source     string  `json:"source"`
+	Confidence float64 `json:"confidence,omitempty"`
+	Suggested  Phase   `json:"suggested,omitempty"`
+	Error      string  `json:"error,omitempty"`
+}
+
 type Candidate struct {
 	Model         string        `json:"model"`
 	Effort        model.Effort  `json:"effort"`

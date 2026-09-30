@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,6 +28,53 @@ type Config struct {
 	Instructions  []string                  `yaml:"instructions"`
 	LSP           map[string]LSPConfig      `yaml:"lsp"`
 	Interventions InterventionConfig        `yaml:"interventions"`
+	Jev           JevConfig                 `yaml:"jev"`
+}
+
+// JevConfig enables shadow observations from TypeSafe's Jev classifier. Shadow
+// answers are recorded next to the harness's own decision and never change
+// behaviour. Every listed site sends session content (task text, tool calls,
+// diffs) to TypeSafe, so nothing runs unless sites are named explicitly.
+type JevConfig struct {
+	APIKey  string `yaml:"api_key"`
+	BaseURL string `yaml:"base_url"`
+	Model   string `yaml:"model"`
+	// Shadow lists the decision sites to observe; see JevShadowSites.
+	Shadow []string `yaml:"shadow"`
+	// SearchRanking adds an intent parameter to search. When the model passes
+	// one, matching files are ranked by Jev, which receives each file's path
+	// and first matching lines. Unlike shadow sites this changes behaviour.
+	SearchRanking bool `yaml:"search_ranking"`
+	// Review lets Jev triage review diffs, size reviewers, downgrade findings
+	// that are not correctness bugs, decide when read-only workers have
+	// converged, and accept low-risk parts of an inconclusive review. It sends
+	// changed files' patches and reviewer findings to TypeSafe.
+	Review bool `yaml:"review"`
+	// Routing lets Jev choose the phase of a turn that starts with a new user
+	// message, instead of always routing it as planning. It sends the message,
+	// the task, and the todo plan to TypeSafe once per user message.
+	Routing bool `yaml:"routing"`
+	// TimeoutSeconds bounds each asynchronous call. Optional: zero means
+	// defaultJevTimeout.
+	TimeoutSeconds int `yaml:"timeout_seconds"`
+}
+
+// JevShadowSites are the decision sites that can be shadowed.
+var JevShadowSites = []string{"stall_judge", "phase", "difficulty", "review"}
+
+const defaultJevTimeout = 5 * time.Second
+
+// Shadows reports whether a site is shadowed.
+func (j JevConfig) Shadows(site string) bool {
+	return j.APIKey != "" && slices.Contains(j.Shadow, site)
+}
+
+// Timeout returns the configured per-call timeout, or the default.
+func (j JevConfig) Timeout() time.Duration {
+	if j.TimeoutSeconds <= 0 {
+		return defaultJevTimeout
+	}
+	return time.Duration(j.TimeoutSeconds) * time.Second
 }
 
 // InterventionConfig governs the LLM judge that gates expensive progress
@@ -161,10 +209,46 @@ type WebSearchConfig struct {
 	APIKey   string `yaml:"api_key"`
 }
 
+// Home is Orrery's user-level directory: the default config, database, and
+// logs live here. $ORRERY_HOME overrides ~/.orrery.
+func Home() string {
+	if dir := strings.TrimSpace(os.Getenv("ORRERY_HOME")); dir != "" {
+		return expandHome(dir)
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".orrery")
+}
+
+// LocalConfig is the per-directory override consulted before the user config.
+const LocalConfig = "orrery.yaml"
+
+// Resolve finds the configuration file. An explicit path (from --config) or
+// $ORRERY_CONFIG must exist. Otherwise ./orrery.yaml overrides
+// <Home>/orrery.yaml; found is false when neither exists, and the caller runs
+// on defaults. searched lists the candidates for error messages.
+func Resolve(explicit string) (path string, found bool, searched []string, err error) {
+	for _, pinned := range []struct{ path, source string }{{explicit, "--config"}, {os.Getenv("ORRERY_CONFIG"), "$ORRERY_CONFIG"}} {
+		if pinned.path == "" {
+			continue
+		}
+		if _, err := os.Stat(pinned.path); err != nil {
+			return "", false, []string{pinned.path}, fmt.Errorf("config %s (from %s): %w", pinned.path, pinned.source, err)
+		}
+		return pinned.path, true, []string{pinned.path}, nil
+	}
+	for _, candidate := range []string{LocalConfig, filepath.Join(Home(), "orrery.yaml")} {
+		searched = append(searched, candidate)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, true, searched, nil
+		}
+	}
+	return "", false, searched, nil
+}
+
 func Default() Config {
 	home, _ := os.UserHomeDir()
 	return Config{
-		Listen: "127.0.0.1:7433", WorkspaceRoot: filepath.Join(home, "src"), Database: ".orrery/orrery.db",
+		Listen: "127.0.0.1:7433", WorkspaceRoot: filepath.Join(home, "src"), Database: filepath.Join(Home(), "orrery.db"),
 		Providers: map[string]ProviderConfig{}, MCP: map[string]MCPConfig{},
 		LSP:    map[string]LSPConfig{},
 		Router: RouterConfig{LambdaCost: .35, FrontierFloorPhases: []string{"plan", "diagnose"}},
@@ -196,8 +280,11 @@ func LoadWithEnv(path string, overrides map[string]string) (Config, error) {
 	if cfg.Listen == "" || cfg.Database == "" {
 		return cfg, errors.New("config: listen and database must not be empty")
 	}
-	cfg.WorkspaceRoot = expandHome(cfg.WorkspaceRoot)
-	cfg.Database = expandHome(cfg.Database)
+	// Relative paths belong to the config file, not to wherever Orrery was
+	// started, so a user-level config does not scatter databases.
+	base := filepath.Dir(path)
+	cfg.WorkspaceRoot = relativeTo(base, expandHome(cfg.WorkspaceRoot))
+	cfg.Database = relativeTo(base, expandHome(cfg.Database))
 	if cfg.Router.LambdaCost < 0 {
 		return cfg, errors.New("config: router.lambda_cost must be non-negative")
 	}
@@ -217,6 +304,17 @@ func LoadWithEnv(path string, overrides map[string]string) (Config, error) {
 	}
 	if cfg.Interventions.JudgeTimeoutSeconds < 0 {
 		return cfg, errors.New("config: interventions.judge_timeout_seconds must be non-negative")
+	}
+	for _, site := range cfg.Jev.Shadow {
+		if !slices.Contains(JevShadowSites, site) {
+			return cfg, fmt.Errorf("config: jev.shadow site %q is unknown; valid sites are %s", site, strings.Join(JevShadowSites, ", "))
+		}
+	}
+	if (len(cfg.Jev.Shadow) > 0 || cfg.Jev.SearchRanking || cfg.Jev.Review || cfg.Jev.Routing) && cfg.Jev.APIKey == "" {
+		return cfg, errors.New("config: jev.shadow, jev.search_ranking, jev.review, and jev.routing require jev.api_key")
+	}
+	if cfg.Jev.TimeoutSeconds < 0 {
+		return cfg, errors.New("config: jev.timeout_seconds must be non-negative")
 	}
 	for name, server := range cfg.LSP {
 		if strings.TrimSpace(name) == "" || len(server.Command) == 0 || strings.TrimSpace(server.Command[0]) == "" {
@@ -238,6 +336,13 @@ func LoadWithEnv(path string, overrides map[string]string) (Config, error) {
 	}
 	return cfg, nil
 }
+func relativeTo(base, path string) string {
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(base, path)
+}
+
 func expandHome(path string) string {
 	if path == "~" || strings.HasPrefix(path, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -307,6 +412,9 @@ func resolveSecrets(cfg *Config, overrides map[string]string) error {
 	}
 	if err := resolve(&cfg.WebSearch.APIKey); err != nil {
 		return fmt.Errorf("web_search: %w", err)
+	}
+	if err := resolve(&cfg.Jev.APIKey); err != nil {
+		return fmt.Errorf("jev: %w", err)
 	}
 	return nil
 }

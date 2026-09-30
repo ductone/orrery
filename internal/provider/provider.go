@@ -64,6 +64,11 @@ type Message struct {
 	Reasoning  string     `json:"reasoning,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	Images     []Image    `json:"images,omitempty"`
+	// Harness marks a user-role message the harness wrote itself (a nudge,
+	// a rejection, a worker handoff) rather than one a person sent. Providers
+	// never see it; it keeps harness messages from counting as new
+	// instructions.
+	Harness bool `json:"harness,omitempty"`
 }
 type Request struct {
 	System, DurableSpec, Plan string
@@ -73,6 +78,10 @@ type Request struct {
 	MaxOutput                 int
 	Effort                    model.Effort
 	Strict                    bool
+	// NoToolCalls keeps the tool definitions in the request but forbids calls.
+	// Removing definitions instead would change the cached prefix and strand
+	// a model whose history is full of tool use.
+	NoToolCalls bool
 }
 type Usage struct {
 	InputTokens      int `json:"input_tokens"`
@@ -84,8 +93,13 @@ type Response struct {
 	Message    Message
 	Usage      Usage
 	StopReason string
-	Latency    time.Duration
-	Model      string
+	// Truncated reports that the response stopped at the output token limit.
+	Truncated bool
+	// OutputKinds lists the response's content block or output item types in
+	// order, so an empty message can be explained after the fact.
+	OutputKinds []string
+	Latency     time.Duration
+	Model       string
 }
 type Client interface {
 	Complete(context.Context, model.ModelSpec, Request) (Response, error)

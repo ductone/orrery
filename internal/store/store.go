@@ -77,6 +77,10 @@ func (s *Store) migrate() error {
 		return err
 	}
 	_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS request_receipts(session_id TEXT NOT NULL REFERENCES sessions(id), request_id TEXT NOT NULL, kind TEXT NOT NULL, turn_id TEXT NOT NULL, payload_hash TEXT NOT NULL, accepted_at TEXT NOT NULL, PRIMARY KEY(session_id,request_id)); CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_external ON sessions(integration,external_id,external_incarnation) WHERE external_id!=''; CREATE TABLE IF NOT EXISTS work_items(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), objective TEXT NOT NULL, status TEXT NOT NULL, phase TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL, created_at TEXT NOT NULL, completed_at TEXT); CREATE TABLE IF NOT EXISTS continuation(session_id TEXT PRIMARY KEY REFERENCES sessions(id), active_work_item_id TEXT NOT NULL DEFAULT '', final_report_required INTEGER NOT NULL DEFAULT 0, resolved_request_ids_json TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL); CREATE INDEX IF NOT EXISTS idx_work_items_session ON work_items(session_id);`)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(shadowSchema)
 	return err
 }
 
@@ -273,7 +277,7 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"request_receipts", "events", "messages", "todos", "work_items", "continuation", "cache_ledger", "jobs", "routing_records", "checkpoints", "pending_inputs", "queued_messages"} {
+	for _, table := range []string{"request_receipts", "events", "messages", "todos", "work_items", "continuation", "cache_ledger", "jobs", "routing_records", "checkpoints", "pending_inputs", "queued_messages", "shadow_observations"} {
 		if _, err = tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE session_id=?`, id); err != nil {
 			return err
 		}
