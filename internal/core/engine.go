@@ -56,7 +56,7 @@ type Engine struct {
 	running         map[string]int
 	pendingHandoffs map[string][]handoff
 	deliveredJobs   map[string]bool
-	shadowWG          sync.WaitGroup
+	shadowWG        sync.WaitGroup
 }
 
 func New(cfg config.Config, s *store.Store, p *provider.Registry, mc *mcp.Manager) *Engine {
