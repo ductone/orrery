@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -708,7 +710,15 @@ func hashPayload(v any) string {
 	return fmt.Sprintf("%x", sha256.Sum256(b))
 }
 
-func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.TaskRequest, emit EmitFunc) agentproto.TaskResult {
+func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.TaskRequest, emit EmitFunc) (result agentproto.TaskResult) {
+	// A bug in the loop fails this session, not the process: the TUI and
+	// serve host sessions in-process, and one panic took a TUI down.
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("session run panicked", "session", sid, "panic", rec, "stack", string(debug.Stack()))
+			result = e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Error: fmt.Sprintf("internal error: %v (a harness bug; the stack is in the log)", rec)}, emit)
+		}
+	}()
 	ctx, span := otel.Tracer("orrery/core").Start(ctx, "session")
 	defer span.End()
 	span.SetAttributes(attribute.String("session.id", sid))

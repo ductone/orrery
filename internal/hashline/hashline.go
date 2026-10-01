@@ -279,18 +279,20 @@ func ApplyWithMode(p Patch, mode AnchorMode) (*ApplyResult, error) {
 			return nil, errors.New("hashline: overlapping delete ranges")
 		}
 	}
+	// Affected regions are in the new file's coordinates: a hunk moves by the
+	// net line change of the hunks above it, and spans the lines it inserted
+	// (an empty span where it only deleted).
 	affected := make([]AffectedRegion, 0, len(loc))
-	shift := 0
+	delta := 0
+	for _, x := range loc {
+		start := x.at + delta
+		affected = append(affected, AffectedRegion{start, start + len(x.h.Insert)})
+		delta += len(x.h.Insert) - x.h.Delete
+	}
+	// Apply bottom-up so earlier positions stay valid.
 	for i := len(loc) - 1; i >= 0; i-- {
 		x := loc[i]
-		newStart := x.at + shift
 		raw = append(raw[:x.at], append(x.h.Insert, raw[x.at+x.h.Delete:]...)...)
-		shift += len(x.h.Insert) - x.h.Delete
-		newEnd := x.at + shift
-		affected = append(affected, AffectedRegion{newStart, newEnd})
-	}
-	for i, j := 0, len(affected)-1; i < j; i, j = i+1, j-1 {
-		affected[i], affected[j] = affected[j], affected[i]
 	}
 	if slices.Equal(raw, original) {
 		return nil, ErrNoChanges

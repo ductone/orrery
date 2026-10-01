@@ -61,3 +61,23 @@ func TestJobToolFallsBackForIDsItDidNotStart(t *testing.T) {
 		t.Fatalf("v=%v err=%v", v, err)
 	}
 }
+
+func TestFreshWindowsTolerateBadRegions(t *testing.T) {
+	lines := make([]hashline.Line, 10)
+	got := computeFreshWindows(lines, []hashline.AffectedRegion{{Start: 9, End: 3}, {Start: 50, End: 60}, {Start: 2, End: 4}})
+	if len(got) != 3 || len(got[0]) != 0 || len(got[1]) != 0 || len(got[2]) != 6 {
+		t.Fatalf("windows = %v", got)
+	}
+}
+
+func TestToolPanicsBecomeErrors(t *testing.T) {
+	r := New(t.TempDir())
+	r.Add("boom", "panics", map[string]any{"type": "object"}, func(context.Context, map[string]any) (any, error) {
+		var s []int
+		return s[3], nil
+	})
+	v, err := r.Call(context.Background(), "boom", map[string]any{})
+	if v != nil || err == nil || !strings.Contains(err.Error(), "internal error") || !strings.Contains(err.Error(), "index out of range") {
+		t.Fatalf("v=%v err=%v", v, err)
+	}
+}

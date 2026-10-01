@@ -12,11 +12,13 @@ import (
 	"github.com/ductone/orrey/internal/provider"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -249,7 +251,7 @@ func (r *Registry) DefinitionsOnly(names ...string) []provider.Tool {
 	}
 	return out
 }
-func (r *Registry) Call(ctx context.Context, name string, args map[string]any) (any, error) {
+func (r *Registry) Call(ctx context.Context, name string, args map[string]any) (value any, err error) {
 	ctx, span := otel.Tracer("orrery/tools").Start(ctx, "tool.call")
 	defer span.End()
 	span.SetAttributes(attribute.String("tool", name))
@@ -257,6 +259,15 @@ func (r *Registry) Call(ctx context.Context, name string, args map[string]any) (
 	if !ok {
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
+	// A bug in one tool must not take down the session, or the process
+	// hosting it (the TUI and serve run sessions in-process): report it to
+	// the model as a failed call and log the stack.
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("tool panicked", "tool", name, "panic", rec, "stack", string(debug.Stack()))
+			value, err = nil, fmt.Errorf("tool %s failed with an internal error (%v); this is a harness bug, not a problem with the call", name, rec)
+		}
+	}()
 	return h(ctx, args)
 }
 func (r *Registry) safe(path string) (string, error) {
@@ -537,8 +548,8 @@ func computeFreshWindows(lines []hashline.Line, affected []hashline.AffectedRegi
 	}
 	var out [][]hashline.Line
 	for _, r := range affected {
-		lo := max(0, r.Start-2)
-		hi := min(len(lines), r.End+2)
+		lo := min(len(lines), max(0, r.Start-2))
+		hi := max(lo, min(len(lines), r.End+2))
 		out = append(out, lines[lo:hi])
 	}
 	return out

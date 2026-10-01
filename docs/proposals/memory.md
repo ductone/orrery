@@ -102,13 +102,95 @@ Although Orrery already ships other live Jev policies, memory selection and comp
 
 Measure task success and recovery after compaction, information-loss errors, stale/contradictory retrieval, tokens and cache reuse, added latency/cost, compaction frequency, and memory corrections/deletions. Compare on long-horizon coding traces with a frontier-pinned quality baseline; a token reduction without preserved success is not a win. Use synthetic, redistributable fixtures in the public repository.
 
+## Code-anchored implementation plan
+
+This section turns the proposal into an implementation sequence; all schema, settings, and events below are proposed, not existing behavior. File references point to the current extension points. Keep the work inside the existing store/session and core orchestration rather than introducing a new runtime or service.
+
+### Store schema and migration
+
+Extend `(*Store).migrate` in `internal/store/store.go`, following the package's existing additive `CREATE TABLE IF NOT EXISTS` / `ensureColumn` SQLite migration style. The current durable records (`Messages`, `Session`, `Todos`, `Continuation`, `WorkItems`, checkpoints, and compaction state) are session-oriented; add an explicit workspace root that can be shared by sessions without making a session the owner of durable memory:
+
+```sql
+CREATE TABLE workspaces (
+  workspace_id TEXT PRIMARY KEY,
+  identity_key TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+ );
+CREATE TABLE memory_records (
+  memory_id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+  scope TEXT NOT NULL CHECK (scope IN ('workspace', 'project', 'user')),
+  kind TEXT NOT NULL,
+  text TEXT NOT NULL,
+  provenance TEXT NOT NULL,             -- user, checked-in instruction, observed event, or model suggestion
+  confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'superseded', 'expired', 'deleted')),
+  evidence_refs TEXT NOT NULL DEFAULT '[]', -- bounded JSON references, not copied source material
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  expires_at TEXT,
+  superseded_by TEXT REFERENCES memory_records(memory_id)
+ );
+CREATE INDEX memory_records_lookup ON memory_records(workspace_id, scope, status, updated_at);
+```
+
+Use a stable workspace identity resolved by the application, not a session ID; keep canonical-path or equivalent identity handling in one place and do not emit it in telemetry. `scope='user'` is reserved but disabled until an explicit cross-workspace identity/consent design exists. Enforce same-workspace supersession in store methods. Treat `deleted` as a tombstone (with content removal according to the forget contract), not a retrievable record. Evidence refs should identify a session/event or repository path and optional range/hash, never contain credentials or raw transcript dumps. Migration tests should cover empty and existing databases, reopening, workspace isolation, expiration, supersession, and forget/delete behavior. SQLite/store errors are best-effort: callers continue with no memory rather than failing session startup or a turn.
+
+Keep task checkpoint storage separate. Extend the existing compaction checkpoint representation in `internal/core/compaction.go` only for typed recovery fields not already authoritative in `Continuation`/`Todos`; add a checkpoint schema version and input-range/evidence references. Preserve its synchronous validate-then-commit behavior (`ApplyCompaction`) and current fallback path. Do not migrate transcript history into `memory_records`.
+
+### Configuration surface
+
+Add a `MemoryConfig` alongside `JevConfig` in `internal/config/config.go` and document defaults in `orrery.example.yaml`. Suggested shape:
+
+```yaml
+memory:
+  enabled: false                   # master opt-in; disabled until controls/retention ship
+  shadow: true                      # retrieve/derive and measure without prompt injection
+  max_records: 8
+  max_tokens: 1200
+  max_record_bytes: 2048
+  retain_days: 0                    # 0 means no automatic expiry
+  auto_commit: false                # suggestions stay pending absent explicit confirmation
+  inject: false                    # independently opt in after shadow evaluation
+  jev:
+    selection: false                # memory_select shadow/live policy switch
+    compaction_benefit: false       # separate shadow/live policy switch
+    timeout: 250ms
+    max_candidates: 12
+```
+
+Names and exact defaults can be aligned with existing config conventions, but keep `enabled`, injection, automatic commit, and each Jev surface independently gated. Reuse existing Jev credentials/base URL/model (`JevConfig` and current `answer_check.go` pattern); do not create another credential path. Clamp all limits in code. Missing credentials, disabled Jev, timeout, malformed response, or store failure selects deterministic lexical/recency ranking and current compaction behavior. Shadow observations should use the existing `internal/core/shadow.go` / `shadow_observations` pattern and existing Jev site naming conventions; do not log memory text or workspace identity in observations.
+
+### Events and prompt/cache boundaries
+
+Emit additive, versioned events through existing store/event mechanisms; events describe decisions and references, not duplicate the durable record body:
+
+- `memory.retrieved`: workspace/session reference, selected memory IDs, deterministic/JeV decision source, bounded reason codes, count and estimated token cost, refresh boundary, and outcome (including empty/error fallback). Store only when memory is enabled; omit note text and secrets.
+- `memory.committed`: memory ID, kind/scope, provenance, status transition, evidence-ref identifiers, and whether user-confirmed. Commit/update/supersede atomically with the event or use an outbox/transaction mechanism supported by the store so event and record cannot disagree.
+- `memory.updated` / `memory.forgotten`: IDs and status transition for inspectable corrections/deletion; ensure forgetting removes the content from future retrieval and prompt caches.
+- Extend `context.compacted` metadata in `internal/core/compaction.go` with checkpoint schema/version, input range, trigger/reason, token estimates, tool-output bytes cleared, evidence-ref count, validation result, and memory/cache boundary identifier. Keep existing `context.compaction_failed` behavior and ensure no event claims a commit before the checkpoint transaction succeeds.
+- Record each memory refresh as a cache event at session start, phase transition, or compaction. Pin its selected IDs for that context epoch; never silently re-retrieve every turn. In `internal/core/engine.go`, add a distinct volatile request segment adjacent to `DurableSpec`: after stable `System` instructions/bootstrap and before `DurableSpec`, `Plan`, and conversation `Messages`. A refresh should invalidate only the volatile suffix rather than changing stable prompt assembly.
+
+Jev is called only on bounded compact candidate descriptions through the existing batched `jev.Noul` / `Choice` / `Score` client. Add independent site identifiers such as `memory_select` and `compaction_benefit` to shadow evaluation. Jev results are observations in shadow mode: they cannot write records, replace deterministic eligibility checks, or call compaction. Live promotion remains independently feature-gated and timeout-bounded.
+
+### Phased implementation slices
+
+1. **Instrument baseline and protect invariants.** Add synthetic compaction fixtures and measurements around the existing gate (`internal/core/compaction_gate.go`), `Compact`/`ApplyCompaction` path, and `context.compacted` events. Document/assert continuation and todo authority, idempotency, synchronous validated commit, and no session failure on optional persistence errors. No behavior change.
+2. **Checkpoint/tool-output delta.** Implement bounded stale tool-result clearing with evidence pointers, versioned typed checkpoint fields, and cache-aware context rebuild in `internal/core/compaction.go`; retain the current pressure path and gate in `compaction_gate.go`. Add recovery/idempotency/fallback tests in `internal/core/compaction_test.go`; compare against the baseline before adjusting thresholds.
+3. **Workspace store and user controls, dark.** Add the migration and store APIs/tests in `internal/store/store.go` for scoped records, pending/active lifecycle, provenance, evidence, expiry, supersession, inspect, correct, forget, and workspace isolation. Keep APIs unavailable to prompt construction initially; failures are non-fatal. Never automatically persist model speculation.
+4. **Deterministic memory shadow.** Add bounded candidate extraction/ranking and retrieval/cache-event recording in core orchestration, guarded by config. Compare candidate sets to fixtures and inspect privacy, stale/conflicting notes, cost, and errors; do not inject notes or alter the response.
+5. **Jev shadow, then independent opt-in.** Add batched typed ranking and benefit questions using current Jev client/config and existing shadow observation mechanism. Enforce candidate/payload caps, one batch per boundary, deadline, and whole-batch deterministic fallback. Evaluate each surface independently; only later expose separate live gates, after fixture and long-horizon trace evidence supports promotion.
+6. **Opt-in injection and verified learning.** Add cache-safe prompt assembly, explicit user inspect/correct/forget/disable controls, and optional injection behind separate settings. Begin with user-confirmed facts and evidence-backed lessons as pending proposals; parent session is the only committer, and worker candidates require evidence. Add end-to-end tests for cross-session continuity, workspace isolation, correction precedence, forget, store failure, and unchanged session behavior when disabled.
+
+Do not advance a phase based on token savings alone: require preserved task success/recovery and no privacy leakage or added user-visible Jev wait. Suggested unresolved decisions are limited to measured thresholds, precise checkpoint fields after a field-by-field comparison with `Continuation`/`Todos`, and the eventual consent model for user-wide memory; schema ownership, initial safety defaults, event boundaries, and rollout order are specified above.
+
 ## Open questions
 
-- How should a workspace-scoped memory root be added to the existing session-rooted SQLite schema, including migration, deletion, and workspace identity?
-- Which checkpoint fields add recovery value without duplicating the authoritative continuation ledger and todo state?
-- Should inferred memory ever be committed automatically, or should first release only persist user-confirmed facts and evidence-backed lessons?
-- Which Jev question and confidence threshold improves retrieval enough to justify its remote call and privacy implications?
-- What exact cache/token instrumentation is available at each compaction boundary to predict useful compaction timing?
+- Which checkpoint fields remain genuinely absent after the phase-1 comparison with authoritative `Continuation` and `Todos`? See the checkpoint schema/migration and first two slices above; do not duplicate existing task state.
+- What retrieval/compaction thresholds meet quality, latency, cache, and cost targets on synthetic and long-horizon traces? Decide only after baseline and independent Jev shadow evaluation; see rollout slices 1, 2, and 5.
+- Should/when should user-wide memory be supported? The first implementation is workspace-scoped; `user` scope stays disabled until consent, identity, and cross-workspace isolation are designed and tested.
+- Which records can be committed automatically? Initial defaults keep model-derived candidates pending and `auto_commit` off; evaluate user-confirmed facts and evidence-backed lessons before relaxing this rule.
 
 ## Sources and limits
 

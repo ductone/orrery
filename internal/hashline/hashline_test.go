@@ -3,6 +3,7 @@ package hashline
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -362,5 +363,40 @@ func TestNewFileAnchorOnExistingFileExplainsItself(t *testing.T) {
 	_, err := Apply(Patch{Path: p, Hunks: []Hunk{{Anchor: "e3b0c442", Insert: []string{"new"}}}})
 	if !errors.As(err, &amb) || !amb.NewFileAnchor || !strings.Contains(err.Error(), "new-file anchor") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestAffectedRegionsAreInNewFileCoordinates(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "x.txt")
+	var lines []string
+	for i := range 20 {
+		lines = append(lines, fmt.Sprintf("line %02d", i+1))
+	}
+	_ = os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0600)
+	ls, _ := Read(p)
+	// Delete six lines near the top, replace one line further down, and
+	// insert two near the bottom, out of order.
+	res, err := Apply(Patch{Path: p, Hunks: []Hunk{
+		{Anchor: ls[17].Hash, Offset: 0, Delete: 0, Insert: []string{"new a", "new b"}},
+		{Anchor: ls[2].Hash, Delete: 6, Insert: nil},
+		{Anchor: ls[11].Hash, Delete: 1, Insert: []string{"line 12 changed"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []AffectedRegion{{2, 2}, {5, 6}, {11, 13}}
+	if len(res.Affected) != len(want) {
+		t.Fatalf("affected = %v", res.Affected)
+	}
+	for i, r := range res.Affected {
+		if r != want[i] {
+			t.Fatalf("affected = %v, want %v", res.Affected, want)
+		}
+		if r.End < r.Start {
+			t.Fatalf("a region must not end before it starts: %v", r)
+		}
+	}
+	if res.Lines[5].Text != "line 12 changed" || res.Lines[11].Text != "new a" || res.Lines[2].Text != "line 09" {
+		t.Fatalf("regions do not point at the edited lines: %q %q %q", res.Lines[5].Text, res.Lines[11].Text, res.Lines[2].Text)
 	}
 }
