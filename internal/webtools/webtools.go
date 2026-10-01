@@ -46,6 +46,10 @@ func safeDial(ctx context.Context, network, address string) (net.Conn, error) {
 	}
 	return nil, fmt.Errorf("address %s has no public IP", host)
 }
+
+// SearchConfigured reports whether web search has a provider key.
+func (c *Client) SearchConfigured() bool { return c != nil && c.key != "" }
+
 func (c *Client) Search(ctx context.Context, query string, count int) (any, error) {
 	if c.key == "" {
 		return nil, errors.New("web search is not configured")
@@ -80,7 +84,14 @@ func (c *Client) Search(ctx context.Context, query string, count int) (any, erro
 	}
 	return wire.Web.Results, nil
 }
-func (c *Client) Fetch(ctx context.Context, rawURL string) (any, error) {
+
+// FetchChars is how much text one fetch returns; later windows are read with
+// a start offset.
+const FetchChars = 60_000
+
+// Fetch returns a page's readable text, a window at a time. HTML is reduced
+// to its text; other text types are returned as they are.
+func (c *Client) Fetch(ctx context.Context, rawURL string, start int) (any, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, err
@@ -95,7 +106,7 @@ func (c *Client) Fetch(ctx context.Context, rawURL string) (any, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if resp.StatusCode/100 != 2 {
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(b, 1000))
 	}
@@ -103,7 +114,38 @@ func (c *Client) Fetch(ctx context.Context, rawURL string) (any, error) {
 	if !strings.HasPrefix(ct, "text/") && !strings.Contains(ct, "json") && !strings.Contains(ct, "xml") {
 		return nil, fmt.Errorf("unsupported content type %q", ct)
 	}
-	return map[string]any{"url": resp.Request.URL.String(), "content_type": ct, "content": string(b), "truncated": len(b) == 2<<20}, nil
+	out := map[string]any{"url": resp.Request.URL.String(), "content_type": ct}
+	text := string(b)
+	if strings.Contains(ct, "html") {
+		title, body := htmlText(b)
+		text = body
+		if title != "" {
+			out["title"] = title
+		}
+		out["extracted_from_html"] = true
+	}
+	for k, v := range textWindow(text, start) {
+		out[k] = v
+	}
+	return out, nil
+}
+
+// textWindow returns up to FetchChars of text from start, ending on a line
+// boundary when one is near, and where to continue.
+func textWindow(text string, start int) map[string]any {
+	start = max(0, min(start, len(text)))
+	end := min(len(text), start+FetchChars)
+	if end < len(text) {
+		if nl := strings.LastIndexByte(text[start:end], '\n'); nl > FetchChars/2 {
+			end = start + nl + 1
+		}
+	}
+	out := map[string]any{"content": text[start:end], "total_chars": len(text)}
+	if end < len(text) {
+		out["next_start"] = end
+		out["hint"] = fmt.Sprintf("Showing characters %d-%d of %d. Fetch again with start=%d for more.", start, end, len(text), end)
+	}
+	return out
 }
 func validateURL(ctx context.Context, u *url.URL) error {
 	if u.Scheme != "http" && u.Scheme != "https" {

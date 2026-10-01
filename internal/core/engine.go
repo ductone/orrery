@@ -791,6 +791,22 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		}
 		applyHints(&state, req.Hints)
 		decision, why, err := e.decideWaiting(ctx, sid, runtimePolicy, runtimeProviders, &state, emit)
+		// No model can hold the history: bound stored tool results, compact,
+		// and route again rather than failing with "no compatible models".
+		if largest := largestContext(state); err != nil && largest > 0 && inputTokens+state.EstimatedOutput > largest {
+			if e.recoverOversizedHistory(ctx, sid, inputTokens, emit) {
+				stored, _ = e.store.Messages(ctx, sid)
+				if fresh, serr := e.store.Session(ctx, sid); serr == nil {
+					s = fresh
+				}
+				inputTokens = estimate(s.Spec + s.DurableSummary + messagesText(stored))
+				state.InputTokens = inputTokens
+				decision, why, err = e.decideWaiting(ctx, sid, runtimePolicy, runtimeProviders, &state, emit)
+			}
+			if err != nil {
+				err = oversizedHistoryError(inputTokens, largest)
+			}
+		}
 		if err != nil {
 			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: err.Error()}, emit)
 		}
@@ -1214,7 +1230,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				}
 			}
 			seenCalls[callKey] = toolExecution{value: value, shaped: shaped, callID: call.ID}
-			toolMsg := provider.Message{Role: "tool", ToolCallID: call.ID, Content: store.JSON(shaped)}
+			toolMsg := provider.Message{Role: "tool", ToolCallID: call.ID, Content: capToolResult(call.Name, store.JSON(shaped))}
 			_ = e.store.AddMessage(ctx, sid, "tool", toolMsg)
 			turnImages = append(turnImages, images...)
 			e.emit(ctx, sid, "tool.finished", map[string]any{"call": call, "result": value}, emit)

@@ -190,15 +190,23 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		}
 		return map[string]any{"status": j.Status, "result": json.RawMessage(j.ResultJSON), "outcome": json.RawMessage(j.OutcomeJSON)}, nil
 	})
-	r.Add("web_search", "Search the public web using Brave Search.", obj(map[string]any{"query": str(), "count": map[string]any{"type": "integer"}}, "query"), func(ctx context.Context, a map[string]any) (any, error) {
-		count := 8
-		if x, ok := a["count"].(float64); ok {
-			count = int(x)
+	// A tool that can only fail wastes the model's calls; offer search only
+	// when a search provider is configured.
+	if runtimeWeb.SearchConfigured() {
+		r.Add("web_search", "Search the public web using Brave Search.", obj(map[string]any{"query": str(), "count": map[string]any{"type": "integer"}}, "query"), func(ctx context.Context, a map[string]any) (any, error) {
+			count := 8
+			if x, ok := a["count"].(float64); ok {
+				count = int(x)
+			}
+			return runtimeWeb.Search(ctx, fmt.Sprint(a["query"]), count)
+		})
+	}
+	r.Add("fetch", "Fetch a public HTTP(S) URL and return its readable text (HTML is reduced to text), up to 60000 characters at a time; pass start to read further. Private and link-local addresses are rejected.", obj(map[string]any{"url": str(), "start": map[string]any{"type": "integer"}}, "url"), func(ctx context.Context, a map[string]any) (any, error) {
+		start := 0
+		if v, ok := a["start"].(float64); ok {
+			start = int(v)
 		}
-		return runtimeWeb.Search(ctx, fmt.Sprint(a["query"]), count)
-	})
-	r.Add("fetch", "Fetch a public HTTP(S) URL. Private and link-local addresses are rejected.", obj(map[string]any{"url": str()}, "url"), func(ctx context.Context, a map[string]any) (any, error) {
-		return runtimeWeb.Fetch(ctx, fmt.Sprint(a["url"]))
+		return runtimeWeb.Fetch(ctx, fmt.Sprint(a["url"]), start)
 	})
 	if e.lsp != nil && e.lsp.Configured() {
 		r.Add("lsp", "Query configured language servers for semantic navigation and diagnostics. line is 1-based and character is 0-based. This tool is read-only; use hashline edit for changes.", obj(map[string]any{"operation": map[string]any{"type": "string", "enum": []string{"definition", "references", "hover", "document_symbols", "workspace_symbols", "diagnostics"}}, "path": str(), "line": map[string]any{"type": "integer"}, "character": map[string]any{"type": "integer"}, "query": str(), "server": str()}, "operation"), func(ctx context.Context, a map[string]any) (any, error) {

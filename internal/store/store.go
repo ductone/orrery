@@ -1438,3 +1438,42 @@ func (s *Store) LatestRequest(ctx context.Context, sid string) (string, error) {
 	err := s.db.QueryRowContext(ctx, `SELECT latest_request FROM sessions WHERE id=?`, sid).Scan(&latest)
 	return latest, err
 }
+
+// ShrinkMessages rewrites the session's stored messages of a role whose
+// content exceeds maxChars, passing each through shrink. It returns how many
+// changed. The event log keeps the originals; this only bounds the history a
+// model is sent.
+func (s *Store) ShrinkMessages(ctx context.Context, sid, role string, maxChars int, shrink func(string) string) (int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,content_json FROM messages WHERE session_id=? AND role=? AND length(content_json)>?`, sid, role, maxChars)
+	if err != nil {
+		return 0, err
+	}
+	type big struct {
+		id      int64
+		content string
+	}
+	var found []big
+	for rows.Next() {
+		var b big
+		if err := rows.Scan(&b.id, &b.content); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		found = append(found, b)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	changed := 0
+	for _, b := range found {
+		next := shrink(b.content)
+		if next == b.content {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE messages SET content_json=? WHERE id=?`, next, b.id); err != nil {
+			return changed, err
+		}
+		changed++
+	}
+	return changed, nil
+}
