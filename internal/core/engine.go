@@ -850,9 +850,9 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		forcePlanSynthesis := parentJob == "" && s.Phase == string(router.Plan) && (progress.delegated || progress.phaseTurns >= 4)
 		forcePlanExecution := parentJob == "" && s.Phase == string(router.Plan) && progress.shouldForcePlanExecution()
 		forceImplementation := parentJob == "" && s.Phase == string(router.Implement) && progress.noProgressTurns >= 3
-		forceVerifiedCompletion := parentJob == "" && progress.shouldForceVerifiedCompletion()
+		forceVerifiedCompletion := parentJob == "" && progress.shouldForceVerifiedCompletion() && !progress.awaitingFix()
 		forceResolution := parentJob == "" && ((s.Phase == string(router.Review) || s.Phase == string(router.Diagnose)) && progress.phaseTurns >= 6 || progress.reviewRemediation && progress.reviewRemediationTurns >= 4)
-		forceFinalResolution := parentJob == "" && shouldForceFinalResolution(s.Phase, progress.phaseTurns)
+		forceFinalResolution := parentJob == "" && shouldForceFinalResolution(s.Phase, progress.phaseTurns) && !progress.awaitingFix()
 		latestRequest, _ := e.store.LatestRequest(ctx, sid)
 		var mode turnMode
 		if forceSynthesis {
@@ -1088,6 +1088,16 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				}
 			}
 			if progress.edited && !progress.reviewed && req.Depth > 0 {
+				// A diff a review just rejected gets the same findings again;
+				// repeating the review would only cost minutes and money.
+				diffHash := e.reviewDiffHash(ctx, sid, req.Workspace.Path)
+				if diffHash != "" && diffHash == progress.rejectedDiff {
+					progress.completionRejections++
+					progress.markReviewRejected()
+					e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "diff unchanged since a failed review", "review": progress.rejectedReview}, emit)
+					_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Completion rejected: the workspace diff has not changed since the independent review that rejected it, so the findings still stand. Fix them with edit, re-run verification, then complete:\n" + progress.rejectedReview})
+					continue
+				}
 				// Inconclusive parts are retried or accepted inside the review, so
 				// an inconclusive result here is final for this completion.
 				passed, reviewText, reviewErr := e.reviewWorkspace(ctx, sid, parentJob, req, emit)
@@ -1101,6 +1111,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 					if !passed {
 						progress.completionRejections++
 						progress.markReviewRejected()
+						progress.rejectedDiff, progress.rejectedReview = diffHash, reviewText
 						e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "independent review failed", "review": reviewText}, emit)
 						_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Independent review rejected completion. Address these correctness findings, re-run verification, then complete:\n" + reviewText})
 						continue

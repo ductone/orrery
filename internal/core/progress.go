@@ -40,6 +40,11 @@ type progressTracker struct {
 	// missing verification, so an unverifiable change cannot loop.
 	verificationRejections int
 	verificationWaived     bool
+	// fixPending is set by a review rejection and cleared by the next edit.
+	fixPending bool
+	// rejectedDiff and rejectedReview hold the diff the last failed review
+	// covered and its findings, so an unchanged diff is not reviewed again.
+	rejectedDiff, rejectedReview string
 	// answerRejections counts completions refused for answering something
 	// other than the latest request.
 	answerRejections int
@@ -121,6 +126,7 @@ func (p *progressTracker) observe(call provider.ToolCall, value any, callErr err
 			p.reviewed = false
 			p.checksSinceEdit = nil
 			p.formatVerified = false
+			p.fixPending = false
 			if path := stringArg(call.Arguments, "path"); path != "" {
 				if p.editedPaths == nil {
 					p.editedPaths = map[string]bool{}
@@ -206,7 +212,14 @@ func (p *progressTracker) markReviewRejected() {
 		p.reviewRemediation = true
 		p.reviewRemediationTurns = 0
 	}
+	p.fixPending = true
 }
+
+// awaitingFix reports a review rejection that no edit has answered yet. The
+// "finish now" modes that turn tool calls off must not apply then: they
+// once left an agent unable to edit after a failed review, so every turn
+// produced the same diff and another identical review.
+func (p *progressTracker) awaitingFix() bool { return p.reviewRemediation && p.fixPending }
 
 func (p *progressTracker) reviewRemediationReason(parentJob string) string {
 	if parentJob == "" && p.reviewRemediation && p.reviewRemediationTurns >= 8 {

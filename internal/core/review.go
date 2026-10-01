@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -255,4 +257,15 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// reviewDiffHash identifies the diff a review would cover, or "" when there
+// is none or it cannot be read.
+func (e *Engine) reviewDiffHash(ctx context.Context, sid, root string) string {
+	diff, _, err := e.reviewDiff(ctx, sid, root)
+	if err != nil || len(diff) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(diff)
+	return hex.EncodeToString(sum[:])
 }
