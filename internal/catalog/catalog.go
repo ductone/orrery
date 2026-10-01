@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/ductone/orrey/internal/config"
 	"github.com/ductone/orrey/internal/model"
@@ -18,6 +19,9 @@ type Result struct {
 	// Discovered counts models taken from discovery (not shadowed by a
 	// built-in entry); Overridden counts config entries applied.
 	Discovered, Overridden, Disabled int
+	// Refused counts models left out because a provider recently refused
+	// them for this account.
+	Refused int
 	// Warnings are config entries that could not be applied.
 	Warnings []string
 }
@@ -37,11 +41,16 @@ func Build(ctx context.Context, cfg config.Config, cacheDir string, client *http
 			if base == "" {
 				base = DefaultRampBaseURL
 			}
-			d := DiscoverRamp(ctx, client, base, key, cacheDir)
+			d := DiscoverRamp(ctx, client, base, key, cacheDir, p.ProviderKeys)
 			res.Discoveries = append(res.Discoveries, d)
 			discovered = append(discovered, d.Models...)
 		}
 	}
+	// Models a provider refused for this account recently are left out of
+	// discovery, so a restart does not route to them again.
+	refused := Unavailable(cacheDir, time.Now())
+	discovered = slices.DeleteFunc(discovered, func(m model.ModelSpec) bool { _, ok := refused[m.ID]; return ok })
+	res.Refused = len(refused)
 	res.Models, res.Discovered = Merge(discovered, model.Catalog)
 	res.Models, res.Overridden, res.Disabled, res.Warnings = Apply(res.Models, cfg.Models)
 	return res

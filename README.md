@@ -108,6 +108,8 @@ models:
     pricing: {input: 4.5}
 ```
 
+Models Ramp serves only through upstreams that need the account's own provider key (Amazon Bedrock) are left out unless the provider config says the account has one: `ramp: {api_key: ..., provider_keys: [bedrock]}`. When a provider refuses a model at request time anyway (no access, a provider key the account lacks, an unknown model), the turn routes to another model instead of failing, and the refused model leaves routing for the rest of the process. Refusals whose error code names the model are also remembered in `~/.orrery/catalog/unavailable.json` for a week, so the next startup leaves the model out.
+
 Overrides change only the fields they set. An entry for a model that is not in the catalog adds it when it gives `family`, `tier`, `context_window`, `max_output`, and input and output pricing; otherwise it is reported as a warning and skipped, since the model may just not have been listed this time.
 
 ## Jev shadow observations

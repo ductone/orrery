@@ -235,7 +235,19 @@ func (r *Registry) WaitForCredentials(ctx context.Context, maxWait time.Duration
 type Registry struct {
 	clients    map[string]Client
 	configured map[string]bool
+	// unavailable holds models a provider refused for this account, such as
+	// ones that need a provider key the account lacks. Routing skips them
+	// for the life of the process.
+	unavailable sync.Map
+	onRefusal   func(id, reason string)
 }
+
+// MarkUnavailable removes a model from routing for the life of the registry.
+func (r *Registry) MarkUnavailable(id string) { r.unavailable.Store(id, true) }
+
+// SetRefusalHook is told about refusals that certainly concern a model, so a
+// caller can remember them beyond this process.
+func (r *Registry) SetRefusalHook(f func(id, reason string)) { r.onRefusal = f }
 
 func New(cfg config.Config) *Registry {
 	r := &Registry{clients: map[string]Client{}, configured: map[string]bool{}}
@@ -303,6 +315,9 @@ func wireModel(id string) string {
 	return id
 }
 func (r *Registry) Available(spec model.ModelSpec) bool {
+	if _, refused := r.unavailable.Load(spec.ID); refused {
+		return false
+	}
 	c, ok := r.clients[providerName(spec.ID)]
 	if !ok {
 		return false
@@ -338,7 +353,14 @@ func (r *Registry) CompleteOne(ctx context.Context, d router.Decision, build Req
 	if err != nil {
 		return Response{}, err
 	}
-	return c.Complete(ctx, d.Model, req)
+	resp, err := c.Complete(ctx, d.Model, req)
+	if refused, persistent := ModelRefusal(err); refused {
+		r.MarkUnavailable(d.Model.ID)
+		if persistent && r.onRefusal != nil {
+			r.onRefusal(d.Model.ID, err.Error())
+		}
+	}
+	return resp, err
 }
 func IsRetryable(err error) bool { return retryable(err) }
 func (r *Registry) Complete(ctx context.Context, d router.Decision, build RequestBuilder) (Response, model.ModelSpec, error) {
@@ -423,4 +445,28 @@ func retryable(err error) bool {
 	var h *HTTPError
 	return errors.As(err, &h) && (h.Status == 429 || h.Status >= 500)
 }
+
+// ModelRefusal reports whether err is a provider refusing a specific model
+// for this account rather than the request failing: no access to the model,
+// a model that needs the account's own upstream key, or an unknown model.
+// Persistent is set when the refusal certainly concerns the model itself (a
+// provider error code says so), as opposed to a 403 that may be about the
+// whole account.
+func ModelRefusal(err error) (refused, persistent bool) {
+	var h *HTTPError
+	if !errors.As(err, &h) {
+		return false, false
+	}
+	body := strings.ToLower(h.Body)
+	for _, code := range modelRefusalCodes {
+		if strings.Contains(body, `"`+code+`"`) {
+			return true, true
+		}
+	}
+	return h.Status == http.StatusForbidden || h.Status == http.StatusNotFound, false
+}
+
+// modelRefusalCodes are provider error codes that name a model as unusable.
+var modelRefusalCodes = []string{"provider_key_required", "model_not_found", "model_not_available", "unsupported_model"}
+
 func httpClient(timeout time.Duration) *http.Client { return &http.Client{Timeout: timeout} }

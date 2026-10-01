@@ -4,6 +4,8 @@ database: ".orrery/orrery.db"
 providers:
   anthropic: {api_key: "!cmd op read op://dev/anthropic/key"}
   ramp: {api_key: "!env RAMP_ROUTER_API_KEY"} # Ramp Router; base_url defaults to https://api.router.com
+  # Add provider_keys: [bedrock] once the Ramp account has its own Bedrock key,
+  # to route to models Ramp serves only through Bedrock.
   openai: {api_key: "!cmd op read op://dev/openai/key"}
   xai: {api_key: "!cmd op read op://dev/xai/key"}
   together: {api_key: "!cmd op read op://dev/together/key"}

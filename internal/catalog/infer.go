@@ -63,10 +63,19 @@ func inferFamily(id string) model.Family {
 	return "unknown"
 }
 
-func inferRamp(listed []rampModel) ([]model.ModelSpec, map[string]int) {
+// ownKeyProviders are upstreams Ramp Router serves only with the account's
+// own provider key; models available solely through them are left out unless
+// the config says the account has that key.
+var ownKeyProviders = []string{"bedrock"}
+
+func inferRamp(listed []rampModel, providerKeys []string) ([]model.ModelSpec, map[string]int) {
 	skipped := map[string]int{}
 	var out []model.ModelSpec
 	for _, m := range listed {
+		if needsOwnKey(m, providerKeys) {
+			skipped["needs own provider key"]++
+			continue
+		}
 		spec, reason := inferRampModel(m)
 		if reason != "" {
 			skipped[reason]++
@@ -75,6 +84,20 @@ func inferRamp(listed []rampModel) ([]model.ModelSpec, map[string]int) {
 		out = append(out, spec)
 	}
 	return out, skipped
+}
+
+// needsOwnKey reports whether every upstream serving m requires a provider key
+// the account has not configured.
+func needsOwnKey(m rampModel, providerKeys []string) bool {
+	if len(m.Router.Providers) == 0 {
+		return false
+	}
+	for _, p := range m.Router.Providers {
+		if !slices.Contains(ownKeyProviders, p.Provider) || slices.Contains(providerKeys, p.Provider) {
+			return false
+		}
+	}
+	return true
 }
 
 // inferRampModel returns a spec, or the reason the entry is not routable.

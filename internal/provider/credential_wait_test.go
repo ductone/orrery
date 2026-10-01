@@ -62,3 +62,25 @@ func TestWaitForCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestModelRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		err                 error
+		refused, persistent bool
+	}{
+		{&HTTPError{403, `{"error":{"type":"permission_error","code":"provider_key_required"}}`}, true, true},
+		{&HTTPError{404, `{"error":{"code":"model_not_found"}}`}, true, true},
+		{&HTTPError{403, `{"error":{"message":"forbidden"}}`}, true, false},
+		{&HTTPError{404, `not found`}, true, false},
+		{&HTTPError{400, `{"error":{"message":"bad request"}}`}, false, false},
+		{&HTTPError{429, `{"error":{"code":"credits_reserved"}}`}, false, false},
+		{&HTTPError{401, `invalid key`}, false, false},
+		{errors.New("dial tcp: refused"), false, false},
+		{nil, false, false},
+	} {
+		refused, persistent := ModelRefusal(tc.err)
+		if refused != tc.refused || persistent != tc.persistent {
+			t.Errorf("%v: refused=%v persistent=%v", tc.err, refused, persistent)
+		}
+	}
+}

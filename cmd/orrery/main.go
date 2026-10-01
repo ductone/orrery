@@ -179,7 +179,7 @@ func openRuntime(ctx context.Context, path string) (*runtime, error) {
 		s.Close()
 		return nil, err
 	}
-	p := provider.New(cfg)
+	p := newProviders(cfg)
 	e := core.New(cfg, s, p, mc)
 	rt := &runtime{cfg: cfg, configPath: path, store: s, mcp: mc, engine: e, shutdownOTel: shutdownOTel}
 	e.SetBoundaryHook(rt.phaseBoundary)
@@ -259,7 +259,7 @@ func (rt *runtime) phaseBoundary(ctx context.Context) error {
 		rt.pending.Store(true)
 		return fmt.Errorf("reload telemetry: %w", err)
 	}
-	oldMCP := rt.engine.ReplaceRuntime(nextCfg, provider.New(nextCfg), nextMCP)
+	oldMCP := rt.engine.ReplaceRuntime(nextCfg, newProviders(nextCfg), nextMCP)
 	oldShutdownOTel := rt.shutdownOTel
 	rt.cfg = nextCfg
 	rt.pendingEnv = nil
@@ -479,6 +479,19 @@ func (c configRef) requireProviders(cfg config.Config) error {
 	return fmt.Errorf("config %s configures no model providers", c.path)
 }
 
+// newProviders builds the provider registry, remembering models a provider
+// refuses for this account so the next catalog build leaves them out.
+func newProviders(cfg config.Config) *provider.Registry {
+	p := provider.New(cfg)
+	p.SetRefusalHook(func(id, reason string) {
+		if err := catalog.MarkUnavailable(catalog.Dir(), id, reason); err != nil {
+			slog.Warn("record refused model", "model", id, "error", err)
+		}
+		slog.Warn("model refused by provider; leaving it out", "model", id)
+	})
+	return p
+}
+
 // skipDiscovery is set for commands that only read the store, which do not
 // need a model catalog and should not wait on the network.
 var skipDiscovery bool
@@ -490,7 +503,7 @@ func installCatalog(ctx context.Context, cfg config.Config) {
 	if skipDiscovery {
 		return
 	}
-	res := catalog.Build(ctx, cfg, filepath.Join(config.Home(), "catalog"), nil)
+	res := catalog.Build(ctx, cfg, catalog.Dir(), nil)
 	model.Install(res.Models)
 	for _, d := range res.Discoveries {
 		attrs := []any{"provider", d.Provider, "source", d.Source, "listed", d.Listed, "usable", len(d.Models)}

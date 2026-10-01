@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ductone/orrey/internal/config"
 	"github.com/ductone/orrey/internal/model"
@@ -53,7 +54,7 @@ func decode(t *testing.T, entries ...map[string]any) []rampModel {
 }
 
 func TestInferOpenModel(t *testing.T) {
-	specs, skipped := inferRamp(decode(t, entry("deepseek-v4.1-flash", nil)))
+	specs, skipped := inferRamp(decode(t, entry("deepseek-v4.1-flash", nil)), nil)
 	if len(specs) != 1 || len(skipped) != 0 {
 		t.Fatalf("specs=%v skipped=%v", specs, skipped)
 	}
@@ -126,7 +127,7 @@ func TestInferenceRules(t *testing.T) {
 			}
 		}},
 	} {
-		specs, skipped := inferRamp(decode(t, entry("qwen4-coder", tc.mutate)))
+		specs, skipped := inferRamp(decode(t, entry("qwen4-coder", tc.mutate)), nil)
 		if tc.skip != "" {
 			if len(specs) != 0 || skipped[tc.skip] != 1 {
 				t.Errorf("%s: specs=%v skipped=%v", tc.name, specs, skipped)
@@ -260,5 +261,45 @@ func TestBuildWithoutRampSkipsDiscovery(t *testing.T) {
 	res := Build(context.Background(), config.Config{Providers: map[string]config.ProviderConfig{"openai": {APIKey: "k"}}}, t.TempDir(), nil)
 	if len(res.Discoveries) != 0 || len(res.Models) != len(model.Catalog) {
 		t.Fatalf("res = %+v", res)
+	}
+}
+
+func TestOwnKeyOnlyModelsAreLeftOutUnlessConfigured(t *testing.T) {
+	bedrockOnly := entry("us.openai.gpt-6-luna", func(r map[string]any) {
+		r["providers"] = []any{map[string]any{"provider": "bedrock"}}
+	})
+	mixed := entry("gpt-6-luna", func(r map[string]any) {
+		r["providers"] = []any{map[string]any{"provider": "bedrock"}, map[string]any{"provider": "openai"}}
+	})
+	specs, skipped := inferRamp(decode(t, bedrockOnly, mixed), nil)
+	if len(specs) != 1 || specs[0].ID != "ramp/gpt-6-luna" || skipped["needs own provider key"] != 1 {
+		t.Fatalf("specs=%v skipped=%v", specs, skipped)
+	}
+	specs, _ = inferRamp(decode(t, bedrockOnly), []string{"bedrock"})
+	if len(specs) != 1 {
+		t.Fatal("provider_keys: [bedrock] must bring Bedrock-only models back")
+	}
+}
+
+func TestRefusedModelsAreLeftOutUntilTheyExpire(t *testing.T) {
+	dir := t.TempDir()
+	if err := MarkUnavailable(dir, "ramp/deepseek-v4.1-flash", "provider_key_required"); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if got := Unavailable(dir, now); got["ramp/deepseek-v4.1-flash"] != "provider_key_required" {
+		t.Fatalf("unavailable = %v", got)
+	}
+	if got := Unavailable(dir, now.Add(refusalTTL+time.Minute)); len(got) != 0 {
+		t.Fatalf("refusals must expire: %v", got)
+	}
+	srv := rampServer(t, 200, entry("deepseek-v4.1-flash", nil), entry("qwen4-coder", nil))
+	res := Build(context.Background(), config.Config{Providers: map[string]config.ProviderConfig{"ramp": {APIKey: "k", BaseURL: srv.URL}}}, dir, nil)
+	ids := map[string]bool{}
+	for _, m := range res.Models {
+		ids[m.ID] = true
+	}
+	if ids["ramp/deepseek-v4.1-flash"] || !ids["ramp/qwen4-coder"] || res.Refused != 1 {
+		t.Fatalf("refused model must be left out: refused=%d ids=%v", res.Refused, ids)
 	}
 }

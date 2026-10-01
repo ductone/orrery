@@ -269,3 +269,59 @@ func TestTurnWaitsOutARateLimitOnTheOnlyCredential(t *testing.T) {
 		t.Fatal("the turn must record that it waited for a credential")
 	}
 }
+
+// A model the provider refuses for this account (here, one that needs a
+// provider key the account lacks) is routed around rather than failing the
+// turn, as a Bedrock-only discovered model once did.
+func TestRefusedModelIsRoutedAround(t *testing.T) {
+	e, _ := testEngine(t)
+	workspace := t.TempDir()
+	var refusedModel string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if instructions, _ := body["instructions"].(string); !strings.Contains(instructions, "TOOL CALL DISCIPLINE") {
+			_ = json.NewEncoder(w).Encode(responsesText("Title"))
+			return
+		}
+		m := body["model"].(string)
+		if refusedModel == "" || m == refusedModel {
+			refusedModel = m
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":{"type":"permission_error","code":"provider_key_required"}}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(responsesText("done"))
+	}))
+	t.Cleanup(srv.Close)
+	cfg := config.Config{
+		WorkspaceRoot: workspace,
+		Providers:     map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: srv.URL}},
+		Interventions: config.InterventionConfig{JudgeEnabled: new(bool)},
+		Router:        config.RouterConfig{LambdaCost: .35},
+	}
+	providers := provider.New(cfg)
+	e.ReplaceRuntime(cfg, providers, nil)
+	req := agentproto.TaskRequest{Spec: "answer", Budget: agentproto.Budget{MaxUSD: 5, MaxTokens: 1_000_000, MaxWallClock: time.Minute}, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"}}
+	sid, results, err := e.Start(context.Background(), req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := <-results
+	if r.Status != agentproto.Pass {
+		t.Fatalf("result = %+v", r)
+	}
+	var refusedEvent bool
+	es, _ := e.store.EventsAfter(context.Background(), sid, 0)
+	for _, ev := range es {
+		refusedEvent = refusedEvent || ev.Type == "routing.model_refused" && strings.Contains(string(ev.Data), `"remembered":true`)
+	}
+	if !refusedEvent {
+		t.Fatal("the refusal must be recorded")
+	}
+	for _, id := range providers.AvailableIDs() {
+		if strings.HasSuffix(id, "/"+refusedModel) {
+			t.Fatalf("the refused model %s must leave routing", id)
+		}
+	}
+}

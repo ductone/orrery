@@ -156,6 +156,10 @@ type ProviderConfig struct {
 	APIKey  string   `yaml:"api_key"`
 	BaseURL string   `yaml:"base_url"`
 	Keys    []string `yaml:"api_keys"`
+	// ProviderKeys names upstream providers for which the account has its own
+	// key on a router (Ramp Router's "Provider keys"), so models served only
+	// through them are usable. Without one, such models are left out.
+	ProviderKeys []string `yaml:"provider_keys"`
 }
 
 type MCPConfig struct {

@@ -55,6 +55,10 @@ type rampModel struct {
 				} `json:"efforts"`
 			} `json:"reasoning"`
 		} `json:"capabilities"`
+		// Providers are the upstreams that serve the model.
+		Providers []struct {
+			Provider string `json:"provider"`
+		} `json:"providers"`
 		Pricing struct {
 			Input     string `json:"input"`
 			Output    string `json:"output"`
@@ -111,13 +115,13 @@ type Discovery struct {
 
 // DiscoverRamp lists Ramp Router's models and infers specs for them. On
 // failure it falls back to the last good listing cached under cacheDir.
-func DiscoverRamp(ctx context.Context, client *http.Client, baseURL, key, cacheDir string) Discovery {
+func DiscoverRamp(ctx context.Context, client *http.Client, baseURL, key, cacheDir string, providerKeys []string) Discovery {
 	d := Discovery{Provider: "ramp", Source: "none"}
 	ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	defer cancel()
 	listed, err := fetchRamp(ctx, client, baseURL, key)
 	if err == nil {
-		d.Models, d.Skipped = inferRamp(listed)
+		d.Models, d.Skipped = inferRamp(listed, providerKeys)
 		d.Listed, d.Source, d.Fetched = len(listed), "live", time.Now().UTC()
 		writeCache(cacheDir, d)
 		return d
