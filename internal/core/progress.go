@@ -3,6 +3,7 @@ package core
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"math"
 	"strings"
 
@@ -42,6 +43,8 @@ type progressTracker struct {
 	verificationWaived     bool
 	// fixPending is set by a review rejection and cleared by the next edit.
 	fixPending bool
+	// reviewRejections counts reviews that rejected this run's change.
+	reviewRejections int
 	// rejectedDiff and rejectedReview hold the diff the last failed review
 	// covered and its findings, so an unchanged diff is not reviewed again.
 	rejectedDiff, rejectedReview string
@@ -66,7 +69,9 @@ func newProgressTracker() *progressTracker {
 }
 
 func (p *progressTracker) beginTurn(phase string) {
-	if p.reviewRemediation {
+	// Remediation is bounded by turns that do not fix anything, not by all
+	// turns: an agent editing its way through findings is making progress.
+	if p.reviewRemediation && p.fixPending {
 		p.reviewRemediationTurns++
 	}
 	if phase != p.phase {
@@ -207,10 +212,15 @@ func shouldForceFinalResolution(phase string, phaseTurns int) bool {
 
 func (p *progressTracker) markNudged() { p.nudges++ }
 
-func (p *progressTracker) markReviewRejected() {
+// markReviewRejected records a rejection; reviewed is false when the diff
+// was refused unchanged without running a reviewer.
+func (p *progressTracker) markReviewRejected(reviewed bool) {
 	if !p.reviewRemediation {
 		p.reviewRemediation = true
 		p.reviewRemediationTurns = 0
+	}
+	if reviewed {
+		p.reviewRejections++
 	}
 	p.fixPending = true
 }
@@ -221,9 +231,19 @@ func (p *progressTracker) markReviewRejected() {
 // produced the same diff and another identical review.
 func (p *progressTracker) awaitingFix() bool { return p.reviewRemediation && p.fixPending }
 
+// maxReviewRejections bounds how many independent reviews may reject a run's
+// change before it stops.
+const maxReviewRejections = 4
+
 func (p *progressTracker) reviewRemediationReason(parentJob string) string {
-	if parentJob == "" && p.reviewRemediation && p.reviewRemediationTurns >= 8 {
-		return "agent exceeded the bounded independent-review remediation window"
+	if parentJob != "" || !p.reviewRemediation {
+		return ""
+	}
+	if p.reviewRemediationTurns >= 8 {
+		return "agent spent eight turns after a failed independent review without fixing anything"
+	}
+	if p.reviewRejections >= maxReviewRejections {
+		return fmt.Sprintf("independent review rejected the change %d times", p.reviewRejections)
 	}
 	return ""
 }

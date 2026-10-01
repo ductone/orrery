@@ -171,11 +171,11 @@ func TestVerifiedCompletionIsForcedAfterReviewWithoutEdits(t *testing.T) {
 
 func TestIndependentReviewRemediationBoundSurvivesPhaseChanges(t *testing.T) {
 	p := newProgressTracker()
-	p.markReviewRejected()
+	p.markReviewRejected(true)
 	for i, phase := range []string{"diagnose", "explore", "plan", "implement", "review", "explore", "diagnose"} {
 		p.beginTurn(phase)
 		if i == 3 {
-			p.markReviewRejected()
+			p.markReviewRejected(true)
 		}
 		if got := p.reviewRemediationReason(""); got != "" {
 			t.Fatalf("remediation terminated early at turn %d: %s", i+1, got)

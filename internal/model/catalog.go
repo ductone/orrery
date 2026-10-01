@@ -110,6 +110,9 @@ type ModelSpec struct {
 	Effort                   []Effort
 	Compat                   Compat
 	EditDialect              EditDialect
+	// Discovered marks a model inferred from a provider listing rather than
+	// built in or vouched for by a config override that sets its tier.
+	Discovered bool `json:",omitempty"`
 }
 
 var Catalog = []ModelSpec{

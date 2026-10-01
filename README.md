@@ -78,6 +78,8 @@ A decision runs in two stages: hard filters, then scoring.
 - *Cost* is the estimated price of the actual next call, computed from live token counts and cached-prefix pricing, not a list price. `lambda_cost` is the single dial that says how much quality a dollar is worth.
 - *Switch penalty* prices the cache you would throw away. Leaving a warm model mid-tool-chain costs more, and the penalty grows with conversation size. Critically, it only applies when the prefix is warm: right after compaction there is no cache to protect, so cost and quality decide freely.
 
+While the agent fixes findings from a failed independent review, its turns are routed to frontier models: a reviewer finding real bugs is a hard-failure signal, not mechanical work. That remediation ends a run after eight turns without an edit, or after four rejected reviews; a completion whose diff is unchanged since a failed review is refused with those findings instead of being reviewed again.
+
 **Stall handling** is where routing earns its keep. Repeated failed commands, a test-failure streak, repeated edits, turns without progress, or a phase running long all mark the turn as stalled. Orrery then distinguishes two kinds of stuck. Hard failures look like a capability ceiling and push toward frontier models. But repeated reads or searches are a discipline problem, not a hard problem, so the largest bonus goes to *efficient* models: redundant exploration escalates to a cheaper, better-behaved model instead of burning frontier tokens re-reading the same files.
 
 Reasoning effort follows the same phase logic — high for planning, diagnosis, review, and repeated test failures; low for wrap-up; medium otherwise — clamped to what each model supports. The chosen model also fixes its edit dialect and whether the strict or portable toolset is used.
@@ -97,7 +99,7 @@ router:
 
 At startup and on config reload, Orrery asks providers that list their models for their catalog (Ramp Router's `GET /v1/models` today) and merges three layers, each winning over the one before: discovered models, the built-in catalog, then `models:` overrides in the config. Discovery has a five-second timeout and falls back to the last good listing cached in `~/.orrery/catalog/`, then to the built-in catalog alone, so it never stops Orrery from starting. The startup log reports how many models were listed, usable, and overridden.
 
-A discovered model is used only when it is active, supports the Responses API and tool calling, has at least a 64K context window, and lists prices. It is never inferred to be frontier tier: models costing $0.50 or more per million output tokens become efficient tier and cheaper ones tiny. Its family comes from its name (so a new vendor diversifies reviews), and it gets portable compatibility settings and the contextual edit dialect.
+A discovered model is used only when it is active, supports the Responses API and tool calling, has at least a 64K context window, and lists prices. It is never inferred to be frontier tier: reasoning models costing $0.50 or more per million output tokens become efficient tier, and cheaper or non-reasoning ones tiny. Discovered models also carry a quality penalty in routing, since their tier comes only from a price list, so price alone cannot make one outscore a built-in model; a `models:` override that sets `tier` vouches for the model and removes it. Its family comes from its name (so a new vendor diversifies reviews), and it gets portable compatibility settings and the contextual edit dialect.
 
 ```yaml
 models:

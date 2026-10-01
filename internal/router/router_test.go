@@ -7,6 +7,7 @@ import (
 	"github.com/ductone/orrey/internal/store"
 	"strings"
 	"testing"
+	"time"
 )
 
 type ledger struct{ records []store.RoutingRecord }
@@ -166,5 +167,61 @@ func TestColdPrefixDropsStickiness(t *testing.T) {
 	}
 	if d.Model.ID != "openai/gpt-5.6-terra" {
 		t.Fatalf("cold prefix kept incumbent %s, want cheaper terra", d.Model.ID)
+	}
+}
+
+func routingCatalog() []model.ModelSpec {
+	opus, _ := model.Get("ramp/claude-opus-5")
+	sonnet, _ := model.Get("ramp/claude-sonnet-5")
+	nano := sonnet
+	nano.ID, nano.Family, nano.Discovered = "ramp/gpt-5.4-nano", model.OpenAI, true
+	nano.Pricing = model.Pricing{Input: .05, Output: .5, CacheRead: .005}
+	return []model.ModelSpec{opus, sonnet, nano}
+}
+
+func decideWith(t *testing.T, catalog []model.ModelSpec, s RoutingState) Decision {
+	t.Helper()
+	// Decisions resolve their model from the active catalog.
+	model.Install(catalog)
+	t.Cleanup(func() { model.Install(model.Catalog) })
+	p := &V1{cfg: config.RouterConfig{LambdaCost: .35}, ledger: &ledger{}, catalog: catalog, now: time.Now}
+	ids := make([]string, len(catalog))
+	for i, m := range catalog {
+		ids[i] = m.ID
+	}
+	s.SessionID, s.AvailableModels = "s", ids
+	if s.InputTokens == 0 {
+		s.InputTokens = 40_000
+	}
+	d, _, err := p.Decide(context.Background(), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+func TestDiscoveredModelsDoNotWinOnPriceAlone(t *testing.T) {
+	d := decideWith(t, routingCatalog(), RoutingState{Point: TurnStart, Phase: Implement})
+	if d.Model.ID == "ramp/gpt-5.4-nano" {
+		t.Fatal("a discovered model must not outscore built-in models on price alone")
+	}
+	// A config override that sets the tier vouches for it.
+	c := routingCatalog()
+	c[2].Discovered = false
+	if d := decideWith(t, c, RoutingState{Point: TurnStart, Phase: Implement}); d.Model.ID != "ramp/gpt-5.4-nano" {
+		t.Fatalf("a vouched-for cheap efficient model may win implementation turns, got %s", d.Model.ID)
+	}
+}
+
+func TestReviewFindingsNeedAFrontierModel(t *testing.T) {
+	c := routingCatalog()
+	c[2].Discovered = false
+	d := decideWith(t, c, RoutingState{Point: TurnStart, Phase: Implement, Stall: StallSignals{ReviewRejected: true}})
+	if d.Model.Tier != model.Frontier {
+		t.Fatalf("fixing review findings routed to %s (%s)", d.Model.ID, d.Model.Tier)
+	}
+	// Workers created for other purposes are not affected.
+	if d := decideWith(t, c, RoutingState{Point: JobCreation, Phase: Explore, Stall: StallSignals{ReviewRejected: true}}); d.Model.Tier == model.Frontier && d.Model.ID != "ramp/claude-opus-5" {
+		t.Fatalf("unexpected %s", d.Model.ID)
 	}
 }

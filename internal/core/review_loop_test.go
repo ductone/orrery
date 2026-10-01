@@ -91,7 +91,7 @@ func TestAwaitingFix(t *testing.T) {
 	if !p.shouldForceVerifiedCompletion() || p.awaitingFix() {
 		t.Fatal("before any review, verified work may be told to finish")
 	}
-	p.markReviewRejected()
+	p.markReviewRejected(true)
 	if !p.awaitingFix() {
 		t.Fatal("a rejection awaits a fix")
 	}
@@ -99,8 +99,39 @@ func TestAwaitingFix(t *testing.T) {
 	if p.awaitingFix() {
 		t.Fatal("an edit answers the rejection")
 	}
-	p.markReviewRejected()
+	p.markReviewRejected(true)
 	if !p.awaitingFix() {
 		t.Fatal("each new rejection awaits a new fix")
+	}
+}
+
+func TestRemediationBoundCountsTurnsWithoutFixes(t *testing.T) {
+	p := newProgressTracker()
+	p.markReviewRejected(true)
+	for range 7 {
+		p.beginTurn("implement")
+		p.observe(provider.ToolCall{Name: "edit", Arguments: map[string]any{"path": "a.go"}}, map[string]any{}, nil)
+		p.markReviewRejected(false)
+	}
+	if p.reviewRemediationReason("") != "" {
+		t.Fatal("turns that edit must not count toward the remediation bound")
+	}
+	p2 := newProgressTracker()
+	p2.markReviewRejected(true)
+	for range 8 {
+		p2.beginTurn("implement")
+	}
+	if !strings.Contains(p2.reviewRemediationReason(""), "without fixing anything") {
+		t.Fatalf("eight idle turns end remediation: %q", p2.reviewRemediationReason(""))
+	}
+	p3 := newProgressTracker()
+	for range maxReviewRejections {
+		p3.markReviewRejected(true)
+	}
+	if !strings.Contains(p3.reviewRemediationReason(""), "rejected the change 4 times") {
+		t.Fatalf("reason = %q", p3.reviewRemediationReason(""))
+	}
+	if p3.reviewRemediationReason("job") != "" {
+		t.Fatal("workers are bounded by their own budgets")
 	}
 }

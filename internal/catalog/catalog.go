@@ -154,7 +154,9 @@ func override(m model.ModelSpec, o config.ModelConfig) model.ModelSpec {
 		m.Family = *o.Family
 	}
 	if o.Tier != nil {
+		// Setting a tier vouches for the model.
 		m.Tier = *o.Tier
+		m.Discovered = false
 	}
 	if o.Inputs != nil {
 		m.Inputs = slices.Clone(*o.Inputs)

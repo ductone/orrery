@@ -135,7 +135,9 @@ func inferRampModel(m rampModel) (model.ModelSpec, string) {
 
 	family := inferFamily(name)
 	tier := model.Efficient
-	if output < efficientOutputPrice {
+	// Cheap models, and models without reasoning (often older generations),
+	// are kept to side tasks rather than the main loop.
+	if output < efficientOutputPrice || !r.Capabilities.Reasoning.Supported {
 		tier = model.Tiny
 	}
 	inputs := []model.Modality{model.Text}
@@ -192,5 +194,6 @@ func inferRampModel(m rampModel) (model.ModelSpec, string) {
 			CacheControl:      r.Capabilities.PromptCaching,
 		},
 		EditDialect: dialect,
+		Discovered:  true,
 	}, ""
 }

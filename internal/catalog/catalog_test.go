@@ -303,3 +303,16 @@ func TestRefusedModelsAreLeftOutUntilTheyExpire(t *testing.T) {
 		t.Fatalf("refused model must be left out: refused=%d ids=%v", res.Refused, ids)
 	}
 }
+
+func TestDiscoveredFlagAndReasoningTier(t *testing.T) {
+	specs, _ := inferRamp(decode(t, entry("gpt-4o-mini", func(r map[string]any) {
+		r["capabilities"].(map[string]any)["reasoning"] = map[string]any{"supported": false}
+	}), entry("qwen4-coder", nil)), nil)
+	if len(specs) != 2 || !specs[0].Discovered || specs[0].Tier != model.Tiny || specs[1].Tier != model.Efficient {
+		t.Fatalf("specs = %+v", specs)
+	}
+	out, _, _, _ := Apply(specs, []config.ModelConfig{{ID: "ramp/qwen4-coder", Tier: ptr(model.Frontier)}, {ID: "ramp/gpt-4o-mini", MaxOutput: ptr(1000)}})
+	if out[1].Discovered || !out[0].Discovered {
+		t.Fatal("only an override that sets the tier vouches for a discovered model")
+	}
+}

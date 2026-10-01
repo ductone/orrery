@@ -48,6 +48,9 @@ type StallSignals struct {
 	PhaseTurns       int     `json:"phase_turns"`
 	RepeatedReads    int     `json:"repeated_reads"`
 	RepeatedSearches int     `json:"repeated_searches"`
+	// ReviewRejected is set while the agent is fixing findings from a failed
+	// independent review: correctness work that needs a frontier model.
+	ReviewRejected bool `json:"review_rejected,omitempty"`
 }
 type CacheEstimate struct {
 	WarmTokens      int     `json:"warm_tokens,omitempty"`
@@ -157,6 +160,11 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 			candidates = append(candidates, c)
 			continue
 		}
+		if !defaultModelPinned && s.TierPin == "" && s.Stall.ReviewRejected && (s.Point == TurnStart || s.Point == Escalation) && m.Tier != model.Frontier {
+			c.Rejected = "review findings need a frontier model"
+			candidates = append(candidates, c)
+			continue
+		}
 		if slices.Contains(s.ExcludeModels, m.ID) {
 			c.Rejected = "model excluded after provider failure"
 			candidates = append(candidates, c)
@@ -207,6 +215,12 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 			}
 		}
 		c.Quality = quality(m.Tier, s.Phase, s.Stall)
+		if m.Discovered {
+			// A model inferred from a provider listing has no track record
+			// here; its tier comes from its price. Built-in and
+			// config-vouched models win ties against it.
+			c.Quality -= discoveredQualityPenalty
+		}
 		// Cache stickiness: switching to a warm model costs latency/context; but
 		// when the prefix is cold (e.g. right after compaction) there is no cache
 		// to preserve, so drop stickiness and let cost/quality decide.
@@ -284,6 +298,12 @@ func (p *V1) reviewHasAlternateFamily(s RoutingState) bool {
 	}
 	return false
 }
+
+// discoveredQualityPenalty offsets the efficient-tier bonus for models known
+// only from a provider listing, so price alone cannot make one outscore a
+// built-in model on the main loop.
+const discoveredQualityPenalty = .25
+
 func quality(t model.Tier, p Phase, stall StallSignals) float64 {
 	q := map[model.Tier]float64{model.Frontier: .96, model.Efficient: .78, model.Tiny: .42}[t]
 	if slices.Contains([]Phase{Plan, Diagnose, Review}, p) {

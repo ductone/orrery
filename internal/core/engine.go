@@ -792,6 +792,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		inputTokens := estimate(s.Spec + s.DurableSummary + messagesText(stored))
 		point := router.TurnStart
 		stall.NoProgressTurns = progress.noProgressTurns
+		stall.ReviewRejected = progress.reviewRemediation
 		stall.PhaseTurns = progress.phaseTurns
 		stall.RepeatedReads = progress.repeatedReads
 		stall.RepeatedSearches = progress.repeatedSearch
@@ -1093,7 +1094,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				diffHash := e.reviewDiffHash(ctx, sid, req.Workspace.Path)
 				if diffHash != "" && diffHash == progress.rejectedDiff {
 					progress.completionRejections++
-					progress.markReviewRejected()
+					progress.markReviewRejected(false)
 					e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "diff unchanged since a failed review", "review": progress.rejectedReview}, emit)
 					_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Completion rejected: the workspace diff has not changed since the independent review that rejected it, so the findings still stand. Fix them with edit, re-run verification, then complete:\n" + progress.rejectedReview})
 					continue
@@ -1110,7 +1111,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 					progress.reviewed = passed
 					if !passed {
 						progress.completionRejections++
-						progress.markReviewRejected()
+						progress.markReviewRejected(true)
 						progress.rejectedDiff, progress.rejectedReview = diffHash, reviewText
 						e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "independent review failed", "review": reviewText}, emit)
 						_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Independent review rejected completion. Address these correctness findings, re-run verification, then complete:\n" + reviewText})
