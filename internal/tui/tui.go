@@ -49,8 +49,15 @@ func Resolve(ctx context.Context, b Backend, opts Options) (store.Session, error
 }
 
 func Run(ctx context.Context, opts Options) error {
+	_, err := RunSession(ctx, opts)
+	return err
+}
+
+// RunSession runs the TUI and returns the id of the session it was scoped to,
+// including one created from the first message, or "" when none was.
+func RunSession(ctx context.Context, opts Options) (string, error) {
 	if opts.Backend == nil {
-		return errors.New("tui: backend required")
+		return "", errors.New("tui: backend required")
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -58,7 +65,7 @@ func Run(ctx context.Context, opts Options) error {
 	session, err := Resolve(lookup, opts.Backend, opts)
 	stop()
 	if err != nil {
-		return fmt.Errorf("resolve session: %w", err)
+		return "", fmt.Errorf("resolve session: %w", err)
 	}
 	sessionID := session.ID
 	m := newModel(ctx, opts, sessionID)
@@ -85,20 +92,23 @@ func Run(ctx context.Context, opts Options) error {
 			}
 		})
 		if err != nil {
-			return err
+			return "", err
 		}
 		defer sq.Close()
 		if sessionID != "" {
 			if err := sq.Bind(sessionID); err != nil {
-				return err
+				return "", err
 			}
 			m.bound = true
 		}
 		m.squire = sq
 	}
-	_, err = p.Run()
-	if errors.Is(err, tea.ErrProgramKilled) && ctx.Err() != nil {
-		return nil
+	final, err := p.Run()
+	if fm, ok := final.(*model); ok && fm != nil {
+		m = fm
 	}
-	return err
+	if errors.Is(err, tea.ErrProgramKilled) && ctx.Err() != nil {
+		err = nil
+	}
+	return m.sessionID, err
 }

@@ -6,8 +6,8 @@
 # Embedded engine: start a session in the current directory
 ./orrery tui "Fix the failing tests"   # or just: orrery -p "Fix the failing tests"
 
-# Attach to (or resume) a session
-./orrery tui --session SESSION_ID
+# Attach to (or resume) a session; on exit the TUI prints this command
+./orrery --session SESSION_ID         # same as: orrery tui --session SESSION_ID
 
 # Attach to a running `orrery serve` instead of embedding the engine
 ./orrery tui --server http://127.0.0.1:7433 --external-id TASK_ID

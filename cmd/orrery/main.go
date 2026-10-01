@@ -53,6 +53,7 @@ func realMain() int {
 	configFlag := global.String("config", "", "configuration file (default: ./orrery.yaml, then ~/.orrery/orrery.yaml)")
 	showVersion := global.Bool("version", false, "print version")
 	prompt := global.String("p", "", "with no command, start the terminal UI and send this message")
+	resume := global.String("session", "", "with no command, resume this session in the terminal UI")
 	if err := global.Parse(os.Args[1:]); err != nil {
 		return 2
 	}
@@ -68,6 +69,10 @@ func realMain() int {
 			fmt.Fprintf(os.Stderr, "-p before a command is only for starting the terminal UI; use `orrery %s -p ...`\n", cmd)
 			return 2
 		}
+		if *resume != "" {
+			fmt.Fprintf(os.Stderr, "--session before a command is only for resuming in the terminal UI; use `orrery --session %s` or `orrery %s --session %s`\n", *resume, cmd, *resume)
+			return 2
+		}
 	} else {
 		// Bare orrery is an interactive session in the current directory. It
 		// never falls back to serve: a command that silently changes mode with
@@ -78,8 +83,11 @@ func realMain() int {
 			return 2
 		}
 		cmd = "tui"
+		if *resume != "" {
+			args = append(args, "--session", *resume)
+		}
 		if *prompt != "" {
-			args = []string{"-p", *prompt}
+			args = append(args, "-p", *prompt)
 		}
 	}
 	if !slices.Contains(commands, cmd) {
@@ -100,7 +108,7 @@ func realMain() int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	ref := configRef{path: cfgPath, found: found, searched: searched}
+	ref := configRef{path: cfgPath, found: found, searched: searched, explicit: *configFlag != ""}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if cmd == "tui" {
@@ -464,6 +472,9 @@ type configRef struct {
 	path     string
 	found    bool
 	searched []string
+	// explicit is set when --config named the file, so commands printed for
+	// the user to run again must name it too.
+	explicit bool
 }
 
 // requireProviders fails commands that call models when none are configured.
@@ -563,6 +574,7 @@ func editDistance(a, b string) int {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: orrery [--config path] [-p "message"]   start a terminal UI session here
+       orrery [--config path] --session ID    resume a session in the terminal UI
        orrery [--config path] <command>
 config: --config, else $ORRERY_CONFIG, else ./orrery.yaml, else ~/.orrery/orrery.yaml
 commands:

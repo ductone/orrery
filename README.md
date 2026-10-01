@@ -13,6 +13,7 @@ go build ./cmd/orrery
 mkdir -p ~/.orrery && cp orrery.example.yaml ~/.orrery/orrery.yaml
 cd ~/code/some-repo && orrery        # terminal UI session in this directory
 orrery -p "Fix the failing tests"    # same, sending a first message
+orrery --session SESSION_ID          # resume a session; printed on exit
 ```
 
 Bare `orrery` starts a terminal UI session in the current directory; it needs a terminal, and scripts should name a command. Configuration is `--config`, else `$ORRERY_CONFIG`, else `./orrery.yaml` (a per-directory override), else `~/.orrery/orrery.yaml`. Relative paths inside a config file resolve against that file's directory. The database defaults to `~/.orrery/orrery.db` and logs go to `~/.orrery/logs/`; `$ORRERY_HOME` moves both. Commands that call models fail at startup when no providers are configured.

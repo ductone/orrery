@@ -74,7 +74,8 @@ func runTUI(ctx context.Context, ref configRef, args []string) int {
 			return 2
 		}
 		opts.Backend = remote
-		return finishTUI(tui.Run(ctx, opts))
+		id, err := tui.RunSession(ctx, opts)
+		return finishTUI(id, err, "orrery tui --server "+shellQuote(*server)+" --session ")
 	}
 
 	// The embedded engine, MCP servers, and language servers log to stderr;
@@ -100,18 +101,39 @@ func runTUI(ctx context.Context, ref configRef, args []string) int {
 		return 2
 	}
 	opts.Backend = tui.NewLocal(ctx, rt.engine)
-	runErr := tui.Run(ctx, opts)
+	id, runErr := tui.RunSession(ctx, opts)
 	c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	_ = rt.close(c)
 	cancel()
 	restore()
-	return finishTUI(runErr)
+	resume := "orrery "
+	if ref.explicit {
+		resume += "--config " + shellQuote(ref.path) + " "
+	}
+	return finishTUI(id, runErr, resume+"--session ")
 }
 
-func finishTUI(err error) int {
+// finishTUI reports how the TUI ended and, when it was scoped to a session,
+// how to come back to it.
+func finishTUI(sessionID string, err error, resume string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "orrery tui:", err)
+	}
+	if sessionID != "" {
+		fmt.Fprintf(os.Stderr, "To resume this session, run: %s%s\n", resume, sessionID)
+	}
+	if err != nil {
 		return 1
 	}
 	return 0
+}
+
+// shellQuote quotes s for a POSIX shell when it needs it.
+func shellQuote(s string) string {
+	if s != "" && strings.IndexFunc(s, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_./:@~=+,", r))
+	}) < 0 {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
