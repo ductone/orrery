@@ -214,7 +214,10 @@ func TestEmptyResponsesReportTheStopReason(t *testing.T) {
 		return map[string]any{"model": "gpt-5.6-terra", "status": "completed", "output": []any{map[string]any{"type": "reasoning", "summary": []any{}}}, "usage": map[string]any{"input_tokens": 10, "output_tokens": 50}}
 	}}
 	result := runScripted(t, s, "shared-write")
-	if result.Status != agentproto.Fail || !strings.Contains(result.Error, `"completed"`) || !strings.Contains(result.Error, "reasoning") {
+	// The only model is set aside after three empty replies; with nothing
+	// left to route to, the run asks, saying why, rather than failing.
+	input, _ := result.Result["input"].(agentproto.InputRequest)
+	if result.Status != agentproto.InputRequired || !strings.Contains(input.Question, `"completed"`) || !strings.Contains(input.Question, "reasoning") || !strings.Contains(input.Question, "set aside") {
 		t.Fatalf("result = %+v", result)
 	}
 }

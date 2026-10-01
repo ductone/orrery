@@ -425,6 +425,15 @@ func (e *Engine) ContinueIntegratedWithAttachments(ctx context.Context, id, inst
 			return StartInfo{}, resolveErr
 		}
 		e.emit(withTurnID(ctx, receipt.TurnID), id, "input.answered", map[string]any{"id": resolved.ID}, emit)
+		// Agreeing to a budget question extends the budget by another
+		// session's worth before the run resumes.
+		if strings.HasPrefix(resolved.ID, budgetQuestion) && !declines(instruction) {
+			cfg, _, _, _, _ := e.runtimeSnapshot()
+			if err := e.store.AddBudget(ctx, id, cfg.Budget.SessionUSD); err == nil {
+				s.BudgetUSD += cfg.Budget.SessionUSD
+				e.emit(withTurnID(ctx, receipt.TurnID), id, "budget.extended", map[string]any{"added_usd": cfg.Budget.SessionUSD, "budget_usd": s.BudgetUSD}, emit)
+			}
+		}
 	}
 	req.Budget.MaxUSD = s.BudgetUSD - s.SpentUSD
 	if req.Budget.MaxTokens <= 0 {
@@ -750,13 +759,19 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 	outputCap := defaultOutputCap
 	synthesizing := false
 	var compactions compactionGate
+	if answer, ok := e.limitAnswer(ctx, sid); ok && answer.declined {
+		return e.finish(sid, agentproto.TaskResult{Status: agentproto.Cancelled, Outcome: outcome, Error: "stopped at the person's request"}, emit)
+	}
 	e.emit(ctx, sid, "session.started", map[string]any{"spec": req.Spec}, emit)
 	for {
 		if err := ctx.Err(); err != nil {
 			progress.export(&outcome)
 			if errors.Is(err, context.DeadlineExceeded) {
 				outcome.BudgetReason = "wallclock"
-				return e.finish(sid, agentproto.TaskResult{Status: agentproto.BudgetExhausted, Outcome: outcome, Error: "wall-clock budget exhausted: " + err.Error()}, emit)
+				if parentJob == "" {
+					return e.askAboutLimit(sid, "This run reached its wall-clock limit. Keep going?", outcome, emit)
+				}
+				return e.finish(sid, agentproto.TaskResult{Status: agentproto.BudgetExhausted, Result: e.partialResult(sid), Outcome: outcome, Error: "wall-clock budget exhausted: " + err.Error()}, emit)
 			}
 			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Cancelled, Outcome: outcome, Error: err.Error()}, emit)
 		}
@@ -767,26 +782,40 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			return agentproto.TaskResult{Status: agentproto.Fail, Error: err.Error()}
 		}
 		progress.beginTurn(s.Phase)
-		if reason := progress.reviewRemediationReason(parentJob); reason != "" {
-			progress.export(&outcome)
-			e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "terminal_review_remediation_stall", "reason": reason, "signals": progress.stall()}, emit)
-			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: reason}, emit)
-		}
-		if reason := terminalPhaseStallReason(parentJob, s.Phase, progress.phaseTurns); reason != "" {
-			progress.export(&outcome)
-			e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "terminal_phase_stall", "reason": reason, "signals": progress.stall()}, emit)
-			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: reason}, emit)
+		// Stall checks are guesses: they climb the escalation ladder, which
+		// ends in asking the person, never in failing the run.
+		for _, stall := range []struct{ kind, reason string }{
+			{"review_remediation_stall", progress.reviewRemediationReason(parentJob)},
+			{"phase_stall", terminalPhaseStallReason(parentJob, s.Phase, progress.phaseTurns)},
+		} {
+			if stall.reason == "" {
+				continue
+			}
+			if e.escalate(ctx, sid, stall.kind, stall.reason, progress, emit) {
+				progress.export(&outcome)
+				return e.askAboutLimit(sid, stuckQuestion(stall.reason), outcome, emit)
+			}
+			break
 		}
 		reserved, _ := e.store.ReservedJobUSD(ctx, sid)
+		// A root session's budget is the person's to extend: pause and ask.
+		// A worker's budget is a hard slice of its parent's.
 		if s.SpentUSD+reserved >= s.BudgetUSD {
 			progress.export(&outcome)
 			outcome.BudgetReason = "usd"
-			return e.finish(sid, agentproto.TaskResult{Status: agentproto.BudgetExhausted, Outcome: outcome, Error: fmt.Sprintf("dollar budget exhausted: spent/reserved $%.4f of $%.4f", s.SpentUSD+reserved, s.BudgetUSD)}, emit)
+			if parentJob == "" {
+				cfg, _, _, _, _ := e.runtimeSnapshot()
+				return e.askToContinue(sid, budgetQuestion, fmt.Sprintf("I've used $%.2f of this session's $%.2f budget. Continue with another $%.2f?", s.SpentUSD+reserved, s.BudgetUSD, cfg.Budget.SessionUSD), []string{budgetChoice(cfg.Budget.SessionUSD), choiceStop}, outcome, emit)
+			}
+			return e.finish(sid, agentproto.TaskResult{Status: agentproto.BudgetExhausted, Result: e.partialResult(sid), Outcome: outcome, Error: fmt.Sprintf("dollar budget exhausted: spent/reserved $%.4f of $%.4f", s.SpentUSD+reserved, s.BudgetUSD)}, emit)
 		}
 		if outcome.Tokens >= req.Budget.MaxTokens {
 			progress.export(&outcome)
 			outcome.BudgetReason = "tokens"
-			return e.finish(sid, agentproto.TaskResult{Status: agentproto.BudgetExhausted, Outcome: outcome, Error: fmt.Sprintf("token budget exhausted: %d of %d", outcome.Tokens, req.Budget.MaxTokens)}, emit)
+			if parentJob == "" {
+				return e.askAboutLimit(sid, fmt.Sprintf("This run has used %d new tokens, the session's token limit. Keep going?", outcome.Tokens), outcome, emit)
+			}
+			return e.finish(sid, agentproto.TaskResult{Status: agentproto.BudgetExhausted, Result: e.partialResult(sid), Outcome: outcome, Error: fmt.Sprintf("token budget exhausted: %d of %d", outcome.Tokens, req.Budget.MaxTokens)}, emit)
 		}
 		stored, _ := e.store.Messages(ctx, sid)
 		inputTokens := estimate(s.Spec + s.DurableSummary + messagesText(stored))
@@ -815,6 +844,13 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			state.InstructionPhase = e.instructionPhase(ctx, s, stored, emit)
 			state.Phase = state.InstructionPhase.Phase
 		}
+		state.ExcludeModels = append(state.ExcludeModels, progress.excluded...)
+		if progress.switchModel && currentModel != "" {
+			// The escalation ladder asked for a different model.
+			state.ExcludeModels = append(state.ExcludeModels, currentModel)
+			state.Point = router.Escalation
+			progress.switchModel = false
+		}
 		applyHints(&state, req.Hints)
 		decision, why, err := e.decideWaiting(ctx, sid, runtimePolicy, runtimeProviders, &state, emit)
 		// No model can hold the history: bound stored tool results, compact,
@@ -834,7 +870,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			}
 		}
 		if err != nil {
-			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: err.Error()}, emit)
+			return e.routeFailureAfter(sid, parentJob, err, progress, outcome, emit)
 		}
 		e.emit(ctx, sid, "routing.decision", map[string]any{"decision": decision, "explanation": why}, emit)
 		e.shadowTurn(ctx, s, stored, state, decision)
@@ -869,13 +905,13 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			mode.restrict("Implementation is stalled after decisive evidence. Stop broad exploration. Read only an exact edit window if needed, finish the smallest justified edit, then run focused verification.", "todo", "read", "edit", "exec")
 		}
 		if forceVerifiedCompletion {
-			mode.restrict("The workspace has been successfully verified and no new edit has been made for several review turns. Review is complete. Return the final result now from the existing diff and verification evidence.")
+			mode.advise("The workspace has been verified and no edit has been made for several turns. If nothing remains, return the final result now from the existing diff and verification evidence.")
 		}
 		if forceResolution {
 			mode.restrict("Review or diagnosis has reached its resolution limit. Existing issue, diff, test, and review evidence is sufficient. Do not rediscover or refetch the task. Make only the smallest correction required by current evidence, run one focused verification command, then return the final result.", "todo", "read", "edit", "exec")
 		}
 		if forceFinalResolution {
-			mode.restrict("The bounded resolution window is complete. Return the final result now from the existing diff, verification, and review evidence.")
+			mode.advise("This review or diagnosis has run long. Unless a specific fix remains, return the final result now from the existing diff, verification, and review evidence.")
 		}
 		build := func(m model.ModelSpec, d router.Decision) (provider.Request, error) {
 			history, err := e.providerMessages(ctx, sid)
@@ -914,7 +950,18 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				malformedAttempts++
 				e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "malformed tool-call arguments", "attempt": malformedAttempts}, emit)
 				if malformedAttempts >= 3 {
-					return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "model returned malformed tool-call arguments three times: " + err.Error()}, emit)
+					// This model keeps truncating its calls; another may not.
+					e.dropModel(ctx, sid, decision.Model.ID, "malformed tool-call arguments three times", progress, emit)
+					failed = append(failed, decision.Model.ID)
+					state.ExcludeModels = append(state.ExcludeModels, decision.Model.ID)
+					state.AvailableModels = runtimeProviders.AvailableIDs()
+					decision, why, err = runtimePolicy.Decide(ctx, state)
+					if err != nil {
+						return e.routeFailureAfter(sid, parentJob, err, progress, outcome, emit)
+					}
+					malformedAttempts, modelAttempts = 0, 0
+					e.emit(ctx, sid, "routing.fallback", map[string]any{"decision": decision, "explanation": why}, emit)
+					continue
 				}
 				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Your last tool call's arguments were not valid JSON (usually a truncated response). Do not retry the same large call. Issue one small, complete tool call at a time with valid JSON arguments."})
 				state.CurrentModel = decision.Model.ID
@@ -932,14 +979,14 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				state.CurrentModel = decision.Model.ID
 				decision, why, err = runtimePolicy.Decide(ctx, state)
 				if err != nil {
-					return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: err.Error()}, emit)
+					return e.routeFailureAfter(sid, parentJob, err, progress, outcome, emit)
 				}
 				modelAttempts = 0
 				e.emit(ctx, sid, "routing.fallback", map[string]any{"decision": decision, "explanation": why}, emit)
 				continue
 			}
 			if !provider.IsRetryable(err) {
-				return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: err.Error()}, emit)
+				return e.routeFailureAfter(sid, parentJob, err, progress, outcome, emit)
 			}
 			// Whole-provider credential cooldown cannot succeed by retrying the
 			// same model, so reroute immediately; the router will pick a provider
@@ -962,7 +1009,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				state.CurrentModel = decision.Model.ID
 				decision, why, err = runtimePolicy.Decide(ctx, state)
 				if err != nil {
-					return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: err.Error()}, emit)
+					return e.routeFailureAfter(sid, parentJob, err, progress, outcome, emit)
 				}
 				modelAttempts = 0
 				e.emit(ctx, sid, "routing.fallback", map[string]any{"decision": decision, "explanation": why}, emit)
@@ -989,7 +1036,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			state.CurrentModel = decision.Model.ID
 			decision, why, err = runtimePolicy.Decide(ctx, state)
 			if err != nil {
-				return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: err.Error()}, emit)
+				return e.routeFailureAfter(sid, parentJob, err, progress, outcome, emit)
 			}
 			modelAttempts = 0
 			e.emit(ctx, sid, "routing.fallback", map[string]any{"decision": decision, "explanation": why}, emit)
@@ -1033,7 +1080,8 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				emptyCompletions++
 				e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "empty assistant response", "attempt": emptyCompletions, "stop_reason": resp.StopReason, "truncated": resp.Truncated, "output_kinds": resp.OutputKinds}, emit)
 				if emptyCompletions >= 3 {
-					return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: fmt.Sprintf("model returned three empty final responses (last stop reason %q, output %v)", resp.StopReason, resp.OutputKinds)}, emit)
+					e.dropModel(ctx, sid, decision.Model.ID, fmt.Sprintf("three empty final responses (last stop reason %q, output %v)", resp.StopReason, resp.OutputKinds), progress, emit)
+					emptyCompletions = 0
 				}
 				nudge := "Your last response was empty and cannot complete the task. Continue working, or provide a non-empty final result only after the task is actually complete."
 				if mode.noCalls {
@@ -1046,8 +1094,8 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			if serializedToolCallResponse(resp.Message) {
 				progress.completionRejections++
 				e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "serialized tool call returned as final text", "attempt": progress.completionRejections}, emit)
-				if progress.completionRejections >= 3 {
-					return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "model returned serialized tool calls instead of a final result three times"}, emit)
+				if progress.strike(decision.Model.ID, "serialized_tool_call") {
+					e.dropModel(ctx, sid, decision.Model.ID, "serialized tool calls instead of a final result three times", progress, emit)
 				}
 				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Your last response serialized a tool call as text, so it cannot complete the task. Do not emit tool markup. Synthesize the evidence already in context and return the required final result now."})
 				continue
@@ -1055,8 +1103,8 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			if unfinishedFinalResponse(resp.Message) {
 				progress.completionRejections++
 				e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "work-in-progress reasoning returned as final text", "attempt": progress.completionRejections}, emit)
-				if progress.completionRejections >= 3 {
-					return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "model returned work-in-progress reasoning instead of a final result three times"}, emit)
+				if progress.strike(decision.Model.ID, "work_in_progress") {
+					e.dropModel(ctx, sid, decision.Model.ID, "work-in-progress reasoning instead of a final result three times", progress, emit)
 				}
 				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Completion rejected: your response was a work-in-progress reasoning stream, not an outcome. Do not narrate more intended searches. Return one concise final result stating what was completed and verified, or clearly state the concrete blocker and missing prerequisite."})
 				continue
@@ -1106,7 +1154,11 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 					e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "review_inconclusive", "error": reviewErr.Error()}, emit)
 					progress.reviewed = true
 				} else if reviewErr != nil {
-					return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "independent review: " + reviewErr.Error()}, emit)
+					// A review that could not run (the diff could not be read,
+					// say) carries no verdict; treat it as inconclusive rather
+					// than failing work that may be correct.
+					e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "review_unavailable", "error": reviewErr.Error()}, emit)
+					progress.reviewed = true
 				} else {
 					progress.reviewed = passed
 					if !passed {
@@ -1126,8 +1178,8 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			if err := validateSchema(req.ResultSchema, result); err != nil {
 				progress.completionRejections++
 				e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "result schema validation failed", "error": err.Error(), "attempt": progress.completionRejections}, emit)
-				if progress.completionRejections >= 3 {
-					return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "result schema: " + err.Error()}, emit)
+				if progress.strike(decision.Model.ID, "result_schema") {
+					e.dropModel(ctx, sid, decision.Model.ID, "a result that failed the required schema three times: "+err.Error(), progress, emit)
 				}
 				schemaBytes, _ := json.Marshal(req.ResultSchema)
 				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Completion rejected: your final result did not validate against the required result schema (" + err.Error() + "). The schema is:\n" + string(schemaBytes) + "\nReturn a corrected final JSON result that satisfies it exactly."})
@@ -1287,9 +1339,10 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		progress.endTurn()
 		if reason := progress.terminalStallReason(); reason != "" {
 			if e.allowIntervention(ctx, sid, "terminal_stall", "no_progress_turns", progress.noProgressTurns, progress, emit) {
-				progress.export(&outcome)
-				e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "terminal_stall", "reason": reason, "signals": progress.stall()}, emit)
-				return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: reason}, emit)
+				if e.escalate(ctx, sid, "plan_stall", reason, progress, emit) {
+					progress.export(&outcome)
+					return e.askAboutLimit(sid, stuckQuestion(reason), outcome, emit)
+				}
 			}
 		}
 		if parentJob == "" && progress.shouldDelegate() && req.Depth > 0 && e.hasEfficientWorker() &&

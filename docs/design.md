@@ -188,7 +188,10 @@ not part of the current worker model.
 The harness assumes it runs inside an appropriately isolated workspace. It does
 not implement per-tool permission prompts or policy approval modes.
 `input_required` is for information genuinely needed to continue, not for
-security authorization.
+security authorization. Whether to keep spending past a budget the person set,
+or to keep going after the harness has tried every way it knows to get
+unstuck, is such information: only the person has it. So limits pause and ask
+rather than fail, and tool calls still never wait for permission.
 
 ### Not an authentication or multi-tenant control plane
 

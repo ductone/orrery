@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/ductone/orrey/internal/agentproto"
@@ -45,6 +46,16 @@ type progressTracker struct {
 	fixPending bool
 	// reviewRejections counts reviews that rejected this run's change.
 	reviewRejections int
+	// escalation is the stall-ladder rung reached this run; switchModel asks
+	// the next routing decision to leave the current model; excluded are
+	// models taken out of this run for misbehaving.
+	escalation  int
+	switchModel bool
+	excluded    []string
+	// strikes count a model's repeated misbehaviour of one kind;
+	// exclusionReasons say why each excluded model was set aside.
+	strikes          map[string]int
+	exclusionReasons map[string]string
 	// rejectedDiff and rejectedReview hold the diff the last failed review
 	// covered and its findings, so an unchanged diff is not reviewed again.
 	rejectedDiff, rejectedReview string
@@ -211,6 +222,35 @@ func shouldForceFinalResolution(phase string, phaseTurns int) bool {
 }
 
 func (p *progressTracker) markNudged() { p.nudges++ }
+
+// resetStall clears the counters stall checks trip on, so climbing a rung of
+// the escalation ladder needs the condition to recur.
+func (p *progressTracker) resetStall() {
+	p.phaseTurns, p.noProgressTurns, p.repeatedTodos = 0, 0, 0
+	p.reviewRemediationTurns, p.reviewRejections = 0, 0
+}
+
+// strike records one misbehaviour of a kind by a model and reports whether
+// it is the third, resetting the count when it is.
+func (p *progressTracker) strike(model, kind string) bool {
+	if p.strikes == nil {
+		p.strikes = map[string]int{}
+	}
+	key := model + "|" + kind
+	p.strikes[key]++
+	if p.strikes[key] >= 3 {
+		delete(p.strikes, key)
+		return true
+	}
+	return false
+}
+
+// exclude takes a misbehaving model out of routing for the rest of the run.
+func (p *progressTracker) exclude(model string) {
+	if !slices.Contains(p.excluded, model) {
+		p.excluded = append(p.excluded, model)
+	}
+}
 
 // markReviewRejected records a rejection; reviewed is false when the diff
 // was refused unchanged without running a reviewer.

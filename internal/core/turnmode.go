@@ -29,6 +29,13 @@ func (m *turnMode) restrict(directive string, tools ...string) {
 	m.allowed = tools
 }
 
+// advise adds a directive without constraining tools. "Finish now" advice
+// leaves tools available: turning them off once trapped an agent that had
+// review findings to fix.
+func (m *turnMode) advise(directive string) {
+	m.directives = append(m.directives, directive)
+}
+
 func (m *turnMode) active() bool { return len(m.directives) > 0 }
 
 // permits reports whether a tool call is allowed this turn.
