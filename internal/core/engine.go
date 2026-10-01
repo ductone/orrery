@@ -50,6 +50,12 @@ type Engine struct {
 	compactedLastTurn map[string]bool
 	toolStates        map[string]*builtin.SessionState
 	baselines         map[string]workspaceBaseline
+	// running counts in-flight runs per session; pendingHandoffs holds
+	// worker handoffs for sessions mid-turn; deliveredJobs are workers whose
+	// result reached the parent through job wait.
+	running         map[string]int
+	pendingHandoffs map[string][]handoff
+	deliveredJobs   map[string]bool
 	shadowWG          sync.WaitGroup
 }
 
@@ -721,6 +727,13 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 	// and review covers only what changed since this baseline.
 	e.setBaseline(sid, snapshotWorkspace(ctx, req.Workspace.Path))
 	defer e.clearBaseline(sid)
+	e.beginRun(sid)
+	defer func() {
+		e.endRun(sid)
+		// A worker that finished during the final turn still reaches the
+		// session, for its next run.
+		e.drainHandoffs(context.Background(), sid)
+	}()
 	emptyCompletions := 0
 	// outputCap bounds each response. It rises when a response is cut off at
 	// the limit, since a truncated reply is a budget problem, not a model one.
@@ -737,6 +750,8 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			}
 			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Cancelled, Outcome: outcome, Error: err.Error()}, emit)
 		}
+		// Turn boundary: deliver worker handoffs that arrived mid-turn.
+		e.drainHandoffs(ctx, sid)
 		s, err := e.store.Session(ctx, sid)
 		if err != nil {
 			return agentproto.TaskResult{Status: agentproto.Fail, Error: err.Error()}
@@ -1487,6 +1502,51 @@ func sanitizeProviderMessages(messages []provider.Message) []provider.Message {
 			message.ToolCalls = calls
 		}
 		out = append(out, message)
+	}
+	return pairToolResults(out)
+}
+
+// pairToolResults moves each tool result to directly after the assistant
+// message that called it. Providers require that pairing, and a message
+// written between a call and its result (a worker handoff that arrived
+// mid-turn, in one stored history) otherwise fails every later request. The
+// displaced messages keep their order, after the results.
+func pairToolResults(messages []provider.Message) []provider.Message {
+	used := make([]bool, len(messages))
+	out := make([]provider.Message, 0, len(messages))
+	for i, m := range messages {
+		if used[i] {
+			continue
+		}
+		used[i] = true
+		if m.Role == "tool" {
+			// Not placed after its call: the call's turn has already
+			// passed, so this result is an orphan.
+			continue
+		}
+		if m.Role != "assistant" || len(m.ToolCalls) == 0 {
+			out = append(out, m)
+			continue
+		}
+		// Gather this call's results up to the next assistant turn; a result
+		// never moves across a turn, and a call left without its result is
+		// dropped, as interrupted calls are.
+		var results []provider.Message
+		found := map[string]bool{}
+		for j := i + 1; j < len(messages); j++ {
+			n := messages[j]
+			if n.Role == "assistant" {
+				break
+			}
+			if !used[j] && n.Role == "tool" && !found[n.ToolCallID] && slices.ContainsFunc(m.ToolCalls, func(c provider.ToolCall) bool { return c.ID == n.ToolCallID }) {
+				used[j] = true
+				found[n.ToolCallID] = true
+				results = append(results, n)
+			}
+		}
+		m.ToolCalls = slices.DeleteFunc(slices.Clone(m.ToolCalls), func(c provider.ToolCall) bool { return !found[c.ID] })
+		out = append(out, m)
+		out = append(out, results...)
 	}
 	return out
 }

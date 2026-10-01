@@ -373,7 +373,7 @@ func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq ag
 		_ = os.WriteFile(filepath.Join(jobDir, "result.json"), []byte(store.JSON(result)), 0600)
 		_ = os.WriteFile(filepath.Join(jobDir, "status"), []byte(string(result.Status)+"\n"), 0600)
 		if injectHandoff {
-			_ = e.store.AddMessage(context.Background(), sid, "user", provider.Message{Role: "user", Harness: true, Content: "Worker job " + id + " completed. Treat this durable result as a worker handoff and advance the todo without repeating completed work: " + store.JSON(result)})
+			e.deliverHandoff(context.Background(), sid, id, provider.Message{Role: "user", Harness: true, Content: "Worker job " + id + " completed. Treat this durable result as a worker handoff and advance the todo without repeating completed work: " + store.JSON(result)})
 		}
 		e.emit(context.Background(), sid, "job.terminal", map[string]any{"id": id, "parent_session_id": sid, "parent_job_id": parent, "result": result}, emit)
 	}

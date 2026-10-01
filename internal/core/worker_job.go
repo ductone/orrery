@@ -48,6 +48,7 @@ func (e *Engine) workerJob(ctx context.Context, sid, id, action string) (any, er
 				return nil, err
 			}
 		}
+		e.markDelivered(id)
 		return workerJobView(j), nil
 	default:
 		return nil, errors.New("invalid action")
