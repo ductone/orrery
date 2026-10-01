@@ -314,7 +314,7 @@ func (r *Registry) Available(spec model.ModelSpec) bool {
 }
 func (r *Registry) AvailableIDs() []string {
 	out := []string{}
-	for _, m := range model.Catalog {
+	for _, m := range model.All() {
 		if r.Available(m) {
 			out = append(out, m.ID)
 		}
@@ -343,7 +343,7 @@ func (r *Registry) CompleteOne(ctx context.Context, d router.Decision, build Req
 func IsRetryable(err error) bool { return retryable(err) }
 func (r *Registry) Complete(ctx context.Context, d router.Decision, build RequestBuilder) (Response, model.ModelSpec, error) {
 	chain := []model.ModelSpec{d.Model}
-	for _, m := range model.Catalog {
+	for _, m := range model.All() {
 		if m.ID != d.Model.ID && m.Tier == d.Model.Tier && r.Available(m) {
 			chain = append(chain, m)
 		}

@@ -64,12 +64,16 @@ identifier changed.
 ### Opinionated maintainability
 
 The distribution remains one Go binary with one strict configuration file.
-The model catalog and compatibility rules are checked-in code. Built-in tools
-are ordinary Go packages. Unknown configuration keys fail rather than being
+The built-in model catalog and compatibility rules are checked-in code, and
+they win over anything discovered at runtime. Built-in tools are ordinary Go
+packages. Unknown configuration keys fail rather than being
 silently ignored.
 
-Adding a compatible model should require a catalog entry and, optionally, a
-routing weight. It should not require provider-specific orchestration logic.
+Adding a compatible model should require at most a catalog entry or a config
+override, and, optionally, a routing weight. It should not require
+provider-specific orchestration logic. Models a provider lists are discovered
+automatically (see "Evolving the charter"), so a new or cheaper model on an
+existing provider needs no release at all.
 This is the project's future-proofing test: better models should improve task
 performance without increasing harness complexity.
 
@@ -204,7 +208,8 @@ feedback that a generic gateway cannot see.
 
 The project favors a small, tested catalog with explicit compatibility and
 pricing behavior over broad but shallow provider coverage. Supporting every
-host, deployment target, or model-discovery API is not a goal.
+host or deployment target is not a goal, and discovery is limited to
+providers whose listings carry enough metadata to route on (Ramp Router today).
 
 ### Not a plugin marketplace
 
@@ -286,8 +291,24 @@ one should state the new user value, maintenance and security cost, cache and
 routing implications, telemetry needed to judge it, and the old boundary it
 supersedes.
 
-Two earlier boundaries have already evolved deliberately: Orrery now supports
-read-only LSP queries and stdio transports. Out-of-process recursive execution
+Three earlier boundaries have already evolved deliberately: Orrery now supports
+read-only LSP queries and stdio transports, and it discovers models from
+providers that list them.
+
+Model discovery supersedes "the catalog is only checked-in code" and "model
+discovery is not a goal". The user value is picking up new and much cheaper
+models without a release or a sync step. It is kept narrow: one listing call
+per provider at startup and reload, with a short timeout and an on-disk cache
+of the last good listing, so discovery can never stop Orrery from starting.
+Inference is conservative: a discovered model must be active, speak the
+Responses API, and call tools; it is never inferred to be frontier tier; and
+it gets portable compatibility settings. Built-in entries win over discovered
+ones for the same id, and config overrides win over both, field by field, or
+disable a model. Routing changes because cheap efficient-tier models now
+compete for mechanical turns; the frontier floor still guards planning,
+diagnosis, and review. The startup log records each discovery's source and
+counts, and routing records name the chosen model, which is the telemetry to
+judge it. Out-of-process recursive execution
 over the typed agent contract remains separate future work. When an exception
 lands, this charter and the architecture document should change in the same
 commit so obsolete non-goals do not survive as folklore.

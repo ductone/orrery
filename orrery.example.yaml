@@ -25,6 +25,13 @@ budget:
   session_usd: 25
   job_default_fraction: 0.2
   min_review_usd: 2
+# Models are discovered from Ramp Router at startup and merged with the
+# built-in catalog. Override any field, promote, or disable a model here.
+# models:
+#   - id: ramp/qwen4-coder
+#     tier: frontier
+#   - id: ramp/some-flaky-model
+#     disabled: true
 interventions:
   # Expensive interventions (worker spawn, model escalation, terminal stall) are
   # gated by a cheap LLM judge; the counters that trigger them are deliberately

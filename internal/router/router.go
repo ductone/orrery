@@ -124,7 +124,7 @@ type V1 struct {
 }
 
 func NewV1(cfg config.RouterConfig, l Ledger) *V1 {
-	return &V1{cfg: cfg, ledger: l, catalog: model.Catalog, now: time.Now}
+	return &V1{cfg: cfg, ledger: l, catalog: model.All(), now: time.Now}
 }
 
 func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation, error) {

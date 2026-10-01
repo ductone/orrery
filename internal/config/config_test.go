@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -243,5 +244,51 @@ func TestDatabaseDefaultsToHomeAndRelativePathsFollowTheConfig(t *testing.T) {
 	cfg, _ = Load(filepath.Join(dir, "absent.yaml"))
 	if cfg.Database != filepath.Join(home, "orrery.db") {
 		t.Fatalf("running on defaults must use the home database, got %q", cfg.Database)
+	}
+}
+
+func TestModelOverrides(t *testing.T) {
+	dir := t.TempDir()
+	write := func(body string) (Config, error) {
+		path := filepath.Join(dir, "c.yaml")
+		if err := os.WriteFile(path, []byte("listen: '127.0.0.1:1'\ndatabase: 'x.db'\n"+body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return Load(path)
+	}
+	cfg, err := write(`models:
+  - id: ramp/qwen4-coder
+    tier: frontier
+    family: qwen
+    pricing: {output: 1.5, thresholds: [{above_tokens: 200000, input: 1, output: 3, cache_read: 0.1, cache_write: 0}]}
+    compat: {supports_strict_tools: true, stream_idle_timeout: 5m}
+  - id: ramp/noisy
+    disabled: true
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := cfg.Models[0]
+	if *q.Tier != "frontier" || *q.Family != "qwen" || *q.Pricing.Output != 1.5 || q.Pricing.Input != nil || len(*q.Pricing.Thresholds) != 1 || !*q.Compat.SupportsStrictTools || q.Compat.StreamIdleTimeout.Minutes() != 5 {
+		t.Fatalf("override = %+v", q)
+	}
+	if !*cfg.Models[1].Disabled {
+		t.Fatal("disabled lost")
+	}
+	for body, want := range map[string]string{
+		"models:\n  - id: qwen4\n":                                        "provider/model",
+		"models:\n  - id: ramp/a\n  - id: ramp/a\n":                       "duplicate",
+		"models:\n  - id: ramp/a\n    family: Not Valid\n":                "invalid family",
+		"models:\n  - id: ramp/a\n    tier: legendary\n":                  "unknown tier",
+		"models:\n  - id: ramp/a\n    pricing: {input: -1}\n":             "non-negative",
+		"models:\n  - id: ramp/a\n    context_window: 0\n":                "positive",
+		"models:\n  - id: ramp/a\n    effort: [maximum]\n":                "unknown effort",
+		"models:\n  - id: ramp/a\n    edit_dialect: diff\n":               "edit_dialect",
+		"models:\n  - id: ramp/a\n    pricing: {inptu: 1}\n":              "inptu",
+		"models:\n  - id: ramp/a\n    compat: {system_prompt_style: x}\n": "system_prompt_style",
+	} {
+		if _, err := write(body); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: err = %v, want it to mention %q", body, err, want)
+		}
 	}
 }

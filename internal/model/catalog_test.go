@@ -25,3 +25,17 @@ func TestCatalogIDsUnique(t *testing.T) {
 		}
 	}
 }
+
+func TestInstallReplacesTheActiveCatalog(t *testing.T) {
+	t.Cleanup(func() { active.Store(nil) })
+	if len(All()) != len(Catalog) {
+		t.Fatal("the built-in catalog is active by default")
+	}
+	Install([]ModelSpec{{ID: "ramp/extra", ContextWindow: 1, MaxOutput: 1, Effort: []Effort{EffortNone}}})
+	if _, ok := Get("ramp/extra"); !ok || len(All()) != 1 {
+		t.Fatal("an installed catalog must be the one Get and All read")
+	}
+	if _, ok := Get(Catalog[0].ID); ok {
+		t.Fatal("models not in the installed catalog are gone")
+	}
+}

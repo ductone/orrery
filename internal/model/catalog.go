@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"sync/atomic"
+	"time"
+)
 
 type Family string
 
@@ -136,8 +139,28 @@ var Catalog = []ModelSpec{
 	{ID: "ramp/gpt-5.6-luna", Family: OpenAI, Tier: Tiny, Inputs: []Modality{Text, Image}, ContextWindow: 1050000, MaxOutput: 128000, Pricing: Pricing{Input: .2, Output: 1.2, CacheRead: .02}, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, Compat: Compat{MaxTokensField: "max_output_tokens", SupportsToolChoice: true, SupportsReasoningEffort: true, EffortWireMap: map[Effort]string{EffortLow: "low", EffortMedium: "medium", EffortHigh: "high", EffortXHigh: "xhigh"}, SupportsStrictTools: true, SystemPromptStyle: SystemTopLevel, StreamIdleTimeout: 10 * time.Minute}, EditDialect: HashlineContextual},
 }
 
+// active is the catalog in use: the built-in Catalog until Install replaces
+// it with one merged from discovery and configuration. It is swapped whole, so
+// readers never see a partial catalog during a runtime reload.
+var active atomic.Pointer[[]ModelSpec]
+
+// Install replaces the active catalog. Runtime objects built afterwards (the
+// router, provider registry lookups) see the new models.
+func Install(specs []ModelSpec) {
+	c := append([]ModelSpec(nil), specs...)
+	active.Store(&c)
+}
+
+// All returns the active catalog. Callers must not modify it.
+func All() []ModelSpec {
+	if c := active.Load(); c != nil {
+		return *c
+	}
+	return Catalog
+}
+
 func Get(id string) (ModelSpec, bool) {
-	for _, m := range Catalog {
+	for _, m := range All() {
 		if m.ID == id {
 			return m, true
 		}

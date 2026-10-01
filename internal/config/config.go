@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ductone/orrey/internal/model"
 	"gopkg.in/yaml.v3"
 )
 
@@ -20,6 +21,7 @@ type Config struct {
 	WorkspaceRoot string                    `yaml:"workspace_root"`
 	Database      string                    `yaml:"database"`
 	Providers     map[string]ProviderConfig `yaml:"providers"`
+	Models        []ModelConfig             `yaml:"models"`
 	MCP           map[string]MCPConfig      `yaml:"mcp"`
 	Router        RouterConfig              `yaml:"router"`
 	Budget        BudgetConfig              `yaml:"budget"`
@@ -94,6 +96,54 @@ type InterventionConfig struct {
 	// JudgeModel pins the judge to a catalog model id. Empty selects the
 	// cheapest configured model.
 	JudgeModel string `yaml:"judge_model"`
+}
+
+// ModelConfig is an optional field-level override for a catalog model, built
+// in or discovered. Pointer fields distinguish omission from an explicit zero
+// or false value. An entry for an unknown id adds a model when it supplies
+// family, tier, context_window, max_output, and input and output pricing.
+type ModelConfig struct {
+	ID string `yaml:"id"`
+	// Disabled removes the model from the catalog.
+	Disabled      *bool               `yaml:"disabled,omitempty"`
+	Family        *model.Family       `yaml:"family,omitempty"`
+	Tier          *model.Tier         `yaml:"tier,omitempty"`
+	Inputs        *[]model.Modality   `yaml:"inputs,omitempty"`
+	ContextWindow *int                `yaml:"context_window,omitempty"`
+	MaxOutput     *int                `yaml:"max_output,omitempty"`
+	Pricing       *ModelPricingConfig `yaml:"pricing,omitempty"`
+	Effort        *[]model.Effort     `yaml:"effort,omitempty"`
+	Compat        *ModelCompatConfig  `yaml:"compat,omitempty"`
+	EditDialect   *model.EditDialect  `yaml:"edit_dialect,omitempty"`
+}
+
+type ModelPricingConfig struct {
+	Input      *float64                    `yaml:"input,omitempty"`
+	Output     *float64                    `yaml:"output,omitempty"`
+	CacheRead  *float64                    `yaml:"cache_read,omitempty"`
+	CacheWrite *float64                    `yaml:"cache_write,omitempty"`
+	Thresholds *[]ModelThresholdRateConfig `yaml:"thresholds,omitempty"`
+}
+
+type ModelThresholdRateConfig struct {
+	AboveTokens int     `yaml:"above_tokens"`
+	Input       float64 `yaml:"input"`
+	Output      float64 `yaml:"output"`
+	CacheRead   float64 `yaml:"cache_read"`
+	CacheWrite  float64 `yaml:"cache_write"`
+}
+
+type ModelCompatConfig struct {
+	MaxTokensField          *string                  `yaml:"max_tokens_field,omitempty"`
+	SupportsToolChoice      *bool                    `yaml:"supports_tool_choice,omitempty"`
+	SupportsReasoningEffort *bool                    `yaml:"supports_reasoning_effort,omitempty"`
+	EffortWireMap           *map[model.Effort]string `yaml:"effort_wire_map,omitempty"`
+	RequiresReasoningEcho   *bool                    `yaml:"requires_reasoning_echo,omitempty"`
+	RequiresAssistantText   *bool                    `yaml:"requires_assistant_text,omitempty"`
+	SupportsStrictTools     *bool                    `yaml:"supports_strict_tools,omitempty"`
+	StreamIdleTimeout       *time.Duration           `yaml:"stream_idle_timeout,omitempty"`
+	SystemPromptStyle       *model.SystemStyle       `yaml:"system_prompt_style,omitempty"`
+	CacheControl            *bool                    `yaml:"cache_control,omitempty"`
 }
 
 type LSPConfig struct {
@@ -331,11 +381,94 @@ func LoadWithEnv(path string, overrides map[string]string) (Config, error) {
 		}
 		cfg.LSP[name] = server
 	}
+	if err := validateModels(cfg.Models); err != nil {
+		return cfg, fmt.Errorf("config: models: %w", err)
+	}
 	if err := resolveSecrets(&cfg, overrides); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
 }
+func validateModels(models []ModelConfig) error {
+	seen := make(map[string]struct{}, len(models))
+	for i, m := range models {
+		if strings.TrimSpace(m.ID) != m.ID || !strings.Contains(m.ID, "/") {
+			return fmt.Errorf("entry %d has invalid id %q (want provider/model)", i, m.ID)
+		}
+		if _, ok := seen[m.ID]; ok {
+			return fmt.Errorf("duplicate id %q", m.ID)
+		}
+		seen[m.ID] = struct{}{}
+		// Families are open-ended (discovered models bring new vendors), but
+		// must be a simple lowercase name.
+		if m.Family != nil && !validFamily(string(*m.Family)) {
+			return fmt.Errorf("%s: invalid family %q (want a lowercase name such as anthropic or qwen)", m.ID, *m.Family)
+		}
+		if m.Tier != nil && !oneOf(*m.Tier, model.Frontier, model.Efficient, model.Tiny) {
+			return fmt.Errorf("%s: unknown tier %q", m.ID, *m.Tier)
+		}
+		if (m.ContextWindow != nil && *m.ContextWindow <= 0) || (m.MaxOutput != nil && *m.MaxOutput <= 0) {
+			return fmt.Errorf("%s: context_window and max_output must be positive", m.ID)
+		}
+		if m.Inputs != nil {
+			for _, v := range *m.Inputs {
+				if !oneOf(v, model.Text, model.Image) {
+					return fmt.Errorf("%s: unknown input %q", m.ID, v)
+				}
+			}
+		}
+		if m.Effort != nil {
+			for _, v := range *m.Effort {
+				if !oneOf(v, model.EffortNone, model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortXHigh) {
+					return fmt.Errorf("%s: unknown effort %q", m.ID, v)
+				}
+			}
+		}
+		if m.EditDialect != nil && !oneOf(*m.EditDialect, model.HashlineJSON, model.HashlineXML, model.HashlineContextual, model.TextAnchor) {
+			return fmt.Errorf("%s: unknown edit_dialect %q", m.ID, *m.EditDialect)
+		}
+		if m.Compat != nil {
+			if m.Compat.SystemPromptStyle != nil && !oneOf(*m.Compat.SystemPromptStyle, model.SystemTopLevel, model.SystemFirstTurn) {
+				return fmt.Errorf("%s: unknown system_prompt_style %q", m.ID, *m.Compat.SystemPromptStyle)
+			}
+			if m.Compat.StreamIdleTimeout != nil && *m.Compat.StreamIdleTimeout < 0 {
+				return fmt.Errorf("%s: stream_idle_timeout must be non-negative", m.ID)
+			}
+		}
+		if m.Pricing != nil {
+			for _, v := range []*float64{m.Pricing.Input, m.Pricing.Output, m.Pricing.CacheRead, m.Pricing.CacheWrite} {
+				if v != nil && *v < 0 {
+					return fmt.Errorf("%s: pricing must be non-negative", m.ID)
+				}
+			}
+			if m.Pricing.Thresholds != nil {
+				for _, t := range *m.Pricing.Thresholds {
+					if t.AboveTokens <= 0 || t.Input < 0 || t.Output < 0 || t.CacheRead < 0 || t.CacheWrite < 0 {
+						return fmt.Errorf("%s: invalid pricing threshold", m.ID)
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validFamily(f string) bool {
+	if f == "" {
+		return false
+	}
+	for _, r := range f {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func oneOf[T comparable](value T, allowed ...T) bool {
+	return slices.Contains(allowed, value)
+}
+
 func relativeTo(base, path string) string {
 	if path == "" || filepath.IsAbs(path) {
 		return path

@@ -66,7 +66,7 @@ func (e *Engine) generateSessionTitle(ctx context.Context, sid, spec string) {
 func cheapestAvailableModel(registry *provider.Registry) model.ModelSpec {
 	var best model.ModelSpec
 	var bestCost float64 = -1
-	for _, m := range model.Catalog {
+	for _, m := range model.All() {
 		if !registry.Available(m) {
 			continue
 		}

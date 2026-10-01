@@ -7,10 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"github.com/ductone/orrey/internal/agentproto"
+	"github.com/ductone/orrey/internal/catalog"
 	"github.com/ductone/orrey/internal/config"
 	"github.com/ductone/orrey/internal/core"
 	orreval "github.com/ductone/orrey/internal/eval"
 	"github.com/ductone/orrey/internal/mcp"
+	"github.com/ductone/orrey/internal/model"
 	"github.com/ductone/orrey/internal/provider"
 	rpcserver "github.com/ductone/orrey/internal/rpc"
 	"github.com/ductone/orrey/internal/shadow"
@@ -92,6 +94,7 @@ func realMain() int {
 		usage()
 		return 0
 	}
+	skipDiscovery = cmd == "export" || cmd == "shadow"
 	cfgPath, found, searched, err := config.Resolve(*configFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -157,6 +160,7 @@ func openRuntime(ctx context.Context, path string) (*runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	installCatalog(ctx, cfg)
 	s, err := store.Open(cfg.Database)
 	if err != nil {
 		return nil, err
@@ -241,6 +245,9 @@ func (rt *runtime) phaseBoundary(ctx context.Context) error {
 		rt.pending.Store(true)
 		return fmt.Errorf("reload config: %w", err)
 	}
+	// The router snapshots the catalog when it is built, so the new catalog
+	// must be installed before ReplaceRuntime constructs it.
+	installCatalog(ctx, nextCfg)
 	nextMCP, err := mcp.New(ctx, nextCfg.MCP, logDir())
 	if err != nil {
 		rt.pending.Store(true)
@@ -470,6 +477,32 @@ func (c configRef) requireProviders(cfg config.Config) error {
 		return fmt.Errorf("no configuration found (looked for %s); create %s from orrery.example.yaml", strings.Join(c.searched, " and "), filepath.Join(config.Home(), "orrery.yaml"))
 	}
 	return fmt.Errorf("config %s configures no model providers", c.path)
+}
+
+// skipDiscovery is set for commands that only read the store, which do not
+// need a model catalog and should not wait on the network.
+var skipDiscovery bool
+
+// installCatalog builds the model catalog (discovered models, the built-in
+// catalog, then config overrides) and installs it before any runtime object
+// that reads it is constructed.
+func installCatalog(ctx context.Context, cfg config.Config) {
+	if skipDiscovery {
+		return
+	}
+	res := catalog.Build(ctx, cfg, filepath.Join(config.Home(), "catalog"), nil)
+	model.Install(res.Models)
+	for _, d := range res.Discoveries {
+		attrs := []any{"provider", d.Provider, "source", d.Source, "listed", d.Listed, "usable", len(d.Models)}
+		if d.Error != "" {
+			attrs = append(attrs, "error", d.Error)
+		}
+		slog.Info("model discovery", attrs...)
+	}
+	for _, w := range res.Warnings {
+		slog.Warn("model override not applied", "warning", w)
+	}
+	slog.Info("model catalog", "models", len(res.Models), "discovered", res.Discovered, "overrides", res.Overridden, "disabled", res.Disabled)
 }
 
 // logDir holds engine, MCP, and terminal UI logs. They live beside the user
