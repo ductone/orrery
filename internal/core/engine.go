@@ -812,6 +812,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		forceVerifiedCompletion := parentJob == "" && progress.shouldForceVerifiedCompletion()
 		forceResolution := parentJob == "" && ((s.Phase == string(router.Review) || s.Phase == string(router.Diagnose)) && progress.phaseTurns >= 6 || progress.reviewRemediation && progress.reviewRemediationTurns >= 4)
 		forceFinalResolution := parentJob == "" && shouldForceFinalResolution(s.Phase, progress.phaseTurns)
+		latestRequest, _ := e.store.LatestRequest(ctx, sid)
 		var mode turnMode
 		if forceSynthesis {
 			mode.restrict("Exploration is now complete. Synthesize the strongest existing evidence into the required result now.")
@@ -852,7 +853,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				system += " You are a bounded read-only worker. Follow the assigned spec, gather decisive evidence efficiently, and return structured findings; do not attempt implementation."
 			}
 			history = mode.apply(history)
-			return provider.Request{System: system, DurableSpec: durableSpec(s), Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the durable summary.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: reg.Definitions(), NoToolCalls: mode.noCalls, MaxOutput: min(outputCap, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
+			return provider.Request{System: system, DurableSpec: durableSpec(s, latestRequest), Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the durable summary.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: reg.Definitions(), NoToolCalls: mode.noCalls, MaxOutput: min(outputCap, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
 		}
 		var resp provider.Response
 		failed := []string{}
@@ -1001,6 +1002,17 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				}
 				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Completion rejected: your response was a work-in-progress reasoning stream, not an outcome. Do not narrate more intended searches. Return one concise final result stating what was completed and verified, or clearly state the concrete blocker and missing prerequisite."})
 				continue
+			}
+			// Before paying for verification or review, check that the answer
+			// is about what the person asked last, not an earlier request.
+			if parentJob == "" && progress.answerRejections < maxAnswerRejections {
+				if request, off := e.answerOffTopic(ctx, sid, s, latestRequest, resp.Message.Content, emit); off {
+					progress.answerRejections++
+					progress.completionRejections++
+					e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "final result does not address the latest request", "attempt": progress.answerRejections}, emit)
+					_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Completion rejected: your final result does not address the person's latest request:\n\n" + request + "\n\nEarlier requests in this session are already answered. Continue the work for the latest request, or explain plainly why it cannot be done."})
+					continue
+				}
 			}
 			if progress.edited && !progress.verified && !progress.verificationWaived {
 				switch {
@@ -1254,14 +1266,28 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 	}
 }
 
-func durableSpec(s store.Session) string {
+// taskSection leads the durable spec with the request the agent is working
+// on. A session's spec is its first message; in a conversation that has moved
+// on, leading with it makes the oldest question the most prominent request
+// in every prompt, and after compaction the newer ones may be gone from
+// history entirely. So the person's latest message leads, verbatim, and the
+// first is kept as context.
+func taskSection(spec, latest string) string {
+	latest = strings.TrimSpace(latest)
+	if latest == "" || latest == strings.TrimSpace(spec) {
+		return "TASK\n" + spec
+	}
+	return "CURRENT REQUEST (the person's latest message; authoritative)\n" + latest +
+		"\n\nFIRST REQUEST OF THIS SESSION (context only; already answered unless the current request restates it)\n" + spec
+}
+
+func durableSpec(s store.Session, latest string) string {
 	var state DurableState
 	if json.Unmarshal([]byte(s.DurableSummary), &state) != nil || strings.TrimSpace(state.CurrentObjective) == "" {
-		return "TASK\n" + s.Spec + "\n\nDURABLE SUMMARY\n" + s.DurableSummary
+		return taskSection(s.Spec, latest) + "\n\nDURABLE SUMMARY\n" + s.DurableSummary
 	}
 	var b strings.Builder
-	b.WriteString("TASK\n")
-	b.WriteString(s.Spec)
+	b.WriteString(taskSection(s.Spec, latest))
 	b.WriteString("\n\nCURRENT OBJECTIVE (authoritative)\n")
 	b.WriteString(state.CurrentObjective)
 	b.WriteString("\n\nPENDING REPORT (authoritative)\n")

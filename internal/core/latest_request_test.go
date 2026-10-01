@@ -1,0 +1,191 @@
+package core
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ductone/orrey/internal/agentproto"
+	"github.com/ductone/orrey/internal/config"
+	"github.com/ductone/orrey/internal/provider"
+	"github.com/ductone/orrey/internal/store"
+	"github.com/google/uuid"
+)
+
+func TestTaskSectionLeadsWithTheLatestRequest(t *testing.T) {
+	if got := taskSection("Is there a way to resume a session?", ""); got != "TASK\nIs there a way to resume a session?" {
+		t.Fatalf("a single-request session keeps TASK: %q", got)
+	}
+	if got := taskSection("Build it", " Build it "); !strings.HasPrefix(got, "TASK\n") {
+		t.Fatalf("a latest request equal to the spec keeps TASK: %q", got)
+	}
+	got := taskSection("Is there a way to resume a session?", "Build it")
+	if !strings.HasPrefix(got, "CURRENT REQUEST") || strings.Index(got, "Build it") > strings.Index(got, "resume") || !strings.Contains(got, "already answered unless") {
+		t.Fatalf("section = %q", got)
+	}
+	summary := store.JSON(DurableState{Objective: "x", CurrentObjective: "Implement the schema", PendingReport: "report", ResolvedRequests: []string{"resume question answered"}})
+	spec := durableSpec(store.Session{Spec: "Is there a way to resume a session?", DurableSummary: summary}, "Build it")
+	if !strings.HasPrefix(spec, "CURRENT REQUEST (the person's latest message; authoritative)\nBuild it") || !strings.Contains(spec, "CURRENT OBJECTIVE") {
+		t.Fatalf("durable spec = %q", spec)
+	}
+}
+
+func TestStoreTracksTheLatestRequest(t *testing.T) {
+	e, st := testEngine(t)
+	ctx := context.Background()
+	sid := uuid.NewString()
+	if err := st.CreateSession(ctx, store.Session{ID: sid, Spec: "first question", BudgetUSD: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if latest, _ := st.LatestRequest(ctx, sid); latest != "" {
+		t.Fatalf("no follow-up yet: %q", latest)
+	}
+	if _, err := st.AcceptMessage(ctx, sid, "r1", "t1", "message", "h1", provider.Message{Role: "user", Content: "Build it"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if latest, _ := st.LatestRequest(ctx, sid); latest != "Build it" {
+		t.Fatalf("latest = %q", latest)
+	}
+	// Harness messages do not go through acceptance and never replace it.
+	_ = st.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Completion rejected"})
+	if latest, _ := st.LatestRequest(ctx, sid); latest != "Build it" {
+		t.Fatalf("latest = %q", latest)
+	}
+	_ = e
+}
+
+func TestWithoutRequest(t *testing.T) {
+	resolved := []string{
+		"TUI session resume question answered: use orrery tui --session.",
+		"User explicitly requested: Build it.",
+		"Build it",
+		"Previous-session listing question answered.",
+	}
+	got := withoutRequest(resolved, "Build it")
+	if len(got) != 2 || strings.Contains(strings.Join(got, "|"), "Build it") {
+		t.Fatalf("got %v", got)
+	}
+	// A very short request matches only exactly.
+	if got := withoutRequest([]string{"ok, the user said ok to the plan", "ok"}, "ok"); len(got) != 1 || got[0] != "ok, the user said ok to the plan" {
+		t.Fatalf("short request swept too much: %v", got)
+	}
+	if got := withoutRequest(resolved, ""); len(got) != len(resolved) {
+		t.Fatal("no request, nothing dropped")
+	}
+}
+
+func TestCompactionNeverResolvesTheLatestRequest(t *testing.T) {
+	e, st := testEngine(t)
+	ctx := context.Background()
+	sid := uuid.NewString()
+	prior := store.JSON(DurableState{Objective: "x", CurrentObjective: "c", PendingReport: "p", ResolvedRequests: []string{"Is there a way to resume a session?", "User explicitly requested: Build it."}})
+	if err := st.CreateSession(ctx, store.Session{ID: sid, Spec: "Is there a way to resume a session?", Phase: "implement", BudgetUSD: 5, DurableSummary: prior, WorkspacePath: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AcceptMessage(ctx, sid, "r1", "t1", "message", "h1", provider.Message{Role: "user", Content: "Build it"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.SetTodos(ctx, sid, []store.Todo{{Text: "Wire the catalog", Phase: "implement", Status: "in_progress"}})
+	for i := range 12 {
+		_ = st.AddMessage(ctx, sid, "assistant", provider.Message{Role: "assistant", Content: "step " + string(rune('a'+i))})
+	}
+	if err := e.Compact(ctx, sid, "phase_or_context_boundary", nil); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := st.Session(ctx, sid)
+	var state DurableState
+	if err := json.Unmarshal([]byte(s.DurableSummary), &state); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(state.ResolvedRequests, "|")
+	if strings.Contains(joined, "Build it") || !strings.Contains(joined, "resume") {
+		t.Fatalf("resolved = %v", state.ResolvedRequests)
+	}
+}
+
+// The broken session's shape: the first request was answered, a later one
+// asked for work, and the agent answered the first again. The prompt now
+// leads with the latest request, and Jev refuses the stale answer.
+func TestStaleAnswerToAnEarlierRequestIsRefused(t *testing.T) {
+	e, st := testEngine(t)
+	jevSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			State map[string]any `json:"state"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		p := 0.9
+		if strings.Contains(req.State["final_result"].(string), "resuming") {
+			p = 0.05
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"answers": map[string]any{"addresses_request": map[string]any{"type": "noul", "noul": p}}})
+	}))
+	t.Cleanup(jevSrv.Close)
+	var instructions []string
+	nudged := false
+	s := &scriptedResponses{reply: func(n int, body map[string]any) map[string]any {
+		instructions = append(instructions, body["instructions"].(string))
+		for _, raw := range body["input"].([]any) {
+			if m, _ := raw.(map[string]any); m != nil {
+				if c, _ := m["content"].(string); strings.Contains(c, "does not address the person's latest request") && strings.Contains(c, "Explain the build plan") {
+					nudged = true
+				}
+			}
+		}
+		if n == 1 {
+			return responsesText("## Answer: resuming a session in the TUI\nUse orrery tui --session ID.")
+		}
+		return responsesText("Here is the build plan: discover, merge, override.")
+	}}
+	srv := s.serve(t)
+	workspace := t.TempDir()
+	cfg := config.Config{
+		WorkspaceRoot: workspace,
+		Providers:     map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: srv.URL}},
+		Router:        config.RouterConfig{DisableSwitch: true, DefaultModel: "openai/gpt-5.6-terra"},
+		Interventions: config.InterventionConfig{JudgeEnabled: new(bool)},
+		Jev:           config.JevConfig{APIKey: "k", BaseURL: jevSrv.URL, Review: true},
+	}
+	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
+	ctx := context.Background()
+	sid := uuid.NewString()
+	if err := st.CreateSession(ctx, store.Session{ID: sid, Spec: "Is there a way to resume a session in the TUI?", Phase: "plan", BudgetUSD: 5, WorkspacePath: workspace}); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.AddMessage(ctx, sid, "assistant", provider.Message{Role: "assistant", Content: "Yes: orrery tui --session ID."})
+	if _, err := st.AcceptMessage(ctx, sid, "r1", "t1", "message", "h1", provider.Message{Role: "user", Content: "Explain the build plan"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	req := agentproto.TaskRequest{Spec: "Is there a way to resume a session in the TUI?", Budget: agentproto.Budget{MaxUSD: 5, MaxTokens: 1_000_000, MaxWallClock: time.Minute}, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"}}
+	result := e.run(ctx, sid, "", req, nil)
+	if result.Status != agentproto.Pass || !strings.Contains(result.Result["answer"].(string), "build plan") {
+		t.Fatalf("result = %+v", result)
+	}
+	if !nudged || result.Outcome.CompletionRejects != 1 {
+		t.Fatalf("the stale answer must be refused once, quoting the latest request: nudged=%v rejects=%d", nudged, result.Outcome.CompletionRejects)
+	}
+	if !strings.Contains(instructions[0], "CURRENT REQUEST (the person's latest message; authoritative)\nExplain the build plan") {
+		t.Fatal("the prompt must lead with the latest request")
+	}
+}
+
+func TestAnswerCheckFailsOpenAndIsBounded(t *testing.T) {
+	ctx := context.Background()
+	s := store.Session{ID: uuid.NewString(), Spec: "first"}
+	e, _ := testEngine(t)
+	if _, off := e.answerOffTopic(ctx, s.ID, s, "Build it", "anything", nil); off {
+		t.Fatal("without jev.review there is no check")
+	}
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(529) }))
+	t.Cleanup(down.Close)
+	e.ReplaceRuntime(config.Config{Jev: config.JevConfig{APIKey: "k", BaseURL: down.URL, Review: true}}, nil, nil)
+	if _, off := e.answerOffTopic(ctx, s.ID, s, "Build it", "anything", nil); off {
+		t.Fatal("a classifier outage must not refuse completion")
+	}
+	if maxAnswerRejections < 1 || maxAnswerRejections > 3 {
+		t.Fatalf("the refusal bound must stay small: %d", maxAnswerRejections)
+	}
+}

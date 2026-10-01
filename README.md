@@ -2,7 +2,7 @@
 
 Orrery is an opinionated Go agent harness that chooses models inside the agent loop. Routing accounts for task phase, progress and failure signals, compatibility constraints, and the real cost of abandoning a warm prompt cache.
 
-Its contract is one binary, one strict YAML config, a checked-in model catalog, durable SQLite state, built-in coding tools, context-isolated in-process worker jobs, MCP clients, a local SSE web UI, a session-scoped terminal UI, and routing telemetry suitable for training a later learned policy.
+Its contract is one binary, one strict YAML config, a checked-in model catalog extended by provider discovery, durable SQLite state, built-in coding tools, context-isolated in-process worker jobs, MCP clients, a local SSE web UI, a session-scoped terminal UI, and routing telemetry suitable for training a later learned policy.
 
 The project's goals, invariants, and intentional boundaries are recorded in the [design charter](docs/design.md). Architectural details are in [architecture](docs/architecture.md).
 
@@ -92,6 +92,24 @@ router:
   disable_switch: false                        # true pins the session to one model
 ```
 
+## Model catalog
+
+At startup and on config reload, Orrery asks providers that list their models for their catalog (Ramp Router's `GET /v1/models` today) and merges three layers, each winning over the one before: discovered models, the built-in catalog, then `models:` overrides in the config. Discovery has a five-second timeout and falls back to the last good listing cached in `~/.orrery/catalog/`, then to the built-in catalog alone, so it never stops Orrery from starting. The startup log reports how many models were listed, usable, and overridden.
+
+A discovered model is used only when it is active, supports the Responses API and tool calling, has at least a 64K context window, and lists prices. It is never inferred to be frontier tier: models costing $0.50 or more per million output tokens become efficient tier and cheaper ones tiny. Its family comes from its name (so a new vendor diversifies reviews), and it gets portable compatibility settings and the contextual edit dialect.
+
+```yaml
+models:
+  - id: ramp/qwen4-coder          # promote a discovered model once it has earned it
+    tier: frontier
+  - id: ramp/some-flaky-model     # remove a model from routing
+    disabled: true
+  - id: ramp/claude-opus-5        # field-level override of a built-in entry
+    pricing: {input: 4.5}
+```
+
+Overrides change only the fields they set. An entry for a model that is not in the catalog adds it when it gives `family`, `tier`, `context_window`, `max_output`, and input and output pricing; otherwise it is reported as a warning and skipped, since the model may just not have been listed this time.
+
 ## Jev shadow observations
 
 Orrery can ask TypeSafe's [Jev](https://docs.typesafe.ai/) classifier the same questions its own heuristics answer, and record the answers without acting on them. Enable sites under `jev.shadow`; nothing is sent unless a site is listed.
@@ -124,6 +142,8 @@ Independently of Jev, a search that hits `max_results` now reports the total mat
 At the start of every run Orrery records the workspace's uncommitted state. Verification and independent review then look only at what the run changed: untracked notes, edits in progress, and staged work already in the checkout are left out, so they are neither reviewed nor sent to a reviewer or classifier.
 
 A run that changed files must run a successful check before it completes, unless it changed only prose documents (Markdown, reStructuredText, plain text) and assets. Checks are recognised by parsing the command, not by substring, so `pnpm exec tsc`, `python -m pytest`, and `make lint/md` count while `cat tsconfig.json` does not. Formatting and style checks (`cargo fmt --check`, `prettier --check`, `gofmt -l`, markdownlint, yamllint) verify configuration changes but never code: a code change needs a build, test, type check, or linter. With `jev.review`, a successful command that is not recognised, such as a repository's own check script, counts when Jev judges it a meaningful check of the changed files. Completion is refused at most three times for missing verification; after that the gate is waived and the outcome records the change as unverified, since further refusals only teach a model to manufacture a check.
+
+Every prompt leads with the person's latest message, verbatim, as the current request; the session's first message follows as context, marked as answered unless restated. The latest request is stored with the session, so it survives compaction, and compaction never files it as resolved. With `jev.review`, each final result is also checked against the latest request before verification and review run: an answer to an earlier question is refused (at most twice) with the latest request quoted back, and a Jev outage never blocks completion.
 
 A turn that starts with a message a person sent has been routed as planning, which floors it to a frontier model at high effort. Messages the harness writes itself (rejections, nudges, worker handoffs) are marked and never count as new instructions. With `jev.routing`, Jev reads a real message against the current plan and chooses the phase, so "keep going" or "also fix the typo" is routed as implementation rather than planning; below 0.8 confidence, or if Jev is unavailable, the turn is planned as before. Only the arriving turn is affected, and the choice is recorded in the routing record as `instruction_phase`.
 

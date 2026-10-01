@@ -56,6 +56,7 @@ func (s *Store) migrate() error {
 		"integration_context_json": "TEXT NOT NULL DEFAULT '{}'",
 		"request_json":             "TEXT NOT NULL DEFAULT '{}'",
 		"parent_session_id":        "TEXT NOT NULL DEFAULT ''",
+		"latest_request":           "TEXT NOT NULL DEFAULT ''",
 	} {
 		if err := s.ensureColumn("sessions", name, definition); err != nil {
 			return err
@@ -524,6 +525,9 @@ func (s *Store) DeliverQueuedMessage(ctx context.Context, sid, requestID, turnID
 		return RequestReceipt{}, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO messages(session_id,role,content_json,created_at) VALUES(?,?,?,?)`, sid, "user", JSON(content), now.Format(time.RFC3339Nano)); err != nil {
+		return RequestReceipt{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET latest_request=? WHERE id=?`, messageText(content), sid); err != nil {
 		return RequestReceipt{}, err
 	}
 	if request != nil {
@@ -1322,6 +1326,9 @@ func (s *Store) AcceptMessage(ctx context.Context, sid, requestID, turnID, kind,
 	if _, err = tx.ExecContext(ctx, `INSERT INTO messages(session_id,role,content_json,created_at) VALUES(?,?,?,?)`, sid, "user", JSON(content), now.Format(time.RFC3339Nano)); err != nil {
 		return RequestReceipt{}, err
 	}
+	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET latest_request=? WHERE id=?`, messageText(content), sid); err != nil {
+		return RequestReceipt{}, err
+	}
 	if request != nil {
 		if _, err = tx.ExecContext(ctx, `UPDATE sessions SET request_json=?,updated_at=? WHERE id=?`, JSON(request), now.Format(time.RFC3339Nano), sid); err != nil {
 			return RequestReceipt{}, err
@@ -1412,4 +1419,22 @@ func (s *Store) UpdateRoutingOutcome(ctx context.Context, id, field string, v an
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE routing_records SET `+field+`=? WHERE id=?`, JSON(v), id)
 	return err
+}
+
+// messageText extracts a stored message's text content.
+func messageText(content any) string {
+	var m struct {
+		Content string `json:"content"`
+	}
+	_ = json.Unmarshal([]byte(JSON(content)), &m)
+	return m.Content
+}
+
+// LatestRequest returns the most recent message a person sent to the session.
+// It survives compaction, which removes old messages from history. It is ""
+// for a session that has had no message beyond its initial task.
+func (s *Store) LatestRequest(ctx context.Context, sid string) (string, error) {
+	var latest string
+	err := s.db.QueryRowContext(ctx, `SELECT latest_request FROM sessions WHERE id=?`, sid).Scan(&latest)
+	return latest, err
 }

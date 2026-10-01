@@ -40,6 +40,9 @@ type progressTracker struct {
 	// missing verification, so an unverifiable change cannot loop.
 	verificationRejections int
 	verificationWaived     bool
+	// answerRejections counts completions refused for answering something
+	// other than the latest request.
+	answerRejections int
 	// formatVerified is set by a successful formatting or style check, which
 	// verifies only non-code changes.
 	formatVerified bool

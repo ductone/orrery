@@ -53,6 +53,9 @@ type resolvedRequestCounts struct {
 	Semantic int
 	Detected int
 	Final    int
+	// ActiveDropped counts resolved entries removed because they named the
+	// active request.
+	ActiveDropped int
 }
 
 func (a durableAnchor) hasTodo() bool { return strings.TrimSpace(a.TodoText) != "" }
@@ -114,6 +117,15 @@ func (e *Engine) compactState(ctx context.Context, sid, reason string, emit Emit
 	// to continue and the report still owed deterministic so compaction cannot
 	// resurrect an older answered prompt.
 	state, anchor, resolvedCounts := anchorDurableState(state, s, todos, cont, workItems, msgs[:keepAt])
+	// The person's latest request is the work in progress. A summary that
+	// files it as resolved (as one did: "User explicitly requested: Build
+	// it.") leaves the oldest question as the only open request in view.
+	if latest, _ := e.store.LatestRequest(ctx, sid); latest != "" {
+		before := len(state.ResolvedRequests)
+		state.ResolvedRequests = withoutRequest(state.ResolvedRequests, latest)
+		resolvedCounts.Final = len(state.ResolvedRequests)
+		resolvedCounts.ActiveDropped = before - len(state.ResolvedRequests)
+	}
 	if err := validateCompactionAnchor(state, anchor); err != nil {
 		return err
 	}
@@ -156,7 +168,11 @@ func (e *Engine) semanticSummary(ctx context.Context, s store.Session, todos []s
 	}
 	transcript := compactTranscript(old, 96_000)
 	system := `Summarize an autonomous coding session for lossless continuation. Return one JSON object only with these exact keys: objective, current_objective, pending_report, resolved_requests, requirements, decisions, completed, files, verification, open_work, blockers, instructions, worker_results. objective, current_objective, and pending_report are strings; every other field is an array of concise strings. current_objective and pending_report must preserve the supplied LIVE TODO ANCHOR rather than an older request. resolved_requests lists requests already answered or superseded; never make them active again. Preserve concrete paths, symbols, commands, test outcomes, constraints, unresolved hypotheses, loaded instruction/skill names, and worker findings. Do not invent completion or evidence.`
-	prompt := "ORIGINAL TASK\n" + s.Spec + "\n\nLIVE TODO ANCHOR (authoritative)\n" + durableTaskAnchor(s, todos, cont, workItems) + "\n\nPRIOR DURABLE STATE\n" + s.DurableSummary + "\n\nACTIVITY TO COMPACT\n" + transcript
+	active := ""
+	if latest, _ := e.store.LatestRequest(ctx, s.ID); latest != "" && strings.TrimSpace(latest) != strings.TrimSpace(s.Spec) {
+		active = "\n\nACTIVE REQUEST (the person's latest message; it is the work in progress and must never be listed in resolved_requests)\n" + latest
+	}
+	prompt := "ORIGINAL TASK\n" + s.Spec + active + "\n\nLIVE TODO ANCHOR (authoritative)\n" + durableTaskAnchor(s, todos, cont, workItems) + "\n\nPRIOR DURABLE STATE\n" + s.DurableSummary + "\n\nACTIVITY TO COMPACT\n" + transcript
 	estimatedCost := spec.Pricing.Estimate(estimate(prompt), summaryOutputLimits[0], 0)
 	if s.BudgetUSD > 0 && estimatedCost > s.BudgetUSD-s.SpentUSD {
 		return DurableState{}, nil, errors.New("insufficient remaining budget for semantic summary")
@@ -427,12 +443,13 @@ func anchorCompactionMeta(anchor durableAnchor, counts resolvedRequestCounts) ma
 	rendered := anchor.CurrentObjective + "\n\n" + anchor.PendingReport
 	sum := sha256.Sum256([]byte(rendered))
 	meta := map[string]any{
-		"anchor_source":              anchor.Source,
-		"anchor_hash":                fmt.Sprintf("%x", sum)[:16],
-		"resolved_requests_prior":    counts.Prior,
-		"resolved_requests_semantic": counts.Semantic,
-		"resolved_requests_detected": counts.Detected,
-		"resolved_requests_final":    counts.Final,
+		"anchor_source":                    anchor.Source,
+		"anchor_hash":                      fmt.Sprintf("%x", sum)[:16],
+		"resolved_requests_prior":          counts.Prior,
+		"resolved_requests_semantic":       counts.Semantic,
+		"resolved_requests_detected":       counts.Detected,
+		"resolved_requests_final":          counts.Final,
+		"resolved_requests_active_dropped": counts.ActiveDropped,
 	}
 	if anchor.TodoPosition >= 0 {
 		meta["anchor_todo_position"] = anchor.TodoPosition
@@ -559,4 +576,41 @@ func compactTranscript(msgs []store.Message, limit int) string {
 		b.WriteString(line)
 	}
 	return b.String()
+}
+
+// withoutRequest drops resolved entries that are the given request, matched
+// loosely because summaries paraphrase ("User explicitly requested: Build
+// it."). Very short requests ("ok") match only exactly, so they cannot sweep
+// away unrelated entries.
+func withoutRequest(resolved []string, request string) []string {
+	want := normalizeRequest(request)
+	if want == "" {
+		return resolved
+	}
+	out := resolved[:0:0]
+	for _, r := range resolved {
+		got := normalizeRequest(r)
+		match := got == want
+		if !match && len(want) >= 6 {
+			match = strings.Contains(got, want) || (len(got) >= 6 && strings.Contains(want, got))
+		}
+		if !match {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func normalizeRequest(s string) string {
+	s = strings.ToLower(s)
+	s = strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == ' ' {
+			return r
+		}
+		if r == '\n' || r == '\t' {
+			return ' '
+		}
+		return -1
+	}, s)
+	return strings.Join(strings.Fields(s), " ")
 }
