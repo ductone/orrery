@@ -881,20 +881,18 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			if err != nil {
 				return provider.Request{}, err
 			}
-			system := systemPrompt(d, req.Depth, req.Workspace.Path, req.ResultSchema)
-			if len(runtimeCfg.Instructions) > 0 {
-				system += "\n\nDEPLOYMENT INSTRUCTIONS\n" + strings.Join(runtimeCfg.Instructions, "\n")
+			definitions := reg.Definitions()
+			names := make([]string, 0, len(definitions))
+			for _, t := range definitions {
+				names = append(names, t.Name)
 			}
-			system += discovery.Bootstrap()
-			system += "\n\nTOOL CALL DISCIPLINE\nCall each tool with a given set of arguments at most once per response. Never emit duplicate identical tool calls. Use the edit tool for every workspace source-file mutation. Never create or modify source files through exec, shell redirection, sed, tee, or formatters with write flags; this bypasses edit safety and metrics. Never add or change build targets, scripts, CI, or configuration only to satisfy a harness check; if no existing check applies to your change, say so in the final result. Stay inside the assigned workspace. Do not clone another repository or search outside the workspace unless the task explicitly authorizes it. If decisive checks show that required source or another prerequisite is absent, stop promptly and return a clear failed or blocked explanation instead of rewriting the plan."
-			if !efficientWorker {
-				system += " No lower-cost worker model is configured. Do not spawn a worker merely for repository exploration; explore directly."
-			}
-			if req.Workspace.Mode == "read" {
-				system += " You are a bounded read-only worker. Follow the assigned spec, gather decisive evidence efficiently, and return structured findings; do not attempt implementation."
-			}
+			system := systemPrompt(promptContext{
+				decision: d, depth: req.Depth, workspace: req.Workspace.Path, resultSchema: req.ResultSchema,
+				tools: names, readOnlyWorker: req.Workspace.Mode == "read", efficientWorker: efficientWorker,
+				deployment: runtimeCfg.Instructions, bootstrap: discovery.Bootstrap(),
+			})
 			history = mode.apply(history)
-			return provider.Request{System: system, DurableSpec: durableSpec(s, latestRequest), Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the durable summary.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: reg.Definitions(), NoToolCalls: mode.noCalls, MaxOutput: min(outputCap, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
+			return provider.Request{System: system, DurableSpec: durableSpec(s, latestRequest), Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the durable summary.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: definitions, NoToolCalls: mode.noCalls, MaxOutput: min(outputCap, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
 		}
 		var resp provider.Response
 		failed := []string{}

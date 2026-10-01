@@ -61,7 +61,7 @@ func (s *scriptedResponses) serve(t *testing.T) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if instructions, _ := body["instructions"].(string); !strings.Contains(instructions, "TOOL CALL DISCIPLINE") {
+		if instructions, _ := body["instructions"].(string); !strings.Contains(instructions, systemPromptLead) {
 			_ = json.NewEncoder(w).Encode(responsesText("Title"))
 			return
 		}
@@ -231,7 +231,7 @@ func TestTurnWaitsOutARateLimitOnTheOnlyCredential(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if instructions, _ := body["instructions"].(string); !strings.Contains(instructions, "TOOL CALL DISCIPLINE") {
+		if instructions, _ := body["instructions"].(string); !strings.Contains(instructions, systemPromptLead) {
 			_ = json.NewEncoder(w).Encode(responsesText("Title"))
 			return
 		}
@@ -280,7 +280,7 @@ func TestRefusedModelIsRoutedAround(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if instructions, _ := body["instructions"].(string); !strings.Contains(instructions, "TOOL CALL DISCIPLINE") {
+		if instructions, _ := body["instructions"].(string); !strings.Contains(instructions, systemPromptLead) {
 			_ = json.NewEncoder(w).Encode(responsesText("Title"))
 			return
 		}
