@@ -64,23 +64,17 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 	for i := range shards {
 		shards[i] = i
 	}
-	verdicts, families := e.runReviewShards(ctx, sid, parent, req, plan, shards, spawnOptions{tierPin: plan.Tier, workerTurns: plan.Turns}, emit)
+	verdicts, families := e.runReviewShards(ctx, sid, parent, req, plan, shards, spawnOptions{workerTurns: plan.Turns}, emit)
 
-	// Settle shards that returned no verdict: accept them on classifier
-	// evidence when they are clearly low risk, otherwise review them once more
-	// with another model family and more room.
+	// A shard that returned no verdict is reviewed once more, by another
+	// model family and with more room.
 	var retry []int
 	var retryFamilies []string
 	for i, v := range verdicts {
 		if v.Conclusive {
 			continue
 		}
-		note, scores, err := review.AcceptInconclusive(ctx, classifier, task, plan, i)
-		e.emit(ctx, sid, "review.inconclusive", map[string]any{"shard": i, "error": v.Error, "file_bug_scores": scores, "accepted": note != "", "classifier_error": errString(err)}, emit)
-		if note != "" {
-			verdicts[i].Accepted = note
-			continue
-		}
+		e.emit(ctx, sid, "review.inconclusive", map[string]any{"shard": i, "error": v.Error}, emit)
 		retry = append(retry, i)
 		if families[i] != "" {
 			retryFamilies = append(retryFamilies, families[i])
@@ -218,7 +212,7 @@ func planEvent(p review.Plan) map[string]any {
 		}
 		shards = append(shards, map[string]any{"files": files, "chars": s.Chars, "truncated": s.Truncated})
 	}
-	return map[string]any{"decisions": decisions, "shards": shards, "skip": p.Skip, "skip_reason": p.SkipReason, "bug": p.Bug, "risk": p.Risk, "turns": p.Turns, "tier": p.Tier, "classifier_error": p.ClassifierError, "question_version": review.QuestionVersion}
+	return map[string]any{"decisions": decisions, "shards": shards, "skip": p.Skip, "skip_reason": p.SkipReason, "bug": p.Bug, "risk": p.Risk, "turns": p.Turns, "classifier_error": p.ClassifierError, "question_version": review.QuestionVersion}
 }
 
 // recordReviewRisk stores the plan's risk score as a review_risk observation

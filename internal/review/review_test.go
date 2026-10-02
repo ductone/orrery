@@ -224,8 +224,8 @@ func TestBuildTriagesByClassAndClassifier(t *testing.T) {
 	if c.calls.Load() != 1 {
 		t.Errorf("classifier calls = %d", c.calls.Load())
 	}
-	if plan.Tier != "efficient" || plan.Turns != baseTurns {
-		t.Errorf("small low-risk review: tier=%q turns=%d", plan.Tier, plan.Turns)
+	if plan.Turns != baseTurns || plan.Bug == nil || *plan.Bug != 0.1 {
+		t.Errorf("turns=%d bug=%v: risk is recorded but does not size the review", plan.Turns, plan.Bug)
 	}
 	spec := plan.Spec(0)
 	for _, want := range []string{"FILES IN THIS REVIEW", "- Makefile (modified, code", "ALSO CHANGED, NOT SHOWN", "logo.svg (modified, asset", "docs/rfc.md", "DIFF\ndiff --git a/Makefile"} {
@@ -243,15 +243,15 @@ func TestBuildWithoutClassifierReviewsEverythingNonTrivial(t *testing.T) {
 	if !decision(plan, "docs/rfc.md").Included || decision(plan, "logo.svg").Included {
 		t.Fatalf("plan = %+v", plan.Decisions)
 	}
-	if plan.Tier != "" || plan.Bug != nil {
-		t.Fatal("without a classifier the reviewer tier is left to the router")
+	if plan.Bug != nil {
+		t.Fatal("without a classifier there is no risk score")
 	}
 }
 
 func TestBuildFallsBackWhenTheClassifierFails(t *testing.T) {
 	c := &fakeClassifier{err: errors.New("jev: HTTP 529"), riskErr: errors.New("jev: HTTP 529")}
 	plan := Build(context.Background(), []File{file("docs/rfc.md", 300)}, "task", c, Options{})
-	if !decision(plan, "docs/rfc.md").Included || !strings.Contains(plan.ClassifierError, "529") || plan.Tier != "" {
+	if !decision(plan, "docs/rfc.md").Included || !strings.Contains(plan.ClassifierError, "529") {
 		t.Fatalf("plan = %+v", plan)
 	}
 }
@@ -273,24 +273,16 @@ func TestBuildNeverSkipsCode(t *testing.T) {
 }
 
 func TestReviewSizing(t *testing.T) {
-	big := Build(context.Background(), []File{file("a/big.go", 55_000)}, "task", &fakeClassifier{bug: 0.7, risk: 0.9}, Options{})
-	if big.Turns != min(maxTurns, baseTurns+55_000/charsPerTurn+highRiskTurns) || big.Tier != "" {
-		t.Fatalf("big high-risk review: turns=%d tier=%q", big.Turns, big.Tier)
-	}
-	mid := Build(context.Background(), []File{file("a/mid.go", 30_000)}, "task", &fakeClassifier{bug: 0.1, risk: 0.1}, Options{})
-	if mid.Tier != "" {
-		t.Fatal("a review over the efficient size limit keeps the router's tier")
-	}
-	risky := Build(context.Background(), []File{file("a/small.go", 300)}, "task", &fakeClassifier{bug: 0.1, risk: 0.9}, Options{})
-	if risky.Tier != "" {
-		t.Fatal("a high-risk-level review keeps the router's tier")
+	// Turns follow the size of the reviewer's share; risk scores do not move
+	// them, since they predicted review outcomes worse than chance.
+	calm := Build(context.Background(), []File{file("a/big.go", 55_000)}, "task", &fakeClassifier{bug: 0.05, risk: 0}, Options{})
+	hot := Build(context.Background(), []File{file("a/big.go", 55_000)}, "task", &fakeClassifier{bug: 0.95, risk: 1}, Options{})
+	if calm.Turns != baseTurns+55_000/charsPerTurn || hot.Turns != calm.Turns {
+		t.Fatalf("turns calm=%d hot=%d", calm.Turns, hot.Turns)
 	}
 	// A patch larger than a shard is truncated, so turns follow the shard size.
-	if capped := Build(context.Background(), []File{file("a/huge.go", 400_000)}, "task", nil, Options{}); capped.Turns != baseTurns+defaultShardChars/charsPerTurn {
+	if capped := Build(context.Background(), []File{file("a/huge.go", 400_000)}, "task", nil, Options{}); capped.Turns != baseTurns+defaultShardChars/charsPerTurn || capped.Turns > maxTurns {
 		t.Fatalf("turns = %d", capped.Turns)
-	}
-	if hot := Build(context.Background(), []File{file("a/huge.go", 400_000)}, "task", &fakeClassifier{bug: 0.9, risk: 1}, Options{}); hot.Turns > maxTurns {
-		t.Fatalf("turns must be capped, got %d", hot.Turns)
 	}
 }
 
@@ -405,34 +397,6 @@ func TestPatchForPrefersNamedFiles(t *testing.T) {
 	}
 	if p := patchFor("general concern", plan); !strings.Contains(p, "a/one.go") || !strings.Contains(p, "b/two.go") {
 		t.Fatal("an unattributed finding sees every included file")
-	}
-}
-
-func TestAcceptInconclusive(t *testing.T) {
-	low, high := 0.1, 0.5
-	plan := Build(context.Background(), []File{file("a/x.go", 300), file("a/y.go", 300)}, "task", nil, Options{})
-	plan.Bug = &low
-	clean := &fakeClassifier{fileBugs: map[string]float64{"a/x.go": 0.05, "a/y.go": 0.1}}
-	note, scores, err := AcceptInconclusive(context.Background(), clean, "task", plan, 0)
-	if err != nil || note == "" || len(scores) != 2 || !strings.Contains(note, "low risk") {
-		t.Fatalf("note=%q scores=%v err=%v", note, scores, err)
-	}
-	suspect := &fakeClassifier{fileBugs: map[string]float64{"a/x.go": 0.05, "a/y.go": 0.4}}
-	if note, _, _ := AcceptInconclusive(context.Background(), suspect, "task", plan, 0); note != "" {
-		t.Fatal("one suspicious file blocks acceptance")
-	}
-	plan.Bug = &high
-	if note, _, _ := AcceptInconclusive(context.Background(), clean, "task", plan, 0); note != "" {
-		t.Fatal("a risky change is never accepted without a verdict")
-	}
-	plan.Bug = &low
-	bigCode := plan
-	bigCode.Shards = []Shard{{Files: []File{{Path: "a/new.go", Class: Code, Status: Added, Added: 500}}}}
-	if note, _, _ := AcceptInconclusive(context.Background(), clean, "task", bigCode, 0); note != "" {
-		t.Fatal("large new code always gets a real review")
-	}
-	if note, _, _ := AcceptInconclusive(context.Background(), nil, "task", plan, 0); note != "" {
-		t.Fatal("no classifier, no acceptance")
 	}
 }
 

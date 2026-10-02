@@ -20,7 +20,6 @@ import (
 	"github.com/ductone/orrey/internal/model"
 	"github.com/ductone/orrey/internal/provider"
 	"github.com/ductone/orrey/internal/router"
-	"github.com/ductone/orrey/internal/shadow"
 	"github.com/ductone/orrey/internal/store"
 	builtin "github.com/ductone/orrey/internal/tools"
 	"github.com/google/uuid"
@@ -345,11 +344,6 @@ func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq ag
 		return nil, err
 	}
 	child.Hints.TierPin = string(jobDecision.Model.Tier)
-	spawnShadow := ""
-	if cfg, _, _, _, _ := e.runtimeSnapshot(); !review && cfg.Jev.Shadows("difficulty") {
-		view := map[string]any{"worker_spec": truncate(spec, shadowSpecChars), "phase": string(phase), "workspace_mode": workspaceMode}
-		spawnShadow = e.shadowAsk(ctx, sid, shadow.Spawn, shadow.SpawnVersion, parentSession.Turn, view, shadow.SpawnQuestions(), map[string]any{"job_id": id, "model": jobDecision.Model.ID, "tier": string(jobDecision.Model.Tier), "effort": string(jobDecision.Effort), "phase": string(phase)})
-	}
 	j := store.Job{ID: id, SessionID: sid, ParentJobID: parent, Spec: spec, ResultSchemaJSON: store.JSON(schema), BudgetJSON: store.JSON(child.Budget), WorkspaceJSON: store.JSON(child.Workspace), HintsJSON: store.JSON(child.Hints), Depth: int(child.Depth), Model: jobDecision.Model.ID, Status: "running"}
 	if err := e.store.CreateJob(ctx, j); err != nil {
 		return nil, err
@@ -369,7 +363,6 @@ func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq ag
 		_ = e.store.FinishJob(context.Background(), id, string(result.Status), result.Result, result.Outcome)
 		_ = e.store.AddSpend(context.Background(), sid, result.Outcome.CostUSD)
 		_ = e.store.UpdateLatestJobRoutingOutcome(context.Background(), sid, result)
-		e.shadowUpdate(spawnShadow, e.store.SetShadowOutcome, map[string]any{"status": string(result.Status), "cost_usd": result.Outcome.CostUSD, "tool_errors": result.Outcome.ToolErrors, "no_progress_turns": result.Outcome.NoProgressTurns})
 		_ = os.WriteFile(filepath.Join(jobDir, "result.json"), []byte(store.JSON(result)), 0600)
 		_ = os.WriteFile(filepath.Join(jobDir, "status"), []byte(string(result.Status)+"\n"), 0600)
 		if injectHandoff {

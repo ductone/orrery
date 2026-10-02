@@ -58,28 +58,14 @@ var phaseCriteria = map[string]string{
 	"wrap-up":   "The work is done; the agent is summarising results or reporting back.",
 }
 
-var difficultyLevels = []string{
-	"Trivial: a lookup, a one-line change, or a mechanical edit at an obvious location.",
-	"Routine: a contained change in known code with clear verification.",
-	"Involved: a multi-file change, unfamiliar code, or non-obvious debugging.",
-	"Hard: architectural judgement, subtle concurrency or correctness reasoning, or ambiguous requirements.",
-}
-
-func TurnQuestions(phase, difficulty bool) map[string]jev.Question {
+// TurnQuestions cross-checks the phase. (A difficulty score was asked here
+// and at spawn until shadow data showed it carried no signal.)
+func TurnQuestions(phase bool) map[string]jev.Question {
 	q := map[string]jev.Question{}
 	if phase {
 		q["phase"] = jev.Choice("Which phase of work is this coding agent in right now, judged from its plan and recent activity?", phaseCriteria)
 	}
-	if difficulty {
-		q["difficulty"] = jev.Score("How much engineering judgement does the remaining work on this task require?", difficultyLevels...)
-	}
 	return q
-}
-
-func SpawnQuestions() map[string]jev.Question {
-	return map[string]jev.Question{
-		"difficulty": jev.Score("How much engineering judgement does this worker task require?", difficultyLevels...),
-	}
 }
 
 func ReviewRiskQuestions() map[string]jev.Question {

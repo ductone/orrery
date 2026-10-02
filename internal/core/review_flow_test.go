@@ -298,17 +298,24 @@ func TestReviewPassesWhenEveryFindingIsNoise(t *testing.T) {
 	}
 }
 
-func TestInconclusiveLowRiskReviewIsAcceptedWithoutARerun(t *testing.T) {
+// Classifier risk scores no longer accept a review that returned no verdict:
+// they predicted review outcomes worse than chance. The part is reviewed
+// again, whatever the scores say.
+func TestInconclusiveReviewIsRerunEvenWhenScoredLowRisk(t *testing.T) {
 	h := newReviewHarness(t, true)
 	h.write("internal/feature.go", "package internal\n\nconst Name = \"feature\"\n")
-	h.jev = func(map[string]any, string) float64 { return 0.05 }
-	h.reviewer = func(string, int) map[string]any { return emptyReply() }
-	passed, text, err := h.run()
-	if err != nil || !passed || !strings.Contains(text, "accepted as low risk") {
-		t.Fatalf("passed=%v text=%s err=%v", passed, text, err)
+	h.jev = func(map[string]any, string) float64 { return 0.01 }
+	h.reviewer = func(_ string, attempt int) map[string]any {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if len(h.specs) == 1 && attempt <= 3 {
+			return emptyReply()
+		}
+		return verdictJSON(true)
 	}
-	if jobs, _ := h.st.Jobs(context.Background(), h.sid); len(jobs) != 1 {
-		t.Fatalf("an accepted part must not be reviewed again: %d reviewers", len(jobs))
+	passed, _, err := h.run()
+	if jobs, _ := h.st.Jobs(context.Background(), h.sid); len(jobs) != 2 {
+		t.Fatalf("reviewers = %d, want a rerun (passed=%v err=%v)", len(jobs), passed, err)
 	}
 }
 

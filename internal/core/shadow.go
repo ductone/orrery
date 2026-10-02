@@ -87,7 +87,9 @@ func (e *Engine) currentTurnID(ctx context.Context, sid string) string {
 // work, after the real routing decision has been made.
 func (e *Engine) shadowTurn(ctx context.Context, s store.Session, stored []store.Message, state router.RoutingState, decision router.Decision) {
 	cfg, _, _, _, _ := e.runtimeSnapshot()
-	questions := shadow.TurnQuestions(cfg.Jev.Shadows("phase"), cfg.Jev.Shadows("difficulty"))
+	// Difficulty showed no signal in shadow data (frontier and efficient
+	// turns scored alike), so only the phase is asked.
+	questions := shadow.TurnQuestions(cfg.Jev.Shadows("phase"))
 	if len(questions) == 0 {
 		return
 	}

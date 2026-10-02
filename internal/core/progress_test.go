@@ -117,7 +117,7 @@ func TestRootReviewAndDiagnosisHaveTerminalBounds(t *testing.T) {
 }
 
 func TestBoundedPhaseTransitions(t *testing.T) {
-	if soft, _ := workerTurnLimits(agentproto.TaskRequest{}); soft != 4 {
+	if workerTurnLimit(agentproto.TaskRequest{}) != 4 {
 		t.Fatal("read-only worker synthesis boundary is not enforced")
 	}
 	p := newProgressTracker()

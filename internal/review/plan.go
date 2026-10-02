@@ -52,12 +52,6 @@ const (
 	baseTurns     = 6
 	charsPerTurn  = 15_000
 	maxTurns      = 16
-	highRiskTurns = 4
-	// A small, low-risk review may use an efficient-tier reviewer.
-	efficientMaxChars = 20_000
-	efficientMaxBug   = 0.2
-	efficientMaxRisk  = 0.34
-	highRiskBug       = 0.6
 )
 
 func (o Options) withDefaults() Options {
@@ -99,9 +93,8 @@ type Plan struct {
 	// Bug and Risk are the classifier's view of the whole change, when known.
 	Bug  *float64 `json:"bug,omitempty"`
 	Risk *float64 `json:"risk,omitempty"`
-	// Turns bounds each reviewer; Tier pins the reviewer tier when set.
-	Turns int    `json:"turns"`
-	Tier  string `json:"tier,omitempty"`
+	// Turns bounds each reviewer.
+	Turns int `json:"turns"`
 	// ClassifierError records a classifier failure the plan fell back from.
 	ClassifierError string `json:"classifier_error,omitempty"`
 }
@@ -197,13 +190,11 @@ func Build(ctx context.Context, files []File, task string, c Classifier, opts Op
 			plan.Bug, plan.Risk = &bug, &risk
 		}
 	}
+	// The risk scores are recorded for calibration but drive nothing: in
+	// practice they predicted review outcomes worse than chance (low bug
+	// probability on changes reviews then rejected), so they no longer
+	// choose a cheaper reviewer, add turns, or accept inconclusive reviews.
 	plan.Turns = min(maxTurns, baseTurns+chars/charsPerTurn)
-	if plan.Bug != nil && *plan.Bug >= highRiskBug {
-		plan.Turns = min(maxTurns, plan.Turns+highRiskTurns)
-	}
-	if plan.Bug != nil && plan.Risk != nil && *plan.Bug < efficientMaxBug && *plan.Risk <= efficientMaxRisk && chars <= efficientMaxChars && len(plan.Shards) == 1 {
-		plan.Tier = "efficient"
-	}
 	return plan
 }
 
@@ -382,15 +373,9 @@ func Merge(plan Plan, verdicts []Verdict) Outcome {
 	return out
 }
 
-// Thresholds for acting on classifier scores. A finding is downgraded to a
-// note only when the classifier is fairly sure it is not a real bug; an
-// inconclusive shard is accepted only when every file looks clean and the
-// change as a whole is low risk.
-const (
-	FindingNoteCutoff  = 0.2
-	AcceptMaxFileBug   = 0.15
-	AcceptMaxChangeBug = 0.3
-)
+// FindingNoteCutoff is the score under which a finding is downgraded to a
+// note: only when the classifier is fairly sure it is not a real bug.
+const FindingNoteCutoff = 0.2
 
 // FilterFindings splits a failing outcome's findings into those that stand and
 // those downgraded to notes. A review whose findings are all downgraded
@@ -446,33 +431,4 @@ func patchFor(finding string, plan Plan) string {
 		text = text[:limit]
 	}
 	return text
-}
-
-// AcceptInconclusive decides whether an inconclusive shard can be accepted on
-// classifier evidence instead of being reviewed again: every file in it must
-// look clean and the change as a whole must be low risk. It returns the note
-// recorded on acceptance, or "".
-func AcceptInconclusive(ctx context.Context, c Classifier, task string, plan Plan, shard int) (string, []float64, error) {
-	if c == nil || plan.Bug == nil || *plan.Bug >= AcceptMaxChangeBug {
-		return "", nil, nil
-	}
-	files := plan.Shards[shard].Files
-	for _, f := range files {
-		if f.Class == Code && f.Status != Deleted && f.Added > 200 {
-			// Large new code gets a real review, whatever the scores say.
-			return "", nil, nil
-		}
-	}
-	scores, err := c.FileBugs(ctx, task, files)
-	if err != nil {
-		return "", nil, err
-	}
-	worst := 0.0
-	for _, s := range scores {
-		worst = max(worst, s)
-	}
-	if worst >= AcceptMaxFileBug {
-		return "", scores, nil
-	}
-	return fmt.Sprintf("part %d had no reviewer verdict; accepted as low risk (change bug probability %.2f, highest file %.2f)", shard+1, *plan.Bug, worst), scores, nil
 }
