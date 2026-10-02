@@ -61,7 +61,9 @@ type JevConfig struct {
 	TimeoutSeconds int `yaml:"timeout_seconds"`
 }
 
-// JevShadowSites are the decision sites that can be shadowed.
+// JevShadowSites are the decision sites that can be shadowed. "difficulty"
+// is still accepted so existing configs load, but it is no longer asked: it
+// showed no signal.
 var JevShadowSites = []string{"stall_judge", "phase", "difficulty", "review"}
 
 const defaultJevTimeout = 5 * time.Second
@@ -318,6 +320,17 @@ func Load(path string) (Config, error) {
 // environment. It lets a trusted local supervisor rotate credentials without
 // persisting secret values or mutating process-global environment state.
 func LoadWithEnv(path string, overrides map[string]string) (Config, error) {
+	return load(path, overrides, true)
+}
+
+// LoadUnresolved loads and validates a config without resolving secrets, for
+// commands that only read the store and must not need provider keys (or run
+// secret commands) to do so. Secret fields keep their !env/!cmd references.
+func LoadUnresolved(path string) (Config, error) {
+	return load(path, nil, false)
+}
+
+func load(path string, overrides map[string]string, secrets bool) (Config, error) {
 	cfg := Default()
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -387,6 +400,9 @@ func LoadWithEnv(path string, overrides map[string]string) (Config, error) {
 	}
 	if err := validateModels(cfg.Models); err != nil {
 		return cfg, fmt.Errorf("config: models: %w", err)
+	}
+	if !secrets {
+		return cfg, nil
 	}
 	if err := resolveSecrets(&cfg, overrides); err != nil {
 		return cfg, err

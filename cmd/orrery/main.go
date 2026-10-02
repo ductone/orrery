@@ -114,6 +114,9 @@ func realMain() int {
 	if cmd == "tui" {
 		return runTUI(ctx, ref, args)
 	}
+	if cmd == "export" || cmd == "shadow" {
+		return readOnly(ctx, cmd, cfgPath, args)
+	}
 	rt, err := openRuntime(ctx, cfgPath)
 	if err != nil {
 		slog.Error("startup", "error", err)
@@ -488,6 +491,27 @@ func (c configRef) requireProviders(cfg config.Config) error {
 		return fmt.Errorf("no configuration found (looked for %s); create %s from orrery.example.yaml", strings.Join(c.searched, " and "), filepath.Join(config.Home(), "orrery.yaml"))
 	}
 	return fmt.Errorf("config %s configures no model providers", c.path)
+}
+
+// readOnly runs a command that only reads the store, without resolving
+// secrets or starting providers, MCP servers, or the engine.
+func readOnly(ctx context.Context, cmd, cfgPath string, args []string) int {
+	cfg, err := config.LoadUnresolved(cfgPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	s, err := store.Open(cfg.Database)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	defer s.Close()
+	rt := &runtime{cfg: cfg, configPath: cfgPath, store: s}
+	if cmd == "shadow" {
+		return exportShadow(ctx, rt, args)
+	}
+	return export(ctx, rt, args)
 }
 
 // newProviders builds the provider registry, remembering models a provider

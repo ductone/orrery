@@ -292,3 +292,25 @@ func TestModelOverrides(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadUnresolvedNeedsNoSecrets(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "c.yaml")
+	body := "listen: '127.0.0.1:1'\ndatabase: 'x.db'\nproviders:\n  ramp: {api_key: '!env ORRERY_TEST_UNSET_KEY'}\njev:\n  api_key: '!cmd exit 1'\n  shadow: [phase]\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("a normal load resolves secrets and fails without them")
+	}
+	cfg, err := LoadUnresolved(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Database != filepath.Join(dir, "x.db") || cfg.Providers["ramp"].APIKey != "!env ORRERY_TEST_UNSET_KEY" {
+		t.Fatalf("cfg = %+v", cfg)
+	}
+	if _, err := LoadUnresolved(filepath.Join(dir, "missing.yaml")); err != nil {
+		t.Fatal("a missing file loads defaults, as Load does")
+	}
+}
