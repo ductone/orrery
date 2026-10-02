@@ -40,7 +40,7 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 	}
 	toWire, fromWire := toolNameMaps(r.Tools)
 	msgs := []map[string]any{}
-	system := strings.TrimSpace(strings.Join([]string{r.System, r.DurableSpec, r.Plan}, "\n\n"))
+	system := strings.TrimSpace(strings.Join(systemSections(r), "\n\n"))
 	if m.Compat.SystemPromptStyle == model.SystemTopLevel {
 		msgs = append(msgs, map[string]any{"role": "system", "content": system})
 	} else {

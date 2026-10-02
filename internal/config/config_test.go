@@ -314,3 +314,136 @@ func TestLoadUnresolvedNeedsNoSecrets(t *testing.T) {
 		t.Fatal("a missing file loads defaults, as Load does")
 	}
 }
+
+func TestMemoryDefaults(t *testing.T) {
+	d := Default()
+	if d.Memory.Enabled || d.Memory.Inject || d.Memory.AutoCommit {
+		t.Fatalf("memory enabled/inject/auto_commit must default to false: %+v", d.Memory)
+	}
+	if !d.Memory.Shadow {
+		t.Fatal("memory shadow must default to true")
+	}
+	if d.Memory.Records() != 8 {
+		t.Fatalf("default max_records = %d, want 8", d.Memory.Records())
+	}
+	if d.Memory.Tokens() != 1200 {
+		t.Fatalf("default max_tokens = %d, want 1200", d.Memory.Tokens())
+	}
+	if d.Memory.RecordBytes() != 2048 {
+		t.Fatalf("default max_record_bytes = %d, want 2048", d.Memory.RecordBytes())
+	}
+	if d.Memory.ExpiresAfterDays() != 0 {
+		t.Fatalf("default retain_days = %d, want 0 (no expiry)", d.Memory.ExpiresAfterDays())
+	}
+	if d.Memory.Jev.Selection || d.Memory.Jev.CompactionBenefit {
+		t.Fatal("memory.jev.selection and memory.jev.compaction_benefit must default to false")
+	}
+	if d.Memory.Jev.CallTimeout() != 250*time.Millisecond {
+		t.Fatalf("default memory.jev.timeout = %v, want 250ms", d.Memory.Jev.CallTimeout())
+	}
+	if d.Memory.Jev.MaxCandidatesLimit() != 12 {
+		t.Fatalf("default memory.jev.max_candidates = %d, want 12", d.Memory.Jev.MaxCandidatesLimit())
+	}
+}
+
+func TestMemoryStrictDecodeAndValidation(t *testing.T) {
+	dir := t.TempDir()
+	write := func(body string) (Config, error) {
+		path := filepath.Join(dir, "c.yaml")
+		if err := os.WriteFile(path, []byte("listen: '127.0.0.1:1'\ndatabase: 'x.db'\n"+body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return Load(path)
+	}
+
+	if _, err := write("memory:\n  enabled: true\n  bogus_field: true\n"); err == nil {
+		t.Fatal("an unknown memory field must be rejected")
+	}
+	if _, err := write("memory:\n  jev:\n    bogus_field: true\n"); err == nil {
+		t.Fatal("an unknown memory.jev field must be rejected")
+	}
+	if _, err := write("memory:\n  retain_days: -1\n"); err == nil {
+		t.Fatal("negative retain_days must be rejected")
+	}
+	if _, err := write("memory:\n  jev:\n    timeout: -1s\n"); err == nil {
+		t.Fatal("negative memory.jev.timeout must be rejected")
+	}
+	// Missing jev.api_key with memory.jev.selection/compaction_benefit enabled
+	// is not a validation error, whether or not memory itself is enabled: per
+	// docs/proposals/memory.md, missing credentials must fall back to
+	// deterministic lexical/recency ranking and the current compaction policy
+	// at runtime rather than block startup.
+	if _, err := write("memory:\n  enabled: true\n  jev:\n    selection: true\n"); err != nil {
+		t.Fatalf("memory.jev.selection without jev.api_key must fall back cleanly, not fail to load: %v", err)
+	}
+	if _, err := write("memory:\n  enabled: true\n  jev:\n    compaction_benefit: true\n"); err != nil {
+		t.Fatalf("memory.jev.compaction_benefit without jev.api_key must fall back cleanly, not fail to load: %v", err)
+	}
+	if _, err := write("memory:\n  jev:\n    selection: true\n    compaction_benefit: true\n"); err != nil {
+		t.Fatalf("memory.jev.selection/compaction_benefit without jev.api_key must fall back cleanly when memory.enabled is false: %v", err)
+	}
+
+	cfg, err := write("jev:\n  api_key: k\nmemory:\n  enabled: true\n  inject: true\n  auto_commit: true\n  max_records: 20\n  jev:\n    selection: true\n    compaction_benefit: true\n    timeout: 500ms\n    max_candidates: 30\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Memory.Enabled || !cfg.Memory.Inject || !cfg.Memory.AutoCommit {
+		t.Fatalf("memory overrides lost: %+v", cfg.Memory)
+	}
+	if cfg.Memory.Records() != 20 {
+		t.Fatalf("max_records override lost: %d", cfg.Memory.Records())
+	}
+	if !cfg.Memory.Jev.Selection || !cfg.Memory.Jev.CompactionBenefit {
+		t.Fatalf("memory.jev overrides lost: %+v", cfg.Memory.Jev)
+	}
+	if cfg.Memory.Jev.CallTimeout() != 500*time.Millisecond {
+		t.Fatalf("memory.jev.timeout override lost: %v", cfg.Memory.Jev.CallTimeout())
+	}
+	if cfg.Memory.Jev.MaxCandidatesLimit() != 30 {
+		t.Fatalf("memory.jev.max_candidates override lost: %d", cfg.Memory.Jev.MaxCandidatesLimit())
+	}
+}
+
+func TestMemoryClamping(t *testing.T) {
+	// Over-ceiling values clamp down; retain_days=0 keeps meaning "no expiry"
+	// rather than being clamped to the positive floor.
+	m := MemoryConfig{MaxRecords: 10_000, MaxTokens: 10_000_000, MaxRecordBytes: 10_000_000, RetainDays: 0}
+	if got := m.Records(); got != 64 {
+		t.Fatalf("max_records clamp = %d, want 64", got)
+	}
+	if got := m.Tokens(); got != 20_000 {
+		t.Fatalf("max_tokens clamp = %d, want 20000", got)
+	}
+	if got := m.RecordBytes(); got != 32_768 {
+		t.Fatalf("max_record_bytes clamp = %d, want 32768", got)
+	}
+	if got := m.ExpiresAfterDays(); got != 0 {
+		t.Fatalf("retain_days=0 must stay 0 (no expiry), got %d", got)
+	}
+	// A very large positive retain_days must clamp to the ceiling instead of
+	// being passed through unbounded, to keep expiry timestamp math safe.
+	if got := (MemoryConfig{RetainDays: 1_000_000}).ExpiresAfterDays(); got != maxMemoryRetainDays {
+		t.Fatalf("retain_days clamp = %d, want %d", got, maxMemoryRetainDays)
+	}
+	// Negative/zero values fall back to defaults rather than clamping to the floor.
+	z := MemoryConfig{MaxRecords: -1, MaxTokens: 0, MaxRecordBytes: -5}
+	if got := z.Records(); got != defaultMemoryMaxRecords {
+		t.Fatalf("negative max_records = %d, want default %d", got, defaultMemoryMaxRecords)
+	}
+	if got := z.Tokens(); got != defaultMemoryMaxTokens {
+		t.Fatalf("zero max_tokens = %d, want default %d", got, defaultMemoryMaxTokens)
+	}
+	if got := z.RecordBytes(); got != defaultMemoryMaxRecordBytes {
+		t.Fatalf("negative max_record_bytes = %d, want default %d", got, defaultMemoryMaxRecordBytes)
+	}
+
+	jc := MemoryJevConfig{MaxCandidates: 1_000}
+	if got := jc.MaxCandidatesLimit(); got != maxMemoryMaxCandidates {
+		t.Fatalf("max_candidates clamp = %d, want %d", got, maxMemoryMaxCandidates)
+	}
+	overLong := 999 * time.Second
+	jc2 := MemoryJevConfig{Timeout: &overLong}
+	if got := jc2.CallTimeout(); got != maxMemoryJevTimeout {
+		t.Fatalf("jev timeout clamp = %v, want %v", got, maxMemoryJevTimeout)
+	}
+}

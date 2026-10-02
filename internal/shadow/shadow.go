@@ -21,6 +21,14 @@ const (
 	ReviewRisk = "review_risk"
 	// ReviewVerdict reads an inconclusive reviewer's final output.
 	ReviewVerdict = "review_verdict"
+	// MemorySelect ranks candidate memory records for the pinned set at a
+	// cache-safe boundary. Gated independently by memory.jev.selection;
+	// shadow-only until promoted.
+	MemorySelect = "memory_select"
+	// CompactionBenefit scores whether compacting now is worth its cost.
+	// Gated independently by memory.jev.compaction_benefit; shadow-only
+	// until promoted.
+	CompactionBenefit = "compaction_benefit"
 )
 
 const (
@@ -29,6 +37,8 @@ const (
 	SpawnVersion         = "spawn/v1"
 	ReviewRiskVersion    = "review_risk/v1"
 	ReviewVerdictVersion = "review_verdict/v1"
+	MemorySelectVersion         = "memory_select/v1"
+	CompactionBenefitVersion    = "compaction_benefit/v1"
 )
 
 func StallQuestions() map[string]jev.Question {
@@ -89,6 +99,44 @@ func ReviewVerdictQuestions() map[string]jev.Question {
 			"pass":       "The reviewer concluded the patch has no correctness bugs.",
 			"fail":       "The reviewer identified at least one correctness bug introduced by the patch.",
 			"no_verdict": "The reviewer stopped before reaching a conclusion about the patch.",
+		}),
+	}
+}
+
+// MemoryCandidate is one bounded candidate description sent to Jev for
+// memory_select: metadata and a short excerpt only, never the full record
+// text, workspace identity, or other session content.
+type MemoryCandidate struct {
+	ID         string  `json:"id"`
+	Kind       string  `json:"kind"`
+	Scope      string  `json:"scope"`
+	Confidence float64 `json:"confidence"`
+	AgeDays    int     `json:"age_days"`
+}
+
+// MemorySelectQuestions asks, per candidate, whether it is relevant to the
+// current task. One Choice question per candidate keeps each judgement atomic
+// and decomposable rather than one opaque "what should I remember" prompt.
+func MemorySelectQuestions(candidates []MemoryCandidate) map[string]jev.Question {
+	q := map[string]jev.Question{}
+	for _, c := range candidates {
+		q[c.ID] = jev.Choice("Is this candidate memory relevant to the current task and query?", map[string]string{
+			"include": "Directly useful for the current task: a fact, decision, or lesson that bears on it.",
+			"maybe":   "Possibly relevant but tangential or stale.",
+			"exclude": "Not relevant to the current task.",
+		})
+	}
+	return q
+}
+
+// CompactionBenefitQuestions asks whether compacting now is worth the token
+// cost and cache invalidation, given estimated remaining tokens and the value
+// of retaining the recent tail.
+func CompactionBenefitQuestions() map[string]jev.Question {
+	return map[string]jev.Question{
+		"compact_now": jev.Choice("Given the estimated remaining context budget and the value of the recent exact tail, should this agent compact its history now?", map[string]string{
+			"compact": "Context pressure or stale bulk outweighs the value of keeping the recent tail uncompacted.",
+			"wait":    "There is enough headroom and the recent tail is still valuable verbatim.",
 		}),
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"github.com/ductone/orrey/internal/model"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -16,7 +17,7 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 		return Response{}, ErrCredentialsBackoff
 	}
 	toWire, fromWire := toolNameMaps(r.Tools)
-	instructions := r.System + "\n\n" + r.DurableSpec + "\n\n" + r.Plan
+	instructions := strings.Join(systemSections(r), "\n\n")
 	input := []any{}
 	for _, x := range r.Messages {
 		if x.Role == "tool" {

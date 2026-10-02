@@ -61,6 +61,27 @@ interventions:
 #   # of always planning it. Sends the message, task, and todo plan to TypeSafe.
 #   routing: true
 #   timeout_seconds: 5
+# Durable, workspace-scoped memory (see docs/proposals/memory.md). Enabled,
+# shadow, inject, and auto_commit are independently gated: memory can be
+# derived and measured in shadow mode without ever being injected into a
+# prompt or committed automatically.
+# memory:
+#   enabled: false
+#   shadow: true
+#   inject: false
+#   auto_commit: false
+#   max_records: 8
+#   max_tokens: 1200
+#   max_record_bytes: 2048
+#   retain_days: 0 # 0 means records never expire automatically
+#   # Bounded Jev policy signals for memory selection and compaction-benefit
+#   # estimation. Credentials, base_url, and model are reused from jev above;
+#   # this does not add a separate credential path.
+#   jev:
+#     selection: false
+#     compaction_benefit: false
+#     timeout: 250ms
+#     max_candidates: 12
 telemetry:
   otlp_endpoint: "http://localhost:4318"
 web_search:

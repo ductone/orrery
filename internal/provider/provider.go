@@ -74,6 +74,11 @@ type Message struct {
 }
 type Request struct {
 	System, DurableSpec, Plan string
+	// Memory is the pinned, workspace-scoped memory set for this cache epoch
+	// (session start, phase transition, or compaction). It is rendered after
+	// System and before DurableSpec/Plan so a refresh invalidates only the
+	// volatile suffix. Empty unless memory is enabled and injection is on.
+	Memory                    string
 	CacheKey                  string
 	Messages                  []Message
 	Tools                     []Tool
@@ -84,6 +89,19 @@ type Request struct {
 	// Removing definitions instead would change the cached prefix and strand
 	// a model whose history is full of tool use.
 	NoToolCalls bool
+}
+
+// systemSections joins a request's system-level text in the cache-aware order
+// System, Memory, DurableSpec, Plan: stable instructions first, then the
+// volatile pinned-memory suffix, then the per-turn durable spec/plan. A
+// memory refresh therefore invalidates only its own section, not the whole
+// prefix.
+func systemSections(r Request) []string {
+	sections := []string{r.System}
+	if r.Memory != "" {
+		sections = append(sections, r.Memory)
+	}
+	return append(sections, r.DurableSpec, r.Plan)
 }
 type Usage struct {
 	InputTokens      int `json:"input_tokens"`

@@ -30,6 +30,7 @@ type Config struct {
 	Instructions  []string                  `yaml:"instructions"`
 	LSP           map[string]LSPConfig      `yaml:"lsp"`
 	Interventions InterventionConfig        `yaml:"interventions"`
+	Memory        MemoryConfig              `yaml:"memory"`
 	Jev           JevConfig                 `yaml:"jev"`
 }
 
@@ -79,6 +80,147 @@ func (j JevConfig) Timeout() time.Duration {
 		return defaultJevTimeout
 	}
 	return time.Duration(j.TimeoutSeconds) * time.Second
+}
+
+// MemoryConfig governs the durable, workspace-scoped memory layer described
+// in docs/proposals/memory.md. Enabled, shadow, inject, and auto-commit are
+// independently gated: memory can be derived and measured in shadow mode
+// without ever being injected into a prompt or committed automatically.
+// Numeric limits are clamped in code to safe ceilings/floors; RetainDays of 0
+// means records never expire automatically.
+type MemoryConfig struct {
+	// Enabled is the master opt-in. False (the default) means no memory
+	// derivation, retrieval, or storage happens at all.
+	Enabled bool `yaml:"enabled"`
+	// Shadow retrieves/derives candidate records and records observations
+	// without injecting them into a prompt or changing behaviour.
+	Shadow bool `yaml:"shadow"`
+	// Inject allows selected memory to be added to the assembled prompt. It is
+	// independent of Shadow so injection can be opted into separately after
+	// shadow evaluation.
+	Inject bool `yaml:"inject"`
+	// AutoCommit allows model-derived candidates to become active records
+	// without explicit user confirmation. Suggestions stay pending otherwise.
+	AutoCommit bool `yaml:"auto_commit"`
+	// MaxRecords caps how many memory records may be selected/pinned at once.
+	// Optional: zero/negative means defaultMemoryMaxRecords.
+	MaxRecords int `yaml:"max_records"`
+	// MaxTokens caps the estimated token cost of the pinned memory set.
+	// Optional: zero/negative means defaultMemoryMaxTokens.
+	MaxTokens int `yaml:"max_tokens"`
+	// MaxRecordBytes caps the size of a single memory record's text.
+	// Optional: zero/negative means defaultMemoryMaxRecordBytes.
+	MaxRecordBytes int `yaml:"max_record_bytes"`
+	// RetainDays expires records older than this many days. Zero means no
+	// automatic expiry; this is a meaningful value, not an "unset" sentinel.
+	RetainDays int `yaml:"retain_days"`
+	// Jev configures the bounded Jev policy signals used for memory selection
+	// and compaction-benefit estimation. It reuses JevConfig's credentials,
+	// base URL, and model; it does not add a separate credential path.
+	Jev MemoryJevConfig `yaml:"jev"`
+}
+
+// MemoryJevConfig gates the memory-specific Jev decision sites independently
+// of JevConfig.Shadow and of each other. Selection and CompactionBenefit are
+// separate shadow/live policy switches so each can be promoted on its own
+// evidence. Credentials come from JevConfig; this type adds none.
+type MemoryJevConfig struct {
+	// Selection gates the memory_select shadow/live policy.
+	Selection bool `yaml:"selection"`
+	// CompactionBenefit gates the compaction_benefit shadow/live policy.
+	CompactionBenefit bool `yaml:"compaction_benefit"`
+	// Timeout bounds each bounded Jev batch call. Optional: zero means
+	// defaultMemoryJevTimeout.
+	Timeout *time.Duration `yaml:"timeout,omitempty"`
+	// MaxCandidates caps how many candidates one Jev batch may rank.
+	// Optional: zero/negative means defaultMemoryMaxCandidates.
+	MaxCandidates int `yaml:"max_candidates"`
+}
+
+// Memory defaults and clamp ceilings/floors. Ceilings bound a batch's cost and
+// a single record's size; the record/candidate floor of 1 keeps a positive
+// explicit setting meaningful instead of silently disabling selection.
+const (
+	defaultMemoryMaxRecords     = 8
+	defaultMemoryMaxTokens      = 1200
+	defaultMemoryMaxRecordBytes = 2048
+	defaultMemoryMaxCandidates  = 12
+	defaultMemoryJevTimeout     = 250 * time.Millisecond
+	maxMemoryMaxRecords         = 64
+	maxMemoryMaxTokens          = 20_000
+	maxMemoryMaxRecordBytes     = 32_768
+	maxMemoryMaxCandidates      = 64
+	maxMemoryJevTimeout         = 10 * time.Second
+	minMemoryClampedLimit       = 1
+	// maxMemoryRetainDays bounds positive retention windows to keep expiry math
+	// (converting to a future timestamp) safe from overflow/degenerate dates.
+	// Zero is handled separately and always means no expiry; it is never
+	// clamped to this ceiling.
+	maxMemoryRetainDays = 3650
+)
+
+// Records returns the configured max memory record count, clamped to
+// [1, maxMemoryMaxRecords]; zero/negative selects the default.
+func (m MemoryConfig) Records() int {
+	return clampInt(m.MaxRecords, defaultMemoryMaxRecords, minMemoryClampedLimit, maxMemoryMaxRecords)
+}
+
+// Tokens returns the configured max memory token budget, clamped to
+// [1, maxMemoryMaxTokens]; zero/negative selects the default.
+func (m MemoryConfig) Tokens() int {
+	return clampInt(m.MaxTokens, defaultMemoryMaxTokens, minMemoryClampedLimit, maxMemoryMaxTokens)
+}
+
+// RecordBytes returns the configured max record size in bytes, clamped to
+// [1, maxMemoryMaxRecordBytes]; zero/negative selects the default.
+func (m MemoryConfig) RecordBytes() int {
+	return clampInt(m.MaxRecordBytes, defaultMemoryMaxRecordBytes, minMemoryClampedLimit, maxMemoryMaxRecordBytes)
+}
+
+// ExpiresAfterDays reports the configured retention window. Zero means
+// records never expire automatically; this is not clamped away. Positive
+// values are clamped to [1, maxMemoryRetainDays] to keep expiry math (adding
+// the window to a timestamp) safe from overflow/degenerate dates.
+func (m MemoryConfig) ExpiresAfterDays() int {
+	if m.RetainDays <= 0 {
+		return 0
+	}
+	if m.RetainDays > maxMemoryRetainDays {
+		return maxMemoryRetainDays
+	}
+	return m.RetainDays
+}
+
+// MaxCandidates returns the configured max Jev batch candidate count, clamped
+// to [1, maxMemoryMaxCandidates]; zero/negative selects the default.
+func (m MemoryJevConfig) MaxCandidatesLimit() int {
+	return clampInt(m.MaxCandidates, defaultMemoryMaxCandidates, minMemoryClampedLimit, maxMemoryMaxCandidates)
+}
+
+// CallTimeout returns the configured per-batch Jev timeout, clamped to
+// (0, maxMemoryJevTimeout]; unset or non-positive selects the default.
+func (m MemoryJevConfig) CallTimeout() time.Duration {
+	if m.Timeout == nil || *m.Timeout <= 0 {
+		return defaultMemoryJevTimeout
+	}
+	if *m.Timeout > maxMemoryJevTimeout {
+		return maxMemoryJevTimeout
+	}
+	return *m.Timeout
+}
+
+// clampInt returns value clamped to [lo, hi], or def when value is <= 0.
+func clampInt(value, def, lo, hi int) int {
+	if value <= 0 {
+		value = def
+	}
+	if value < lo {
+		return lo
+	}
+	if value > hi {
+		return hi
+	}
+	return value
 }
 
 // InterventionConfig governs the LLM judge that gates expensive progress
@@ -309,6 +451,7 @@ func Default() Config {
 		LSP:    map[string]LSPConfig{},
 		Router: RouterConfig{LambdaCost: .35, FrontierFloorPhases: []string{"plan", "diagnose"}},
 		Budget: BudgetConfig{SessionUSD: 25, JobDefaultFraction: .2, MinReviewUSD: defaultMinReviewUSD},
+		Memory: MemoryConfig{Shadow: true},
 	}
 }
 
@@ -383,6 +526,17 @@ func load(path string, overrides map[string]string, secrets bool) (Config, error
 	if cfg.Jev.TimeoutSeconds < 0 {
 		return cfg, errors.New("config: jev.timeout_seconds must be non-negative")
 	}
+	if cfg.Memory.RetainDays < 0 {
+		return cfg, errors.New("config: memory.retain_days must be non-negative")
+	}
+	if cfg.Memory.Jev.Timeout != nil && *cfg.Memory.Jev.Timeout < 0 {
+		return cfg, errors.New("config: memory.jev.timeout must be non-negative")
+	}
+	// Note: memory.jev.selection/compaction_benefit without jev.api_key is not a
+	// validation error. Per docs/proposals/memory.md, missing credentials (like
+	// low confidence, timeout, or malformed answers) must fall back to
+	// deterministic lexical/recency ranking and the current compaction policy
+	// at runtime rather than block startup.
 	for name, server := range cfg.LSP {
 		if strings.TrimSpace(name) == "" || len(server.Command) == 0 || strings.TrimSpace(server.Command[0]) == "" {
 			return cfg, fmt.Errorf("config: lsp %q requires a command", name)

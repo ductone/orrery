@@ -59,10 +59,16 @@ type Engine struct {
 	pendingHandoffs map[string][]handoff
 	deliveredJobs   map[string]bool
 	shadowWG        sync.WaitGroup
+	// memoryEpochs tracks the pinned memory set (and cache-boundary ID) per
+	// session, refreshed only at a declared cache-safe boundary: session
+	// start, phase transition, or compaction. It is never re-retrieved every
+	// turn.
+	memoryMu     sync.Mutex
+	memoryEpochs map[string]*memoryEpoch
 }
 
 func New(cfg config.Config, s *store.Store, p *provider.Registry, mc *mcp.Manager) *Engine {
-	return &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), lsp: lsp.New(cfg.LSP), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}, writers: map[string]string{}, compactedLastTurn: map[string]bool{}, toolStates: map[string]*builtin.SessionState{}}
+	return &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), lsp: lsp.New(cfg.LSP), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}, writers: map[string]string{}, compactedLastTurn: map[string]bool{}, toolStates: map[string]*builtin.SessionState{}, memoryEpochs: map[string]*memoryEpoch{}}
 }
 
 // markCompacted records that a session's history was just compacted so the
@@ -782,6 +788,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			return agentproto.TaskResult{Status: agentproto.Fail, Error: err.Error()}
 		}
 		progress.beginTurn(s.Phase)
+		e.refreshMemory(ctx, sid, req.Workspace.Path, req.Spec, s.Phase, memoryBoundaryReason(s.Turn), s.Turn, emit)
 		// Stall checks are guesses: they climb the escalation ladder, which
 		// ends in asking the person, never in failing the run.
 		for _, stall := range []struct{ kind, reason string }{
@@ -929,7 +936,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				deployment: runtimeCfg.Instructions, bootstrap: discovery.Bootstrap(),
 			})
 			history = mode.apply(history)
-			return provider.Request{System: system, DurableSpec: durableSpec(s, latestRequest), Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the durable summary.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: definitions, NoToolCalls: mode.noCalls, MaxOutput: min(outputCap, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
+			return provider.Request{System: system, Memory: e.memoryForRequest(runtimeCfg, sid), DurableSpec: durableSpec(s, latestRequest), Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the durable summary.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: definitions, NoToolCalls: mode.noCalls, MaxOutput: min(outputCap, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
 		}
 		var resp provider.Response
 		failed := []string{}
@@ -1373,6 +1380,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		_ = e.store.UpdateLatestTurnRoutingOutcome(ctx, sid, s.Turn, turnOutcome)
 		current, _ := e.store.Session(ctx, sid)
 		compactNow := inputTokens > decision.Model.ContextWindow*3/4
+		e.maybeShadowCompactionBenefit(ctx, sid, s.Turn, inputTokens, decision.Model.ContextWindow)
 		if current.Phase != s.Phase && !compactNow {
 			due, why := compactions.phaseChange(s.Phase, current.Phase, s.Turn, inputTokens)
 			if !due {

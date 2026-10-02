@@ -36,6 +36,41 @@ type DurableState struct {
 	WorkerResults    []string `json:"worker_results"`
 	PriorSummary     string   `json:"prior_summary,omitempty"`
 	CompactedAt      string   `json:"compacted_at"`
+	// SchemaVersion identifies the DurableState shape so a future format
+	// change can be detected before it is trusted as a recovery anchor.
+	SchemaVersion int `json:"schema_version,omitempty"`
+	// InputFromMessage/InputToMessage are the 0-based message indices (within
+	// the session's full stored history at compaction time) that this
+	// checkpoint summarized, for provenance and replay.
+	InputFromMessage int `json:"input_from_message,omitempty"`
+	InputToMessage   int `json:"input_to_message,omitempty"`
+	// EvidenceRefs are bounded pointers (session/event or repository path) a
+	// later turn can follow instead of re-deriving evidence from prose.
+	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+	// Trigger/Reason record why compaction ran (phase_or_context_boundary,
+	// manual, token_pressure, ...).
+	Trigger string `json:"trigger,omitempty"`
+	// InputTokenEstimate/OutputTokenEstimate are rough token estimates for the
+	// summarized input and produced checkpoint, for benefit accounting.
+	InputTokenEstimate  int `json:"input_token_estimate,omitempty"`
+	OutputTokenEstimate int `json:"output_token_estimate,omitempty"`
+	// ClearedToolBytes is how many bytes of stale tool output were cleared
+	// (pointer/hash retained) rather than paraphrased, ahead of folding the
+	// rest into this checkpoint.
+	ClearedToolBytes int `json:"cleared_tool_bytes,omitempty"`
+	// EvidenceCount is len(EvidenceRefs), carried redundantly so a consumer
+	// need not re-derive it.
+	EvidenceCount int `json:"evidence_count,omitempty"`
+	// Validated reports whether validateCompactionAnchor accepted this state.
+	// A checkpoint is only ever persisted after passing, so this is always
+	// true for a state read back from a session's durable summary; it exists
+	// so validation outcome travels with the checkpoint schema itself.
+	Validated bool `json:"validated"`
+	// CacheBoundaryID identifies the cache epoch this compaction started.
+	// Memory selection pins its set to the same identifier, so a refresh at
+	// session start, phase transition, or compaction can be correlated with
+	// the checkpoint that caused it.
+	CacheBoundaryID string `json:"cache_boundary_id,omitempty"`
 }
 
 type durableAnchor struct {
@@ -107,6 +142,7 @@ func (e *Engine) compactState(ctx context.Context, sid, reason string, emit Emit
 	if err != nil {
 		return err
 	}
+	clearedBytes := clearedToolBytes(msgs[:keepAt])
 	state, meta, summaryErr := e.semanticSummary(ctx, s, todos, cont, workItems, msgs[:keepAt])
 	if summaryErr != nil {
 		state = fallbackDurableState(s, msgs[:keepAt])
@@ -129,6 +165,16 @@ func (e *Engine) compactState(ctx context.Context, sid, reason string, emit Emit
 	if err := validateCompactionAnchor(state, anchor); err != nil {
 		return err
 	}
+	state.SchemaVersion = compactionStateSchemaVersion
+	state.InputFromMessage = 0
+	state.InputToMessage = keepAt - 1
+	state.Trigger = reason
+	state.InputTokenEstimate = estimate(messagesText(msgs[:keepAt]))
+	state.EvidenceRefs = compactionEvidenceRefs(sid, state, keepAt)
+	state.EvidenceCount = len(state.EvidenceRefs)
+	state.ClearedToolBytes = clearedBytes
+	state.Validated = true
+	state.CacheBoundaryID = uuid.NewString()
 	encoded, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -147,6 +193,17 @@ func (e *Engine) compactState(ctx context.Context, sid, reason string, emit Emit
 	meta["kept_turns"] = 4
 	meta["checkpoint_id"] = cp.ID
 	meta["reason"] = reason
+	meta["schema_version"] = state.SchemaVersion
+	meta["input_from_message"] = state.InputFromMessage
+	meta["input_to_message"] = state.InputToMessage
+	meta["trigger"] = state.Trigger
+	meta["input_token_estimate"] = state.InputTokenEstimate
+	meta["cleared_tool_bytes"] = state.ClearedToolBytes
+	meta["evidence_count"] = state.EvidenceCount
+	meta["validated"] = state.Validated
+	meta["cache_boundary_id"] = state.CacheBoundaryID
+	meta["memory_cache_boundary_reason"] = memoryBoundaryCompaction
+	e.setCacheBoundary(sid, state.CacheBoundaryID)
 	if meta["strategy"] == "semantic" {
 		e.emit(ctx, sid, "usage.reported", map[string]any{"model": meta["model"], "kind": "compaction", "input_tokens": meta["input_tokens"], "output_tokens": meta["output_tokens"], "cost_usd": meta["cost_usd"]}, emit)
 	}
@@ -613,4 +670,42 @@ func normalizeRequest(s string) string {
 		return -1
 	}, s)
 	return strings.Join(strings.Fields(s), " ")
+}
+
+// compactionStateSchemaVersion is bumped when DurableState's additive fields
+// change shape in a way a consumer should detect before trusting it.
+const compactionStateSchemaVersion = 1
+
+// clearedToolBytes totals the stale tool-result content already bounded to a
+// head/tail pointer by capToolResult, within the window compaction is about
+// to fold into a checkpoint. It is the "tool-output bytes cleared" figure
+// recorded on the compaction event; clearing already-shrunk duplicate output
+// is strictly safer than paraphrasing everything.
+func clearedToolBytes(msgs []store.Message) int {
+	total := 0
+	for _, m := range msgs {
+		if m.Role != "tool" {
+			continue
+		}
+		var msg provider.Message
+		if json.Unmarshal([]byte(m.ContentJSON), &msg) != nil {
+			continue
+		}
+		if capped := capToolResult("", msg.Content); capped != msg.Content {
+			total += len(msg.Content) - len(capped)
+		}
+	}
+	return total
+}
+
+// compactionEvidenceRefs are bounded session/event pointers a later turn can
+// follow for the files this checkpoint names, instead of re-deriving them
+// from prose. Each ref identifies this session and the summarized message
+// range; it never embeds file contents or other evidence text.
+func compactionEvidenceRefs(sid string, state DurableState, keepAt int) []string {
+	refs := make([]string, 0, len(state.Files))
+	for _, f := range state.Files {
+		refs = appendBounded(refs, fmt.Sprintf("session:%s/messages:0-%d/%s", sid, keepAt-1, truncate(f, 200)), 24)
+	}
+	return refs
 }
