@@ -6,7 +6,9 @@
 *.db-wal
 coverage.out
 
-# Beads / Dolt files (added by bd init)
+# Beads issue tracking and its agent hooks stay local.
 .dolt/
 .beads-credential-key
-.beads/proxieddb/
+.beads/
+.claude/settings.json
+.codex/

@@ -1,7 +1,0 @@
-{
-  "database": "dolt",
-  "backend": "dolt",
-  "dolt_mode": "embedded",
-  "dolt_database": "orrery",
-  "project_id": "5e7d758a-6474-4ff1-bf72-2fb8d064cb1e"
-}
