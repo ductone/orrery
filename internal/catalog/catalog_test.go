@@ -216,10 +216,10 @@ func rampServer(t *testing.T, status int, entries ...map[string]any) *httptest.S
 
 func TestBuildDiscoversCachesAndFallsBack(t *testing.T) {
 	cache := t.TempDir()
-	live := rampServer(t, 200, entry("deepseek-v4.1-flash", nil), entry("claude-opus-5", nil), entry("old-model", func(r map[string]any) { r["status"] = "retired" }))
+	live := rampServer(t, 200, entry("deepseek-v4.2-flash", nil), entry("claude-opus-5", nil), entry("old-model", func(r map[string]any) { r["status"] = "retired" }))
 	cfg := config.Config{
 		Providers: map[string]config.ProviderConfig{"ramp": {APIKey: "k", BaseURL: live.URL}},
-		Models:    []config.ModelConfig{{ID: "ramp/deepseek-v4.1-flash", Tier: ptr(model.Tiny)}},
+		Models:    []config.ModelConfig{{ID: "ramp/deepseek-v4.2-flash", Tier: ptr(model.Tiny)}},
 	}
 	res := Build(context.Background(), cfg, cache, nil)
 	if len(res.Discoveries) != 1 || res.Discoveries[0].Source != "live" || res.Discoveries[0].Listed != 3 || res.Discoveries[0].Skipped["not active"] != 1 {
@@ -231,7 +231,7 @@ func TestBuildDiscoversCachesAndFallsBack(t *testing.T) {
 	var flash, opus model.ModelSpec
 	for _, m := range res.Models {
 		switch m.ID {
-		case "ramp/deepseek-v4.1-flash":
+		case "ramp/deepseek-v4.2-flash":
 			flash = m
 		case "ramp/claude-opus-5":
 			opus = m
@@ -283,23 +283,23 @@ func TestOwnKeyOnlyModelsAreLeftOutUnlessConfigured(t *testing.T) {
 
 func TestRefusedModelsAreLeftOutUntilTheyExpire(t *testing.T) {
 	dir := t.TempDir()
-	if err := MarkUnavailable(dir, "ramp/deepseek-v4.1-flash", "provider_key_required"); err != nil {
+	if err := MarkUnavailable(dir, "ramp/deepseek-v4.2-flash", "provider_key_required"); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	if got := Unavailable(dir, now); got["ramp/deepseek-v4.1-flash"] != "provider_key_required" {
+	if got := Unavailable(dir, now); got["ramp/deepseek-v4.2-flash"] != "provider_key_required" {
 		t.Fatalf("unavailable = %v", got)
 	}
 	if got := Unavailable(dir, now.Add(refusalTTL+time.Minute)); len(got) != 0 {
 		t.Fatalf("refusals must expire: %v", got)
 	}
-	srv := rampServer(t, 200, entry("deepseek-v4.1-flash", nil), entry("qwen4-coder", nil))
+	srv := rampServer(t, 200, entry("deepseek-v4.2-flash", nil), entry("qwen4-coder", nil))
 	res := Build(context.Background(), config.Config{Providers: map[string]config.ProviderConfig{"ramp": {APIKey: "k", BaseURL: srv.URL}}}, dir, nil)
 	ids := map[string]bool{}
 	for _, m := range res.Models {
 		ids[m.ID] = true
 	}
-	if ids["ramp/deepseek-v4.1-flash"] || !ids["ramp/qwen4-coder"] || res.Refused != 1 {
+	if ids["ramp/deepseek-v4.2-flash"] || !ids["ramp/qwen4-coder"] || res.Refused != 1 {
 		t.Fatalf("refused model must be left out: refused=%d ids=%v", res.Refused, ids)
 	}
 }
