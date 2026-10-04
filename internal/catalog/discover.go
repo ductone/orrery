@@ -129,6 +129,9 @@ func DiscoverRamp(ctx context.Context, client *http.Client, baseURL, key, cacheD
 	d.Error = err.Error()
 	if cached, ok := readCache(cacheDir, "ramp"); ok {
 		cached.Source, cached.Error = "cache", d.Error
+		for i, m := range cached.Models {
+			cached.Models[i] = adoptCurated(m)
+		}
 		return cached
 	}
 	return d

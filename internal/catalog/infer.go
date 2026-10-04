@@ -196,18 +196,26 @@ func inferRampModel(m rampModel) (model.ModelSpec, string) {
 		EditDialect: dialect,
 		Discovered:  true,
 	}
-	// A curated model keeps its definition on every route: the listing
-	// supplies only what the route decides (price, limits, efforts offered).
-	// The route stays Discovered, so it does not outscore a curated route
-	// on price alone, but it is the model's tier and family everywhere.
-	if m, ok := model.Canonical(name); ok {
-		m.Effort = efforts
-		compat, effort := model.ProviderCompat("ramp", m)
-		if len(effort) == 0 {
-			compat.SupportsReasoningEffort, compat.EffortWireMap, effort = false, nil, []model.Effort{model.EffortNone}
-		}
-		spec.Model, spec.Family, spec.Tier, spec.EditDialect = m.Name, m.Family, m.Tier, m.EditDialect
-		spec.Effort, spec.Compat = effort, compat
+	return adoptCurated(spec), ""
+}
+
+// adoptCurated gives a discovered route to a curated model that model's
+// definition: the listing supplies only what the route decides (price,
+// limits, efforts offered). The route stays Discovered, so it does not
+// outscore a curated route on price alone, but the model has its one tier
+// and family everywhere. It is idempotent, so cached listings inferred
+// before a model was curated pick the definition up too.
+func adoptCurated(spec model.ModelSpec) model.ModelSpec {
+	m, ok := model.Canonical(strings.TrimPrefix(spec.ID, "ramp/"))
+	if !ok {
+		return spec
 	}
-	return spec, ""
+	m.Effort = spec.Effort
+	compat, effort := model.ProviderCompat("ramp", m)
+	if len(effort) == 0 {
+		compat.SupportsReasoningEffort, compat.EffortWireMap, effort = false, nil, []model.Effort{model.EffortNone}
+	}
+	spec.Model, spec.Family, spec.Tier, spec.EditDialect = m.Name, m.Family, m.Tier, m.EditDialect
+	spec.Effort, spec.Compat = effort, compat
+	return spec
 }

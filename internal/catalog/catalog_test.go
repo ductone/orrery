@@ -101,6 +101,21 @@ func TestInferCuratedModelKeepsItsDefinition(t *testing.T) {
 	}
 }
 
+func TestCachedListingsAdoptCuratedDefinitions(t *testing.T) {
+	// A cache written before grok-4.6 was curated holds a plain inference.
+	old := model.ModelSpec{ID: "ramp/grok-4.6", Family: "xai", Tier: model.Efficient, Effort: []model.Effort{model.EffortNone, model.EffortLow, model.EffortHigh}, Discovered: true}
+	got := adoptCurated(old)
+	if got.Model != "grok-4.6" || got.Tier != model.Frontier || !got.Discovered || slices.Contains(got.Effort, model.EffortNone) {
+		t.Fatalf("adopted = %+v", got)
+	}
+	if again := adoptCurated(got); again.Tier != got.Tier || !slices.Equal(again.Effort, got.Effort) {
+		t.Fatalf("adoptCurated must be idempotent: %+v", again)
+	}
+	if other := adoptCurated(model.ModelSpec{ID: "ramp/qwen4-coder", Tier: model.Efficient}); other.Model != "" {
+		t.Fatalf("an uncurated model is left alone: %+v", other)
+	}
+}
+
 func TestInferenceRules(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
