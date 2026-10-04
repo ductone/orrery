@@ -5,3 +5,8 @@
 *.db-shm
 *.db-wal
 coverage.out
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+.beads-credential-key
+.beads/proxieddb/
