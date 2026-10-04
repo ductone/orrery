@@ -182,6 +182,153 @@ func (s *Store) ForgetMemory(ctx context.Context, workspaceID, id string) error 
 	return nil
 }
 
+// MemoryMutation describes one lifecycle change committed with its audit event.
+type MemoryMutation struct {
+	Operation   string
+	Record      MemoryRecord
+	WorkspaceID string
+	OldID       string
+	MemoryID    string
+}
+
+// ApplyMemoryMutationEvent commits a memory lifecycle change and its event in
+// one transaction. If either write fails, neither is durable.
+func (s *Store) ApplyMemoryMutationEvent(ctx context.Context, sid, turnID, eventType string, eventData any, m MemoryMutation) (MemoryRecord, error) {
+	x := m.Record
+	if m.Operation == "commit" || m.Operation == "correct" {
+		applyMemoryDefaults(&x)
+		if x.ID == "" {
+			x.ID = uuid.NewString()
+		}
+		if err := validateMemoryRecord(x); err != nil {
+			return MemoryRecord{}, err
+		}
+		if err := s.validateMemoryReferences(ctx, x); err != nil {
+			return MemoryRecord{}, err
+		}
+	} else if m.Operation == "update" {
+		applyMemoryDefaults(&x)
+		if x.ID == "" {
+			return MemoryRecord{}, errors.New("memory id is required")
+		}
+		if err := validateMemoryRecord(x); err != nil {
+			return MemoryRecord{}, err
+		}
+		if err := s.validateMemoryReferences(ctx, x); err != nil {
+			return MemoryRecord{}, err
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return MemoryRecord{}, err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	expiry := any(nil)
+	if x.ExpiresAt != nil {
+		expiry = x.ExpiresAt.UTC().Format(time.RFC3339Nano)
+	}
+	switch m.Operation {
+	case "commit":
+		x.CreatedAt, x.UpdatedAt = now, now
+		_, err = tx.ExecContext(ctx, `INSERT INTO memory_records(memory_id,workspace_id,scope,kind,text,provenance,confidence,status,evidence_refs,created_at,updated_at,expires_at,superseded_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.WorkspaceID, x.Scope, x.Kind, x.Text, x.Provenance, x.Confidence, x.Status, x.EvidenceRefs, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), expiry, nullIfEmpty(x.SupersededBy))
+	case "update":
+		var res sql.Result
+		res, err = tx.ExecContext(ctx, `UPDATE memory_records SET scope=?,kind=?,text=?,provenance=?,confidence=?,status=?,evidence_refs=?,updated_at=?,expires_at=?,superseded_by=? WHERE memory_id=? AND workspace_id=? AND status!='deleted' AND status!='superseded'`, x.Scope, x.Kind, x.Text, x.Provenance, x.Confidence, x.Status, x.EvidenceRefs, now.Format(time.RFC3339Nano), expiry, nullIfEmpty(x.SupersededBy), x.ID, x.WorkspaceID)
+		if err == nil {
+			var n int64
+			n, err = res.RowsAffected()
+			if err == nil && n == 0 {
+				err = sql.ErrNoRows
+			}
+		}
+	case "correct":
+		x.CreatedAt, x.UpdatedAt = now, now
+		_, err = tx.ExecContext(ctx, `INSERT INTO memory_records(memory_id,workspace_id,scope,kind,text,provenance,confidence,status,evidence_refs,created_at,updated_at,expires_at,superseded_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.WorkspaceID, x.Scope, x.Kind, x.Text, x.Provenance, x.Confidence, x.Status, x.EvidenceRefs, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), expiry, nil)
+		if err == nil {
+			var res sql.Result
+			res, err = tx.ExecContext(ctx, `UPDATE memory_records SET status='superseded',superseded_by=?,updated_at=? WHERE memory_id=? AND workspace_id=? AND status!='deleted' AND status!='superseded'`, x.ID, now.Format(time.RFC3339Nano), m.OldID, m.WorkspaceID)
+			if err == nil {
+				var n int64
+				n, err = res.RowsAffected()
+				if err == nil && n == 0 {
+					err = ErrMemoryNotSupersedable
+				}
+			}
+		}
+	case "forget":
+		var res sql.Result
+		res, err = tx.ExecContext(ctx, `UPDATE memory_records SET status='deleted',updated_at=? WHERE memory_id=? AND workspace_id=? AND status!='deleted'`, now.Format(time.RFC3339Nano), m.MemoryID, m.WorkspaceID)
+		if err == nil {
+			var n int64
+			n, err = res.RowsAffected()
+			if err == nil && n == 0 {
+				err = sql.ErrNoRows
+			}
+		}
+	default:
+		err = errors.New("unknown memory mutation")
+	}
+	if data, ok := eventData.(map[string]any); ok {
+		switch m.Operation {
+		case "commit":
+			data["id"] = x.ID
+		case "correct":
+			data["replacement_id"] = x.ID
+		}
+	}
+	if err != nil {
+		return MemoryRecord{}, err
+	}
+	if _, err = s.addEventTx(ctx, tx, sid, turnID, eventType, eventData); err != nil {
+		return MemoryRecord{}, err
+	}
+	// Return the row as persisted rather than the caller's input, so every
+	// operation (including forget, which is addressed only by ID) describes the
+	// mutated record.
+	targetID := x.ID
+	if m.Operation == "forget" {
+		targetID = m.MemoryID
+	}
+	persisted, err := readMemoryTx(ctx, tx, targetID)
+	if err != nil {
+		return MemoryRecord{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return MemoryRecord{}, err
+	}
+	return persisted, nil
+}
+
+// readMemoryTx loads one memory row inside an open transaction.
+func readMemoryTx(ctx context.Context, tx *sql.Tx, id string) (MemoryRecord, error) {
+	var x MemoryRecord
+	var created, updated string
+	var expires sql.NullString
+	row := tx.QueryRowContext(ctx, `SELECT memory_id,workspace_id,scope,kind,text,provenance,confidence,status,evidence_refs,created_at,updated_at,expires_at,COALESCE(superseded_by,'') FROM memory_records WHERE memory_id=?`, id)
+	if err := row.Scan(&x.ID, &x.WorkspaceID, &x.Scope, &x.Kind, &x.Text, &x.Provenance, &x.Confidence, &x.Status, &x.EvidenceRefs, &created, &updated, &expires, &x.SupersededBy); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return MemoryRecord{}, fmt.Errorf("%w: %s", ErrMemoryNotFound, id)
+		}
+		return MemoryRecord{}, err
+	}
+	var err error
+	if x.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
+		return MemoryRecord{}, fmt.Errorf("parse memory created_at: %w", err)
+	}
+	if x.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated); err != nil {
+		return MemoryRecord{}, fmt.Errorf("parse memory updated_at: %w", err)
+	}
+	if expires.Valid && expires.String != "" {
+		expiry, parseErr := time.Parse(time.RFC3339Nano, expires.String)
+		if parseErr != nil {
+			return MemoryRecord{}, fmt.Errorf("parse memory expires_at: %w", parseErr)
+		}
+		x.ExpiresAt = &expiry
+	}
+	return x, nil
+}
+
 func (s *Store) ListMemory(ctx context.Context, f MemoryFilter) ([]MemoryRecord, error) {
 	if f.WorkspaceID == "" {
 		return nil, errors.New("workspace id is required")
@@ -195,7 +342,7 @@ func (s *Store) ListMemory(ctx context.Context, f MemoryFilter) ([]MemoryRecord,
 	if f.Status != "" {
 		query += ` AND status=?`
 		args = append(args, f.Status)
-	} else {
+	} else if !f.IncludeExpired {
 		query += ` AND status!='expired'`
 	}
 	rows, err := s.db.QueryContext(ctx, query, args...)

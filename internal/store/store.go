@@ -1236,24 +1236,34 @@ func (s *Store) AddEvent(ctx context.Context, sid, typ string, data any) (Event,
 }
 
 func (s *Store) AddEventForTurn(ctx context.Context, sid, turnID, typ string, data any) (Event, error) {
-	b, err := json.Marshal(data)
-	if err != nil {
-		return Event{}, err
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Event{}, err
 	}
 	defer tx.Rollback()
+	ev, err := s.addEventTx(ctx, tx, sid, turnID, typ, data)
+	if err != nil {
+		return Event{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Event{}, err
+	}
+	return ev, nil
+}
+
+// addEventTx appends an event inside an existing transaction so a caller can
+// commit durable state and its audit event atomically.
+func (s *Store) addEventTx(ctx context.Context, tx *sql.Tx, sid, turnID, typ string, data any) (Event, error) {
+	b, err := json.Marshal(data)
+	if err != nil {
+		return Event{}, err
+	}
 	var seq int
 	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq),0)+1 FROM events WHERE session_id=?`, sid).Scan(&seq); err != nil {
 		return Event{}, err
 	}
 	now := time.Now().UTC()
 	if _, err = tx.ExecContext(ctx, `INSERT INTO events(session_id,seq,turn_id,type,data_json,created_at)VALUES(?,?,?,?,?,?)`, sid, seq, turnID, typ, string(b), now.Format(time.RFC3339Nano)); err != nil {
-		return Event{}, err
-	}
-	if err = tx.Commit(); err != nil {
 		return Event{}, err
 	}
 	return Event{SchemaVersion: 1, EventID: fmt.Sprintf("%s:%d", sid, seq), Seq: seq, SessionID: sid, TurnID: turnID, Type: typ, Data: b, CreatedAt: now}, nil

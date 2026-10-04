@@ -2,11 +2,14 @@ package core
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/ductone/orrey/internal/agentproto"
 	"github.com/ductone/orrey/internal/config"
 	"github.com/ductone/orrey/internal/shadow"
 	"github.com/ductone/orrey/internal/store"
@@ -16,11 +19,19 @@ import (
 // (session start, phase transition, or compaction). Selected IDs are fixed
 // for the epoch and never re-retrieved mid-turn; a new epoch replaces it
 // wholesale at the next cache-safe boundary.
+//
+// stale marks an epoch whose underlying records were mutated after it was
+// pinned. The epoch keeps serving the already-cached prompt segment for the
+// rest of the current turn (mid-turn removal would invalidate the volatile
+// segment and contradict the fixed-for-the-epoch invariant); refreshMemory
+// re-selects at the next cache-safe boundary.
 type memoryEpoch struct {
-	boundaryID string
-	phase      string
-	records    []store.MemoryRecord
-	rendered   string
+	boundaryID  string
+	workspaceID string
+	phase       string
+	stale       bool
+	records     []store.MemoryRecord
+	rendered    string
 }
 
 // memoryCacheBoundaryReason names why a memory epoch (and, when compaction
@@ -74,11 +85,30 @@ func (e *Engine) setCacheBoundary(sid, boundaryID string) {
 	delete(e.memoryEpochs, sid)
 }
 
+// invalidateMemoryWorkspace marks every pinned epoch for a mutated workspace
+// stale, including epochs owned by read-only sessions and workers. Epochs are
+// not dropped here: the current turn continues with the memory it was built
+// with, and the next refresh boundary re-selects against the mutated state.
+func (e *Engine) invalidateMemoryWorkspace(workspaceID string) {
+	e.memoryMu.Lock()
+	defer e.memoryMu.Unlock()
+	for _, ep := range e.memoryEpochs {
+		if ep.workspaceID == workspaceID {
+			ep.stale = true
+		}
+	}
+}
+
 func (e *Engine) pinnedMemory(sid string) (*memoryEpoch, bool) {
 	e.memoryMu.Lock()
 	defer e.memoryMu.Unlock()
 	ep, ok := e.memoryEpochs[sid]
-	return ep, ok
+	if !ok {
+		return nil, false
+	}
+	copy := *ep
+	copy.records = append([]store.MemoryRecord(nil), ep.records...)
+	return &copy, true
 }
 
 func (e *Engine) storeMemoryEpoch(sid string, ep *memoryEpoch) {
@@ -108,10 +138,10 @@ func memoryBoundaryReason(turn int) string {
 // is asked only through shadowAsk and never changes the selection.
 func (e *Engine) refreshMemory(ctx context.Context, sid, workspacePath, query, phase, reason string, turn int, emit EmitFunc) {
 	cfg, _, _, _, _ := e.runtimeSnapshot()
-	if !cfg.Memory.Enabled && !cfg.Memory.Shadow {
-		return
+	if strings.TrimSpace(workspacePath) == "" {
+		workspacePath = cfg.WorkspaceRoot
 	}
-	if ep, ok := e.pinnedMemory(sid); ok && ep.phase == phase {
+	if ep, ok := e.pinnedMemory(sid); ok && ep.phase == phase && !ep.stale {
 		return
 	}
 	w, ok := e.ensureMemoryWorkspace(ctx, workspacePath)
@@ -127,8 +157,8 @@ func (e *Engine) refreshMemory(ctx context.Context, sid, workspacePath, query, p
 	selected := rankMemory(records, query, cfg.Memory.Records(), cfg.Memory.Tokens(), cfg.Memory.RecordBytes())
 	boundaryID := fmt.Sprintf("%s:%s:%d", sid, phase, turn)
 	e.maybeShadowMemorySelect(ctx, sid, turn, records, query)
-	ep := &memoryEpoch{boundaryID: boundaryID, phase: phase, records: selected}
-	if cfg.Memory.Enabled && cfg.Memory.Inject {
+	ep := &memoryEpoch{boundaryID: boundaryID, workspaceID: w.ID, phase: phase, records: selected}
+	if cfg.Memory.Inject {
 		ep.rendered = renderMemory(selected)
 	}
 	e.storeMemoryEpoch(sid, ep)
@@ -140,11 +170,11 @@ func (e *Engine) refreshMemory(ctx context.Context, sid, workspacePath, query, p
 }
 
 // memoryForRequest returns the rendered memory block for the request's
-// distinct volatile segment, or "" when memory is disabled, shadow-only, or
+// distinct volatile segment, or "" when injection is off, shadow-only, or
 // the epoch is empty. Shadow mode retrieves/records events but never
 // injects.
 func (e *Engine) memoryForRequest(cfg config.Config, sid string) string {
-	if !cfg.Memory.Enabled || !cfg.Memory.Inject {
+	if !cfg.Memory.Inject {
 		return ""
 	}
 	ep, ok := e.pinnedMemory(sid)
@@ -257,9 +287,6 @@ func renderMemory(records []store.MemoryRecord) string {
 const memoryRetrievedEventVersion = 1
 
 func (e *Engine) emitMemoryRetrieved(ctx context.Context, sid string, cfg config.Config, selected []store.MemoryRecord, boundaryID, reasonCode, boundaryReason string, emit EmitFunc) {
-	if !cfg.Memory.Enabled && !cfg.Memory.Shadow {
-		return
-	}
 	ids := make([]string, 0, len(selected))
 	tokens := 0
 	for _, r := range selected {
@@ -274,15 +301,15 @@ func (e *Engine) emitMemoryRetrieved(ctx context.Context, sid string, cfg config
 		outcome = "empty"
 	}
 	e.emit(ctx, sid, "memory.retrieved", map[string]any{
-		"version":          memoryRetrievedEventVersion,
-		"ids":              ids,
-		"source":           "deterministic",
-		"reason":           reasonCode,
-		"boundary_reason":  boundaryReason,
-		"count":            len(ids),
-		"token_estimate":   tokens,
+		"version":           memoryRetrievedEventVersion,
+		"ids":               ids,
+		"source":            "deterministic",
+		"reason":            reasonCode,
+		"boundary_reason":   boundaryReason,
+		"count":             len(ids),
+		"token_estimate":    tokens,
 		"cache_boundary_id": boundaryID,
-		"outcome":          outcome,
+		"outcome":           outcome,
 	}, emit)
 }
 
@@ -328,9 +355,232 @@ func (e *Engine) maybeShadowCompactionBenefit(ctx context.Context, sid string, t
 		return
 	}
 	state := map[string]any{
-		"input_tokens":      inputTokens,
-		"context_window":    contextWindow,
+		"input_tokens":       inputTokens,
+		"context_window":     contextWindow,
 		"remaining_fraction": 1 - float64(inputTokens)/float64(max(contextWindow, 1)),
 	}
 	e.shadowAsk(ctx, sid, shadow.CompactionBenefit, shadow.CompactionBenefitVersion, turn, state, shadow.CompactionBenefitQuestions(), nil)
+}
+
+const memoryLifecycleEventVersion = 1
+
+// memoryEvidenceRefs validates that a proposal's evidence refs are a non-empty
+// array of non-empty strings, matching the tool schema, and returns their JSON
+// encoding. Enforcing the shape here keeps a scalar or object from reaching the
+// store only to fail with a generic validation error.
+func memoryEvidenceRefs(raw any) (string, error) {
+	items, ok := raw.([]any)
+	if !ok {
+		if strs, isStrs := raw.([]string); isStrs {
+			items = make([]any, 0, len(strs))
+			for _, s := range strs {
+				items = append(items, s)
+			}
+			ok = true
+		}
+	}
+	if !ok {
+		return "", errors.New("evidence_refs must be an array of strings")
+	}
+	if len(items) == 0 {
+		return "", errors.New("evidence_refs are required")
+	}
+	refs := make([]string, 0, len(items))
+	for _, item := range items {
+		s, isStr := item.(string)
+		if !isStr {
+			return "", errors.New("evidence_refs must be an array of strings")
+		}
+		if strings.TrimSpace(s) == "" {
+			return "", errors.New("evidence_refs must not contain empty values")
+		}
+		refs = append(refs, s)
+	}
+	encoded, err := json.Marshal(refs)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func memoryStringArg(args map[string]any, name string) (string, error) {
+	raw, ok := args[name]
+	if !ok {
+		return "", fmt.Errorf("%s is required", name)
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("%s must be a string", name)
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("%s is required", name)
+	}
+	return value, nil
+}
+
+// controlMemory is the parent-session write/control path for workspace memory.
+// It deliberately accepts no user-wide scope and emits metadata-only events.
+func (e *Engine) controlMemory(ctx context.Context, sid, workspacePath, action string, args map[string]any, emit EmitFunc) (any, error) {
+	cfg, _, _, _, _ := e.runtimeSnapshot()
+	if strings.TrimSpace(workspacePath) == "" {
+		workspacePath = cfg.WorkspaceRoot
+	}
+	w, ok := e.ensureMemoryWorkspace(ctx, workspacePath)
+	if !ok {
+		return nil, errors.New("memory store unavailable")
+	}
+	turnID := turnIDFromContext(ctx)
+	if turnID == "" {
+		e.mu.Lock()
+		turnID = e.turnIDs[sid]
+		e.mu.Unlock()
+	}
+	mutate := func(typ string, data map[string]any, mutation store.MemoryMutation) (store.MemoryRecord, error) {
+		data["version"] = memoryLifecycleEventVersion
+		rec, err := e.store.ApplyMemoryMutationEvent(ctx, sid, turnID, typ, data, mutation)
+		if err == nil && emit != nil {
+			emit(agentproto.AgentEvent{Type: typ, Data: data})
+		}
+		return rec, err
+	}
+	list := func() ([]store.MemoryRecord, error) {
+		return e.store.ListMemory(ctx, store.MemoryFilter{WorkspaceID: w.ID, IncludeExpired: true})
+	}
+	find := func(id string) (store.MemoryRecord, error) {
+		records, err := list()
+		if err != nil {
+			return store.MemoryRecord{}, err
+		}
+		for _, rec := range records {
+			if rec.ID == id {
+				return rec, nil
+			}
+		}
+		return store.MemoryRecord{}, store.ErrMemoryNotFound
+	}
+	// memoryExpired reports records that retention has already retired, either
+	// by stored status or by elapsed expiry. inspect intentionally surfaces
+	// them, but they must not be revivable by confirm/correct.
+	memoryExpired := func(rec store.MemoryRecord) bool {
+		if rec.Status == "expired" {
+			return true
+		}
+		return rec.ExpiresAt != nil && !rec.ExpiresAt.After(time.Now().UTC())
+	}
+	findMutable := func(id string) (store.MemoryRecord, error) {
+		rec, err := find(id)
+		if err != nil {
+			return store.MemoryRecord{}, err
+		}
+		if memoryExpired(rec) {
+			return store.MemoryRecord{}, errors.New("memory record has expired and cannot be modified")
+		}
+		return rec, nil
+	}
+	expiry := func() *time.Time {
+		days := cfg.Memory.ExpiresAfterDays()
+		if days == 0 {
+			return nil
+		}
+		t := time.Now().UTC().Add(time.Duration(days) * 24 * time.Hour)
+		return &t
+	}
+	switch action {
+	case "inspect":
+		return list()
+	case "propose":
+		text, err := memoryStringArg(args, "text")
+		if err != nil {
+			return nil, err
+		}
+		kind, err := memoryStringArg(args, "kind")
+		if err != nil {
+			return nil, err
+		}
+		if len(text) > cfg.Memory.RecordBytes() {
+			return nil, errors.New("memory text exceeds configured limit")
+		}
+		refs, err := memoryEvidenceRefs(args["evidence_refs"])
+		if err != nil {
+			return nil, err
+		}
+		status := "pending"
+		if cfg.Memory.AutoCommit {
+			status = "active"
+		}
+		data := map[string]any{"status": status, "kind": kind, "scope": "workspace"}
+		rec, err := mutate("memory.committed", data, store.MemoryMutation{Operation: "commit", Record: store.MemoryRecord{WorkspaceID: w.ID, Scope: "workspace", Kind: kind, Text: text, Provenance: "evidence_backed_candidate", Confidence: 1, Status: status, EvidenceRefs: refs, ExpiresAt: expiry()}})
+		if err != nil {
+			return nil, err
+		}
+		e.invalidateMemoryWorkspace(w.ID)
+		return rec, nil
+	case "confirm":
+		if args["user_confirmed"] != true {
+			return nil, errors.New("explicit user confirmation is required")
+		}
+		id, err := memoryStringArg(args, "id")
+		if err != nil {
+			return nil, err
+		}
+		rec, err := findMutable(id)
+		if err != nil {
+			return nil, err
+		}
+		if rec.Status != "pending" {
+			return nil, errors.New("only pending memory can be confirmed")
+		}
+		rec.Status, rec.ExpiresAt = "active", expiry()
+		updated, err := mutate("memory.updated", map[string]any{"id": rec.ID, "from_status": "pending", "to_status": "active"}, store.MemoryMutation{Operation: "update", Record: rec})
+		if err != nil {
+			return nil, err
+		}
+		e.invalidateMemoryWorkspace(w.ID)
+		return updated, nil
+	case "correct":
+		if args["user_confirmed"] != true {
+			return nil, errors.New("explicit user confirmation is required")
+		}
+		id, err := memoryStringArg(args, "id")
+		if err != nil {
+			return nil, err
+		}
+		old, err := findMutable(id)
+		if err != nil {
+			return nil, err
+		}
+		if old.Status != "active" {
+			return nil, errors.New("only active memory can be corrected")
+		}
+		text, err := memoryStringArg(args, "text")
+		if err != nil {
+			return nil, err
+		}
+		if len(text) > cfg.Memory.RecordBytes() {
+			return nil, fmt.Errorf("memory text exceeds max_record_bytes (%d)", cfg.Memory.RecordBytes())
+		}
+		data := map[string]any{"id": old.ID, "from_status": old.Status, "to_status": "superseded"}
+		replacement, err := mutate("memory.updated", data, store.MemoryMutation{Operation: "correct", WorkspaceID: w.ID, OldID: old.ID, Record: store.MemoryRecord{WorkspaceID: w.ID, Scope: old.Scope, Kind: old.Kind, Text: text, Provenance: "user_correction", Confidence: 1, Status: "active", EvidenceRefs: old.EvidenceRefs, ExpiresAt: expiry()}})
+		if err != nil {
+			return nil, err
+		}
+		e.invalidateMemoryWorkspace(w.ID)
+		return replacement, nil
+	case "forget":
+		if args["user_confirmed"] != true {
+			return nil, errors.New("explicit user confirmation is required")
+		}
+		id, err := memoryStringArg(args, "id")
+		if err != nil {
+			return nil, err
+		}
+		if _, err = mutate("memory.forgotten", map[string]any{"id": id, "to_status": "deleted"}, store.MemoryMutation{Operation: "forget", WorkspaceID: w.ID, MemoryID: id}); err != nil {
+			return nil, err
+		}
+		e.invalidateMemoryWorkspace(w.ID)
+		return map[string]any{"id": id, "forgotten": true}, nil
+	default:
+		return nil, errors.New("action must be inspect, propose, confirm, correct, or forget")
+	}
 }

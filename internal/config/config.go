@@ -83,15 +83,16 @@ func (j JevConfig) Timeout() time.Duration {
 }
 
 // MemoryConfig governs the durable, workspace-scoped memory layer described
-// in docs/proposals/memory.md. Enabled, shadow, inject, and auto-commit are
+// in docs/proposals/memory.md. Memory is always on: derivation, retrieval,
+// and storage cannot be turned off. Shadow, inject, and auto-commit remain
 // independently gated: memory can be derived and measured in shadow mode
 // without ever being injected into a prompt or committed automatically.
 // Numeric limits are clamped in code to safe ceilings/floors; RetainDays of 0
 // means records never expire automatically.
 type MemoryConfig struct {
-	// Enabled is the master opt-in. False (the default) means no memory
-	// derivation, retrieval, or storage happens at all.
-	Enabled bool `yaml:"enabled"`
+	// LegacyEnabled accepts the removed enabled key so existing strict-decoded
+	// configs continue to load. Its value is ignored; memory is always on.
+	LegacyEnabled *bool `yaml:"enabled,omitempty"`
 	// Shadow retrieves/derives candidate records and records observations
 	// without injecting them into a prompt or changing behaviour.
 	Shadow bool `yaml:"shadow"`

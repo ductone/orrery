@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -317,8 +318,8 @@ func TestLoadUnresolvedNeedsNoSecrets(t *testing.T) {
 
 func TestMemoryDefaults(t *testing.T) {
 	d := Default()
-	if d.Memory.Enabled || d.Memory.Inject || d.Memory.AutoCommit {
-		t.Fatalf("memory enabled/inject/auto_commit must default to false: %+v", d.Memory)
+	if d.Memory.Inject || d.Memory.AutoCommit {
+		t.Fatalf("memory inject/auto_commit must default to false: %+v", d.Memory)
 	}
 	if !d.Memory.Shadow {
 		t.Fatal("memory shadow must default to true")
@@ -356,7 +357,17 @@ func TestMemoryStrictDecodeAndValidation(t *testing.T) {
 		return Load(path)
 	}
 
-	if _, err := write("memory:\n  enabled: true\n  bogus_field: true\n"); err == nil {
+	for _, enabled := range []bool{false, true} {
+		cfg, err := write(fmt.Sprintf("memory:\n  enabled: %t\n", enabled))
+		if err != nil {
+			t.Fatalf("legacy memory.enabled=%t must load: %v", enabled, err)
+		}
+		if cfg.Memory.LegacyEnabled == nil || *cfg.Memory.LegacyEnabled != enabled {
+			t.Fatalf("legacy memory.enabled=%t was not decoded", enabled)
+		}
+	}
+
+	if _, err := write("memory:\n  shadow: true\n  bogus_field: true\n"); err == nil {
 		t.Fatal("an unknown memory field must be rejected")
 	}
 	if _, err := write("memory:\n  jev:\n    bogus_field: true\n"); err == nil {
@@ -369,25 +380,22 @@ func TestMemoryStrictDecodeAndValidation(t *testing.T) {
 		t.Fatal("negative memory.jev.timeout must be rejected")
 	}
 	// Missing jev.api_key with memory.jev.selection/compaction_benefit enabled
-	// is not a validation error, whether or not memory itself is enabled: per
+	// is not a validation error: per
 	// docs/proposals/memory.md, missing credentials must fall back to
 	// deterministic lexical/recency ranking and the current compaction policy
 	// at runtime rather than block startup.
-	if _, err := write("memory:\n  enabled: true\n  jev:\n    selection: true\n"); err != nil {
+	if _, err := write("memory:\n  jev:\n    selection: true\n"); err != nil {
 		t.Fatalf("memory.jev.selection without jev.api_key must fall back cleanly, not fail to load: %v", err)
 	}
-	if _, err := write("memory:\n  enabled: true\n  jev:\n    compaction_benefit: true\n"); err != nil {
+	if _, err := write("memory:\n  jev:\n    compaction_benefit: true\n"); err != nil {
 		t.Fatalf("memory.jev.compaction_benefit without jev.api_key must fall back cleanly, not fail to load: %v", err)
 	}
-	if _, err := write("memory:\n  jev:\n    selection: true\n    compaction_benefit: true\n"); err != nil {
-		t.Fatalf("memory.jev.selection/compaction_benefit without jev.api_key must fall back cleanly when memory.enabled is false: %v", err)
-	}
 
-	cfg, err := write("jev:\n  api_key: k\nmemory:\n  enabled: true\n  inject: true\n  auto_commit: true\n  max_records: 20\n  jev:\n    selection: true\n    compaction_benefit: true\n    timeout: 500ms\n    max_candidates: 30\n")
+	cfg, err := write("jev:\n  api_key: k\nmemory:\n  inject: true\n  auto_commit: true\n  max_records: 20\n  jev:\n    selection: true\n    compaction_benefit: true\n    timeout: 500ms\n    max_candidates: 30\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Memory.Enabled || !cfg.Memory.Inject || !cfg.Memory.AutoCommit {
+	if !cfg.Memory.Inject || !cfg.Memory.AutoCommit {
 		t.Fatalf("memory overrides lost: %+v", cfg.Memory)
 	}
 	if cfg.Memory.Records() != 20 {

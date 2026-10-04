@@ -245,3 +245,55 @@ func TestMemoryReviewRegressions(t *testing.T) {
 		t.Fatalf("rejected valid evidence refs: %v", err)
 	}
 }
+
+func TestApplyMemoryMutationEventPreconditionsAndPersistedRows(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(t.TempDir() + "/db.sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	w, err := s.EnsureWorkspace(ctx, "repo:mutation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSession(ctx, Session{ID: "s1", Spec: "mutation test", BudgetUSD: 1}); err != nil {
+		t.Fatal(err)
+	}
+	base := MemoryRecord{WorkspaceID: w.ID, Scope: "workspace", Kind: "fact", Text: "note", Provenance: "observed", Confidence: 1, Status: "active", EvidenceRefs: `["session:1/event:2"]`}
+
+	// update with no id must fail the explicit precondition, not ErrNoRows.
+	missingID := base
+	missingID.ID = ""
+	_, err = s.ApplyMemoryMutationEvent(ctx, "s1", "", "memory.updated", map[string]any{}, MemoryMutation{Operation: "update", Record: missingID})
+	if err == nil || errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("update without an id error = %v, want an explicit precondition error", err)
+	}
+
+	// update must enforce workspace existence like UpdateMemory does.
+	badWorkspace := base
+	badWorkspace.ID, badWorkspace.WorkspaceID = "m1", "no-such-workspace"
+	if _, err := s.ApplyMemoryMutationEvent(ctx, "s1", "", "memory.updated", map[string]any{}, MemoryMutation{Operation: "update", Record: badWorkspace}); err == nil {
+		t.Fatal("update accepted an unknown workspace")
+	}
+
+	committed, err := s.ApplyMemoryMutationEvent(ctx, "s1", "", "memory.committed", map[string]any{}, MemoryMutation{Operation: "commit", Record: base})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if committed.ID == "" || committed.CreatedAt.IsZero() {
+		t.Fatalf("commit must return the persisted row: %+v", committed)
+	}
+
+	// forget is addressed only by ID, and must still return the persisted row.
+	forgotten, err := s.ApplyMemoryMutationEvent(ctx, "s1", "", "memory.forgotten", map[string]any{}, MemoryMutation{Operation: "forget", WorkspaceID: w.ID, MemoryID: committed.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forgotten.ID != committed.ID {
+		t.Fatalf("forget returned %+v, want the mutated row %s", forgotten, committed.ID)
+	}
+	if forgotten.Status != "deleted" {
+		t.Fatalf("forget returned status %q, want deleted", forgotten.Status)
+	}
+}

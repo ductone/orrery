@@ -53,9 +53,33 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		e.toolStates[sid] = state
 	}
 	e.mu.Unlock()
-	r := builtin.NewWithStateDialect(root, state, string(dialect))
+	var r *builtin.Registry
 	if req.Workspace.Mode == "read" {
 		r = builtin.NewReadOnlyWithStateDialect(root, state, string(dialect))
+	} else {
+		r = builtin.NewWithStateDialect(root, state, string(dialect))
+	}
+	if parentJob == "" {
+		memoryActions := []string{"propose", "confirm", "inspect", "correct", "forget"}
+		memoryDesc := "Control workspace memory. Propose evidence-backed candidates; explicitly confirm, inspect, correct, or forget records."
+		if req.Workspace.Mode == "read" {
+			memoryActions = []string{"inspect"}
+			memoryDesc = "Inspect workspace memory. Read-only sessions cannot propose, confirm, correct, or forget records."
+		}
+		r.Add("memory", memoryDesc, obj(map[string]any{
+			"action":         map[string]any{"type": "string", "enum": memoryActions},
+			"id":             str(),
+			"kind":           str(),
+			"text":           str(),
+			"evidence_refs":  map[string]any{"type": "array", "items": str()},
+			"user_confirmed": map[string]any{"type": "boolean"},
+		}, "action"), func(ctx context.Context, a map[string]any) (any, error) {
+			action := fmt.Sprint(a["action"])
+			if req.Workspace.Mode == "read" && action != "inspect" {
+				return nil, fmt.Errorf("memory: %s is unavailable in a read-only session", action)
+			}
+			return e.controlMemory(ctx, sid, root, action, a, emit)
+		})
 	}
 	if runtimeCfg.Jev.SearchRanking && runtimeCfg.Jev.APIKey != "" {
 		r.EnableSearchRanking(builtin.JevRanker{Client: jev.New(runtimeCfg.Jev.APIKey, runtimeCfg.Jev.BaseURL, runtimeCfg.Jev.Model, runtimeCfg.Jev.Timeout()), Concurrency: 16})
