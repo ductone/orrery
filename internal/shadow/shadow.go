@@ -32,13 +32,13 @@ const (
 )
 
 const (
-	StallJudgeVersion    = "stall_judge/v1"
-	TurnVersion          = "turn/v1"
-	SpawnVersion         = "spawn/v1"
-	ReviewRiskVersion    = "review_risk/v1"
-	ReviewVerdictVersion = "review_verdict/v1"
-	MemorySelectVersion         = "memory_select/v1"
-	CompactionBenefitVersion    = "compaction_benefit/v1"
+	StallJudgeVersion        = "stall_judge/v1"
+	TurnVersion              = "turn/v1"
+	SpawnVersion             = "spawn/v1"
+	ReviewRiskVersion        = "review_risk/v1"
+	ReviewVerdictVersion     = "review_verdict/v1"
+	MemorySelectVersion      = "memory_select/v1"
+	CompactionBenefitVersion = "compaction_benefit/v1"
 )
 
 func StallQuestions() map[string]jev.Question {

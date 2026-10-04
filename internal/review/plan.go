@@ -49,9 +49,9 @@ const (
 	defaultMaxShards         = 4
 	defaultNeedsReviewCutoff = 0.35
 	// Reviewer turn bounds. A reviewer's turn limit grows with its patch.
-	baseTurns     = 6
-	charsPerTurn  = 15_000
-	maxTurns      = 16
+	baseTurns    = 6
+	charsPerTurn = 15_000
+	maxTurns     = 16
 )
 
 func (o Options) withDefaults() Options {
