@@ -171,8 +171,8 @@ func TestColdPrefixDropsStickiness(t *testing.T) {
 }
 
 func routingCatalog() []model.ModelSpec {
-	opus, _ := model.Get("ramp/claude-opus-5")
-	sonnet, _ := model.Get("ramp/claude-sonnet-5")
+	opus, _ := model.Get("ramp/claude-opus-5-5")
+	sonnet, _ := model.Get("ramp/claude-sonnet-5-5")
 	nano := sonnet
 	nano.ID, nano.Family, nano.Discovered = "ramp/gpt-5.4-nano", model.OpenAI, true
 	nano.Pricing = model.Pricing{Input: .05, Output: .5, CacheRead: .005}
@@ -221,7 +221,7 @@ func TestReviewFindingsNeedAFrontierModel(t *testing.T) {
 		t.Fatalf("fixing review findings routed to %s (%s)", d.Model.ID, d.Model.Tier)
 	}
 	// Workers created for other purposes are not affected.
-	if d := decideWith(t, c, RoutingState{Point: JobCreation, Phase: Explore, Stall: StallSignals{ReviewRejected: true}}); d.Model.Tier == model.Frontier && d.Model.ID != "ramp/claude-opus-5" {
+	if d := decideWith(t, c, RoutingState{Point: JobCreation, Phase: Explore, Stall: StallSignals{ReviewRejected: true}}); d.Model.Tier == model.Frontier && d.Model.ID != "ramp/claude-opus-5-5" {
 		t.Fatalf("unexpected %s", d.Model.ID)
 	}
 }

@@ -216,7 +216,7 @@ func rampServer(t *testing.T, status int, entries ...map[string]any) *httptest.S
 
 func TestBuildDiscoversCachesAndFallsBack(t *testing.T) {
 	cache := t.TempDir()
-	live := rampServer(t, 200, entry("deepseek-v4.2-flash", nil), entry("claude-opus-5", nil), entry("old-model", func(r map[string]any) { r["status"] = "retired" }))
+	live := rampServer(t, 200, entry("deepseek-v4.2-flash", nil), entry("claude-opus-5-5", nil), entry("old-model", func(r map[string]any) { r["status"] = "retired" }))
 	cfg := config.Config{
 		Providers: map[string]config.ProviderConfig{"ramp": {APIKey: "k", BaseURL: live.URL}},
 		Models:    []config.ModelConfig{{ID: "ramp/deepseek-v4.2-flash", Tier: ptr(model.Tiny)}},
@@ -233,7 +233,7 @@ func TestBuildDiscoversCachesAndFallsBack(t *testing.T) {
 		switch m.ID {
 		case "ramp/deepseek-v4.2-flash":
 			flash = m
-		case "ramp/claude-opus-5":
+		case "ramp/claude-opus-5-5":
 			opus = m
 		}
 	}
