@@ -171,14 +171,12 @@ func TestVerifiedCompletionIsForcedAfterReviewWithoutEdits(t *testing.T) {
 
 func TestIndependentReviewRemediationBoundSurvivesPhaseChanges(t *testing.T) {
 	p := newProgressTracker()
+	p.beginTurn("review")
 	p.markReviewRejected(true)
-	for i, phase := range []string{"diagnose", "explore", "plan", "implement", "review", "explore", "diagnose"} {
+	for i, phase := range []string{"diagnose", "explore", "plan", "implement", "review", "explore"} {
 		p.beginTurn(phase)
-		if i == 3 {
-			p.markReviewRejected(true)
-		}
 		if got := p.reviewRemediationReason(""); got != "" {
-			t.Fatalf("remediation terminated early at turn %d: %s", i+1, got)
+			t.Fatalf("remediation terminated early at turn %d: %s", i+2, got)
 		}
 	}
 	p.beginTurn("explore")
@@ -187,6 +185,54 @@ func TestIndependentReviewRemediationBoundSurvivesPhaseChanges(t *testing.T) {
 	}
 	if got := p.reviewRemediationReason("child"); got != "" {
 		t.Fatalf("child remediation was incorrectly bounded: %s", got)
+	}
+}
+
+func TestReviewRemediationTurnsResetEachCycle(t *testing.T) {
+	// Each cycle rejects a fresh diff and then answers it with edits a few
+	// turns later. The bound counts turns since the latest rejection that did
+	// not fix anything, so fixed cycles must not accumulate turns.
+	p := newProgressTracker()
+	for cycle := range maxReviewRejections - 1 {
+		p.beginTurn("review")
+		p.markReviewRejected(true)
+		for range 3 {
+			p.beginTurn("implement")
+		}
+		p.observe(provider.ToolCall{Name: "edit", Arguments: map[string]any{"path": "a.go"}}, map[string]any{}, nil)
+		if got := p.reviewRemediationReason(""); got != "" {
+			t.Fatalf("cycle %d escalated after a fix: %s", cycle+1, got)
+		}
+		if p.reviewRemediationTurns != 4 {
+			t.Fatalf("cycle %d left %d remediation turns; each rejection must count its turn", cycle+1, p.reviewRemediationTurns)
+		}
+	}
+}
+
+func TestReviewRemediationUnchangedSubmissionsPreserveClock(t *testing.T) {
+	p := newProgressTracker()
+	p.beginTurn("review")
+	p.markReviewRejected(true)
+	for turn := 2; turn <= 8; turn++ {
+		p.beginTurn("review")
+		// Even a successful edit may leave the rejected diff unchanged.
+		p.observe(provider.ToolCall{Name: "edit", Arguments: map[string]any{"path": "a.go"}}, map[string]any{}, nil)
+		p.markReviewRejected(false)
+		if p.reviewRemediationTurns != turn {
+			t.Fatalf("unchanged submission at turn %d reset clock to %d", turn, p.reviewRemediationTurns)
+		}
+		if turn < 8 && p.reviewRemediationReason("") != "" {
+			t.Fatalf("remediation escalated early at turn %d", turn)
+		}
+	}
+	if p.reviewRemediationTurns != 8 {
+		t.Fatalf("rejection turn was not counted: clock is %d", p.reviewRemediationTurns)
+	}
+	if p.reviewRejections != 1 {
+		t.Fatalf("unchanged submissions counted as reviews: %d", p.reviewRejections)
+	}
+	if got := p.reviewRemediationReason(""); got == "" {
+		t.Fatal("unchanged submissions bypassed remediation bound")
 	}
 }
 

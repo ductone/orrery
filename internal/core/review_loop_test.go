@@ -107,8 +107,9 @@ func TestAwaitingFix(t *testing.T) {
 
 func TestRemediationBoundCountsTurnsWithoutFixes(t *testing.T) {
 	p := newProgressTracker()
+	p.beginTurn("review")
 	p.markReviewRejected(true)
-	for range 7 {
+	for range 6 {
 		p.beginTurn("implement")
 		p.observe(provider.ToolCall{Name: "edit", Arguments: map[string]any{"path": "a.go"}}, map[string]any{}, nil)
 		p.markReviewRejected(false)
@@ -117,8 +118,9 @@ func TestRemediationBoundCountsTurnsWithoutFixes(t *testing.T) {
 		t.Fatal("turns that edit must not count toward the remediation bound")
 	}
 	p2 := newProgressTracker()
+	p2.beginTurn("review")
 	p2.markReviewRejected(true)
-	for range 8 {
+	for range 7 {
 		p2.beginTurn("implement")
 	}
 	if !strings.Contains(p2.reviewRemediationReason(""), "without fixing anything") {

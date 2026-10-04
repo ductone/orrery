@@ -255,11 +255,14 @@ func (p *progressTracker) exclude(model string) {
 // markReviewRejected records a rejection; reviewed is false when the diff
 // was refused unchanged without running a reviewer.
 func (p *progressTracker) markReviewRejected(reviewed bool) {
-	if !p.reviewRemediation {
-		p.reviewRemediation = true
-		p.reviewRemediationTurns = 0
-	}
+	p.reviewRemediation = true
+	// Only a new independent review restarts the clock. The engine has already
+	// counted this turn, so it is turn 1 rather than discarded. Unchanged
+	// refusals preserve the clock even when an edit left the rejected diff
+	// unchanged.
+	
 	if reviewed {
+		p.reviewRemediationTurns = 1
 		p.reviewRejections++
 	}
 	p.fixPending = true
