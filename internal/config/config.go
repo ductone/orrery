@@ -244,8 +244,10 @@ type InterventionConfig struct {
 
 // ModelConfig is an optional field-level override for a catalog model, built
 // in or discovered. Pointer fields distinguish omission from an explicit zero
-// or false value. An entry for an unknown id adds a model when it supplies
-// family, tier, context_window, max_output, and input and output pricing.
+// or false value. The id names one route ("ramp/grok-4.7"), or, without a
+// provider prefix, a model ("grok-4.7") and so every route serving it. An
+// entry for an unknown route id adds a model when it supplies family, tier,
+// context_window, max_output, and input and output pricing.
 type ModelConfig struct {
 	ID string `yaml:"id"`
 	// Disabled removes the model from the catalog.
@@ -566,8 +568,8 @@ func load(path string, overrides map[string]string, secrets bool) (Config, error
 func validateModels(models []ModelConfig) error {
 	seen := make(map[string]struct{}, len(models))
 	for i, m := range models {
-		if strings.TrimSpace(m.ID) != m.ID || !strings.Contains(m.ID, "/") {
-			return fmt.Errorf("entry %d has invalid id %q (want provider/model)", i, m.ID)
+		if strings.TrimSpace(m.ID) != m.ID || m.ID == "" || strings.HasPrefix(m.ID, "/") || strings.HasSuffix(m.ID, "/") {
+			return fmt.Errorf("entry %d has invalid id %q (want provider/model, or a model name)", i, m.ID)
 		}
 		if _, ok := seen[m.ID]; ok {
 			return fmt.Errorf("duplicate id %q", m.ID)

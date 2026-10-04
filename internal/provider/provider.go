@@ -78,13 +78,13 @@ type Request struct {
 	// (session start, phase transition, or compaction). It is rendered after
 	// System and before DurableSpec/Plan so a refresh invalidates only the
 	// volatile suffix. Empty unless memory is enabled and injection is on.
-	Memory                    string
-	CacheKey                  string
-	Messages                  []Message
-	Tools                     []Tool
-	MaxOutput                 int
-	Effort                    model.Effort
-	Strict                    bool
+	Memory    string
+	CacheKey  string
+	Messages  []Message
+	Tools     []Tool
+	MaxOutput int
+	Effort    model.Effort
+	Strict    bool
 	// NoToolCalls keeps the tool definitions in the request but forbids calls.
 	// Removing definitions instead would change the cached prefix and strand
 	// a model whose history is full of tool use.
@@ -103,6 +103,7 @@ func systemSections(r Request) []string {
 	}
 	return append(sections, r.DurableSpec, r.Plan)
 }
+
 type Usage struct {
 	InputTokens      int `json:"input_tokens"`
 	OutputTokens     int `json:"output_tokens"`
@@ -382,12 +383,21 @@ func (r *Registry) CompleteOne(ctx context.Context, d router.Decision, build Req
 }
 func IsRetryable(err error) bool { return retryable(err) }
 func (r *Registry) Complete(ctx context.Context, d router.Decision, build RequestBuilder) (Response, model.ModelSpec, error) {
+	// Fall back to another route to the same model first, then to other
+	// models of the same tier.
 	chain := []model.ModelSpec{d.Model}
+	var others []model.ModelSpec
 	for _, m := range model.All() {
-		if m.ID != d.Model.ID && m.Tier == d.Model.Tier && r.Available(m) {
+		if m.ID == d.Model.ID || m.Tier != d.Model.Tier || !r.Available(m) {
+			continue
+		}
+		if d.Model.Model != "" && m.Model == d.Model.Model {
 			chain = append(chain, m)
+		} else {
+			others = append(others, m)
 		}
 	}
+	chain = append(chain, others...)
 	var errs []error
 	for _, m := range chain {
 		c, ok := r.clients[providerName(m.ID)]

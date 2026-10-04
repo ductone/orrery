@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ductone/orrey/internal/config"
@@ -68,15 +69,23 @@ func firstKey(p config.ProviderConfig) string {
 	return ""
 }
 
-// Merge layers built-in specs over discovered ones: a built-in entry replaces
-// a discovered model with the same id, because its compatibility settings and
-// tier were chosen deliberately. Built-in order comes first, then new
-// discovered models in listing order.
+// Merge layers built-in specs over discovered ones: a built-in route keeps
+// its compatibility settings and tier, which were chosen deliberately, but
+// takes the listing's price and limits, which the provider decides and may
+// have changed since they were transcribed. Built-in order comes first, then
+// new discovered models in listing order.
 func Merge(discovered, builtin []model.ModelSpec) ([]model.ModelSpec, int) {
+	listed := make(map[string]model.ModelSpec, len(discovered))
+	for _, m := range discovered {
+		listed[m.ID] = m
+	}
 	known := map[string]bool{}
 	out := make([]model.ModelSpec, 0, len(builtin)+len(discovered))
 	for _, m := range builtin {
 		known[m.ID] = true
+		if d, ok := listed[m.ID]; ok {
+			m.Pricing, m.ContextWindow, m.MaxOutput = d.Pricing, d.ContextWindow, d.MaxOutput
+		}
 		out = append(out, m)
 	}
 	added := 0
@@ -92,39 +101,53 @@ func Merge(discovered, builtin []model.ModelSpec) ([]model.ModelSpec, int) {
 }
 
 // Apply merges config overrides into a catalog. An override for a known id
-// replaces only the fields it sets; one for an unknown id adds a model when
-// it is complete, and is otherwise reported as a warning (the model may simply
+// replaces only the fields it sets. An id without a provider prefix that names
+// a model applies to every route serving it, so a tier or disabled set once
+// holds on every provider. An override for an unknown id adds a model when it
+// is complete, and is otherwise reported as a warning (the model may simply
 // not have been discovered this time). disabled removes a model.
 func Apply(models []model.ModelSpec, overrides []config.ModelConfig) ([]model.ModelSpec, int, int, []string) {
 	out := slices.Clone(models)
-	index := map[string]int{}
-	for i, m := range out {
-		index[m.ID] = i
+	targets := func(id string) []int {
+		var at []int
+		for i, m := range out {
+			if m.ID == id || (!strings.Contains(id, "/") && m.Model == id) {
+				at = append(at, i)
+			}
+		}
+		return at
 	}
 	var warnings []string
 	applied, disabled := 0, 0
 	remove := map[string]bool{}
 	for _, o := range overrides {
+		at := targets(o.ID)
 		if o.Disabled != nil && *o.Disabled {
-			if _, ok := index[o.ID]; ok {
-				remove[o.ID] = true
-				disabled++
+			for _, i := range at {
+				if !remove[out[i].ID] {
+					remove[out[i].ID] = true
+					disabled++
+				}
 			}
 			continue
 		}
-		i, ok := index[o.ID]
-		if !ok {
+		if len(at) == 0 && !strings.Contains(o.ID, "/") {
+			warnings = append(warnings, fmt.Sprintf("models: no route serves %s; name a route as provider/model to add one", o.ID))
+			continue
+		}
+		if len(at) == 0 {
 			spec, err := newFromOverride(o)
 			if err != nil {
 				warnings = append(warnings, err.Error())
 				continue
 			}
-			index[o.ID] = len(out)
 			out = append(out, spec)
 			applied++
 			continue
 		}
-		out[i] = override(out[i], o)
+		for _, i := range at {
+			out[i] = override(out[i], o)
+		}
 		applied++
 	}
 	if len(remove) > 0 {

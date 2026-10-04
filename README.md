@@ -97,9 +97,11 @@ router:
 
 ## Model catalog
 
-At startup and on config reload, Orrery asks providers that list their models for their catalog (Ramp Router's `GET /v1/models` today) and merges three layers, each winning over the one before: discovered models, the built-in catalog, then `models:` overrides in the config. Discovery has a five-second timeout and falls back to the last good listing cached in `~/.orrery/catalog/`, then to the built-in catalog alone, so it never stops Orrery from starting. The startup log reports how many models were listed, usable, and overridden.
+The built-in catalog defines each model once (`model.Models` in `internal/model/models.go`): its family (the lab, which cross-family review uses), its tier, which is Orrery's judgement of its quality, its input types, limits, reasoning levels, and edit dialect. Separately, `model.Routes` lists who serves each model, by provider, with the provider's id for it and its price. A provider's API quirks (token-limit field, strict tool schemas, reasoning echo, prompt caching) are set per provider, not per model. Each route becomes a routable model with the id `provider/wire-id`, such as `ramp/grok-4.7` or `fireworks/accounts/fireworks/models/kimi-k2p7-code`, and that id is what routing records and session state name. When a route fails with a retryable error, the turn tries another route to the same model before moving on to another model of the same tier.
 
-A discovered model is used only when it is active, supports the Responses API and tool calling, has at least a 64K context window, and lists prices. It is never inferred to be frontier tier: reasoning models costing $0.50 or more per million output tokens become efficient tier, and cheaper or non-reasoning ones tiny. Discovered models also carry a quality penalty in routing, since their tier comes only from a price list, so price alone cannot make one outscore a built-in model; a `models:` override that sets `tier` vouches for the model and removes it. Its family comes from its name (so a new vendor diversifies reviews), and it gets portable compatibility settings and the contextual edit dialect.
+At startup and on config reload, Orrery asks providers that list their models for their catalog (Ramp Router's `GET /v1/models` today) and merges three layers, each winning over the one before: discovered models, the built-in catalog, then `models:` overrides in the config. A built-in route the provider also lists takes the listing's price and limits, which the provider decides, and keeps everything else. Discovery has a five-second timeout and falls back to the last good listing cached in `~/.orrery/catalog/`, then to the built-in catalog alone, so it never stops Orrery from starting. The startup log reports how many models were listed, usable, and overridden.
+
+A listed model that is in the curated set keeps its definition: a Ramp listing of `grok-4.6` is frontier-tier xAI, as it is served directly, with Ramp's API settings and the listed price. Other discovered models are used only when they are active, support the Responses API and tool calling, have at least a 64K context window, and list prices. A discovered model is never inferred to be frontier tier: reasoning models costing $0.50 or more per million output tokens become efficient tier, and cheaper or non-reasoning ones tiny. Discovered routes, including listed routes to curated models, also carry a quality penalty in routing, so price alone cannot make one outscore a built-in route; a `models:` override that sets `tier` vouches for the model and removes it. Its family comes from its name (so a new vendor diversifies reviews), and it gets portable compatibility settings and the contextual edit dialect.
 
 ```yaml
 models:
@@ -107,13 +109,15 @@ models:
     tier: frontier
   - id: ramp/some-flaky-model     # remove a model from routing
     disabled: true
-  - id: ramp/claude-opus-5        # field-level override of a built-in entry
+  - id: ramp/claude-opus-5-5      # field-level override of one route
     pricing: {input: 4.5}
+  - id: grok-4.7                  # no provider prefix: every route to the model
+    tier: efficient
 ```
 
 Models Ramp serves only through upstreams that need the account's own provider key (Amazon Bedrock) are left out unless the provider config says the account has one: `ramp: {api_key: ..., provider_keys: [bedrock]}`. When a provider refuses a model at request time anyway (no access, a provider key the account lacks, an unknown model), the turn routes to another model instead of failing, and the refused model leaves routing for the rest of the process. Refusals whose error code names the model are also remembered in `~/.orrery/catalog/unavailable.json` for a week, so the next startup leaves the model out.
 
-Overrides change only the fields they set. An entry for a model that is not in the catalog adds it when it gives `family`, `tier`, `context_window`, `max_output`, and input and output pricing; otherwise it is reported as a warning and skipped, since the model may just not have been listed this time.
+Overrides change only the fields they set. An entry whose id has no provider prefix names a model, and applies to every route serving it; one that names no served model is reported as a warning. An entry for a route that is not in the catalog adds it when it gives `family`, `tier`, `context_window`, `max_output`, and input and output pricing; otherwise it is reported as a warning and skipped, since the model may just not have been listed this time.
 
 ## Jev shadow observations
 

@@ -173,7 +173,7 @@ func inferRampModel(m rampModel) (model.ModelSpec, string) {
 	case model.OpenAI:
 		dialect = model.HashlineJSON
 	}
-	return model.ModelSpec{
+	spec := model.ModelSpec{
 		ID:            "ramp/" + name,
 		Family:        family,
 		Tier:          tier,
@@ -195,5 +195,19 @@ func inferRampModel(m rampModel) (model.ModelSpec, string) {
 		},
 		EditDialect: dialect,
 		Discovered:  true,
-	}, ""
+	}
+	// A curated model keeps its definition on every route: the listing
+	// supplies only what the route decides (price, limits, efforts offered).
+	// The route stays Discovered, so it does not outscore a curated route
+	// on price alone, but it is the model's tier and family everywhere.
+	if m, ok := model.Canonical(name); ok {
+		m.Effort = efforts
+		compat, effort := model.ProviderCompat("ramp", m)
+		if len(effort) == 0 {
+			compat.SupportsReasoningEffort, compat.EffortWireMap, effort = false, nil, []model.Effort{model.EffortNone}
+		}
+		spec.Model, spec.Family, spec.Tier, spec.EditDialect = m.Name, m.Family, m.Tier, m.EditDialect
+		spec.Effort, spec.Compat = effort, compat
+	}
+	return spec, ""
 }

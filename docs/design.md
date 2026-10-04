@@ -69,8 +69,11 @@ they win over anything discovered at runtime. Built-in tools are ordinary Go
 packages. Unknown configuration keys fail rather than being
 silently ignored.
 
-Adding a compatible model should require at most a catalog entry or a config
-override, and, optionally, a routing weight. It should not require
+Each model is defined once, with the judgement Orrery makes of it (its tier),
+and served by one or more provider routes that carry only what the provider
+decides: its id for the model and the price. API quirks belong to the
+provider. Adding a compatible model should require at most a catalog entry or
+a config override, and, optionally, a routing weight. It should not require
 provider-specific orchestration logic. Models a provider lists are discovered
 automatically (see "Evolving the charter"), so a new or cheaper model on an
 existing provider needs no release at all.
@@ -305,11 +308,14 @@ per provider at startup and reload, with a short timeout and an on-disk cache
 of the last good listing, so discovery can never stop Orrery from starting.
 Inference is conservative: a discovered model must be active, speak the
 Responses API, and call tools; it is never inferred to be frontier tier; and
-it gets portable compatibility settings. Built-in entries win over discovered
-ones for the same id, and config overrides win over both, field by field, or
-disable a model. Routing changes because cheap efficient-tier models now
-compete for mechanical turns; the frontier floor still guards planning,
-diagnosis, and review. The startup log records each discovery's source and
+it gets portable compatibility settings. A listed model that is curated keeps
+its curated definition, tier included, on the new route. Built-in routes win
+over discovered ones for the same id except for price and limits, which the
+listing decides; config overrides win over both, field by field, or disable a
+model, for one route or for every route to a model. Routing changes because
+cheap efficient-tier models now compete for mechanical turns; the frontier
+floor still guards planning and diagnosis, and fixing findings after a failed
+review. The startup log records each discovery's source and
 counts, and routing records name the chosen model, which is the telemetry to
 judge it. Out-of-process recursive execution
 over the typed agent contract remains separate future work. When an exception

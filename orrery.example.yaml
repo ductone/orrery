@@ -28,10 +28,14 @@ budget:
   job_default_fraction: 0.2
   min_review_usd: 2
 # Models are discovered from Ramp Router at startup and merged with the
-# built-in catalog. Override any field, promote, or disable a model here.
+# built-in catalog. Override any field, promote, or disable a model here: by
+# route (provider/model) or, without a provider prefix, by model on every
+# provider that serves it.
 # models:
 #   - id: ramp/qwen4-coder
 #     tier: frontier
+#   - id: grok-4.7
+#     tier: efficient
 #   - id: ramp/some-flaky-model
 #     disabled: true
 interventions:
@@ -42,7 +46,7 @@ interventions:
   judge_enabled: true
   judge_backoff: 1.5
   judge_timeout_seconds: 20
-  # judge_model: ramp/gpt-5.6-luna   # default: cheapest configured model
+  # judge_model: ramp/gpt-6-luna   # default: cheapest configured model
 # Shadow observations from TypeSafe's Jev classifier. Answers are recorded next
 # to the harness's own decision and never change behaviour. Each listed site
 # sends session content (task text, plan, tool calls, diffs) to TypeSafe.

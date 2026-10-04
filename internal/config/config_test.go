@@ -276,7 +276,7 @@ func TestModelOverrides(t *testing.T) {
 		t.Fatal("disabled lost")
 	}
 	for body, want := range map[string]string{
-		"models:\n  - id: qwen4\n":                                        "provider/model",
+		"models:\n  - id: ramp/\n":                                        "provider/model",
 		"models:\n  - id: ramp/a\n  - id: ramp/a\n":                       "duplicate",
 		"models:\n  - id: ramp/a\n    family: Not Valid\n":                "invalid family",
 		"models:\n  - id: ramp/a\n    tier: legendary\n":                  "unknown tier",

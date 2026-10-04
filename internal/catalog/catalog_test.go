@@ -54,12 +54,12 @@ func decode(t *testing.T, entries ...map[string]any) []rampModel {
 }
 
 func TestInferOpenModel(t *testing.T) {
-	specs, skipped := inferRamp(decode(t, entry("deepseek-v4.1-flash", nil)), nil)
+	specs, skipped := inferRamp(decode(t, entry("deepseek-v4.2-flash", nil)), nil)
 	if len(specs) != 1 || len(skipped) != 0 {
 		t.Fatalf("specs=%v skipped=%v", specs, skipped)
 	}
 	m := specs[0]
-	if m.ID != "ramp/deepseek-v4.1-flash" || m.Family != model.DeepSeek || m.Tier != model.Efficient {
+	if m.ID != "ramp/deepseek-v4.2-flash" || m.Model != "" || m.Family != model.DeepSeek || m.Tier != model.Efficient {
 		t.Fatalf("identity = %s %s %s", m.ID, m.Family, m.Tier)
 	}
 	if !model.Supports(m, model.Image) || m.ContextWindow != 1048576 || m.MaxOutput != maxInferredOutput {
@@ -73,6 +73,31 @@ func TestInferOpenModel(t *testing.T) {
 	}
 	if m.EditDialect != model.HashlineContextual || m.Compat.SupportsStrictTools || !m.Compat.CacheControl || m.Compat.MaxTokensField != "max_output_tokens" {
 		t.Fatalf("compat = %+v dialect %s", m.Compat, m.EditDialect)
+	}
+}
+
+func TestInferCuratedModelKeepsItsDefinition(t *testing.T) {
+	// grok-4.6 is curated (served directly by xAI); listed on Ramp it keeps
+	// its tier and family, takes Ramp's API settings, and stays Discovered.
+	specs, _ := inferRamp(decode(t, entry("grok-4.6", nil), entry("gpt-5.6-sol", nil)), nil)
+	if len(specs) != 2 {
+		t.Fatalf("specs = %+v", specs)
+	}
+	grok, sol := specs[0], specs[1]
+	if grok.Model != "grok-4.6" || grok.Tier != model.Frontier || grok.Family != model.XAI || grok.EditDialect != model.HashlineJSON || !grok.Discovered {
+		t.Fatalf("grok = %+v", grok)
+	}
+	if grok.Compat.SupportsStrictTools || grok.Compat.CacheControl || grok.Compat.RequiresReasoningEcho || grok.Compat.StreamIdleTimeout != 6*time.Minute {
+		t.Fatalf("grok compat = %+v", grok.Compat)
+	}
+	if slices.Contains(grok.Effort, model.EffortNone) || grok.Compat.EffortWireMap[model.EffortXHigh] != "xhigh" {
+		t.Fatalf("grok effort = %v %v", grok.Effort, grok.Compat.EffortWireMap)
+	}
+	if grok.Pricing.Input != 0.3 || grok.ContextWindow != 1048576 {
+		t.Fatalf("the listing decides price and limits: %+v", grok)
+	}
+	if sol.Tier != model.Frontier || !sol.Compat.SupportsStrictTools {
+		t.Fatalf("OpenAI models keep strict tools on Ramp: %+v", sol)
 	}
 }
 
@@ -201,6 +226,26 @@ func TestApplyOverrides(t *testing.T) {
 	}
 }
 
+func TestApplyByModelNameCoversEveryRoute(t *testing.T) {
+	models := []model.ModelSpec{
+		{ID: "ramp/grok-4.7", Model: "grok-4.7", Tier: model.Frontier},
+		{ID: "xai/grok-4.7", Model: "grok-4.7", Tier: model.Frontier},
+		{ID: "ramp/kimi-k3", Model: "kimi-k3", Tier: model.Efficient},
+		{ID: "fireworks/accounts/fireworks/models/kimi-k3", Model: "kimi-k3", Tier: model.Efficient},
+	}
+	out, applied, disabled, warnings := Apply(models, []config.ModelConfig{
+		{ID: "grok-4.7", Tier: ptr(model.Efficient)},
+		{ID: "kimi-k3", Disabled: ptr(true)},
+		{ID: "unserved-model", Tier: ptr(model.Tiny)},
+	})
+	if applied != 1 || disabled != 2 || len(warnings) != 1 || !strings.Contains(warnings[0], "unserved-model") {
+		t.Fatalf("applied=%d disabled=%d warnings=%v", applied, disabled, warnings)
+	}
+	if len(out) != 2 || out[0].Tier != model.Efficient || out[1].Tier != model.Efficient {
+		t.Fatalf("a model-name override must reach every route: %+v", out)
+	}
+}
+
 func rampServer(t *testing.T, status int, entries ...map[string]any) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -240,8 +285,11 @@ func TestBuildDiscoversCachesAndFallsBack(t *testing.T) {
 	if flash.Tier != model.Tiny {
 		t.Fatalf("the override must win over inference: %+v", flash)
 	}
-	if opus.Tier != model.Frontier {
+	if opus.Tier != model.Frontier || opus.Discovered {
 		t.Fatalf("the built-in entry must win over discovery: %+v", opus)
+	}
+	if opus.Pricing.Input != 0.3 || opus.MaxOutput != maxInferredOutput {
+		t.Fatalf("the listing refreshes a built-in route's price and limits: %+v", opus)
 	}
 
 	// The provider is down: the cached listing is used.
