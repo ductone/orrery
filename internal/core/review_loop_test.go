@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ func TestFailedReviewRestoresToolsAndIsNotRepeated(t *testing.T) {
 	reviews := 0
 	var afterRejection []map[string]any
 	rejected := false
+	refusals := 0
 	s := &scriptedResponses{reply: func(n int, body map[string]any) map[string]any {
 		if strings.Contains(body["instructions"].(string), "Review this proposed workspace diff") {
 			reviews++
@@ -39,6 +41,14 @@ func TestFailedReviewRestoresToolsAndIsNotRepeated(t *testing.T) {
 		}
 		if rejected {
 			afterRejection = append(afterRejection, body)
+			refusals++
+			// Alternate an unchanged text-only completion with a fresh edit: the
+			// unchanged one must be refused without another review, and the
+			// fresh diff earns a new independent review until the cap is hit.
+			if refusals%2 == 0 {
+				return responsesCall("e"+strconv.Itoa(n), "edit", map[string]any{"path": "main" + strconv.Itoa(n) + ".go", "hunks": []any{map[string]any{"anchor": "e3b0c442", "delete": 0, "insert": []any{"package main // " + strconv.Itoa(n)}}}})
+			}
+			return responsesText("The findings are not fixed.")
 		}
 		switch n {
 		case 1:
@@ -56,13 +66,18 @@ func TestFailedReviewRestoresToolsAndIsNotRepeated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var result agentproto.TaskResult
 	select {
-	case <-results:
+	case result = <-results:
 	case <-time.After(45 * time.Second):
 		t.Fatal("the run must end")
 	}
-	if reviews != 1 {
-		t.Fatalf("an unchanged diff must be reviewed once, got %d reviews", reviews)
+	input, _ := result.Result["input"].(agentproto.InputRequest)
+	if result.Status != agentproto.InputRequired || !strings.HasPrefix(input.ID, limitQuestion) || !strings.Contains(input.Question, "rejected the change 4 times") {
+		t.Fatalf("the rejection cap must pause and ask, not end the run: %+v", result)
+	}
+	if reviews != maxReviewRejections {
+		t.Fatalf("each new diff must be reviewed once, got %d reviews", reviews)
 	}
 	if len(afterRejection) == 0 {
 		t.Fatal("the agent must get turns after the rejection")
@@ -105,7 +120,7 @@ func TestAwaitingFix(t *testing.T) {
 	}
 }
 
-func TestRemediationBoundCountsTurnsWithoutFixes(t *testing.T) {
+func TestRemediationCapCountsIndependentRejections(t *testing.T) {
 	p := newProgressTracker()
 	p.beginTurn("review")
 	p.markReviewRejected(true)
@@ -115,25 +130,16 @@ func TestRemediationBoundCountsTurnsWithoutFixes(t *testing.T) {
 		p.markReviewRejected(false)
 	}
 	if p.reviewRemediationReason("") != "" {
-		t.Fatal("turns that edit must not count toward the remediation bound")
+		t.Fatal("unchanged refusals must not count toward the rejection cap")
 	}
 	p2 := newProgressTracker()
-	p2.beginTurn("review")
-	p2.markReviewRejected(true)
-	for range 7 {
-		p2.beginTurn("implement")
-	}
-	if !strings.Contains(p2.reviewRemediationReason(""), "without fixing anything") {
-		t.Fatalf("eight idle turns end remediation: %q", p2.reviewRemediationReason(""))
-	}
-	p3 := newProgressTracker()
 	for range maxReviewRejections {
-		p3.markReviewRejected(true)
+		p2.markReviewRejected(true)
 	}
-	if !strings.Contains(p3.reviewRemediationReason(""), "rejected the change 4 times") {
-		t.Fatalf("reason = %q", p3.reviewRemediationReason(""))
+	if !strings.Contains(p2.reviewRemediationReason(""), "rejected the change 4 times") {
+		t.Fatalf("reason = %q", p2.reviewRemediationReason(""))
 	}
-	if p3.reviewRemediationReason("job") != "" {
+	if p2.reviewRemediationReason("job") != "" {
 		t.Fatal("workers are bounded by their own budgets")
 	}
 }

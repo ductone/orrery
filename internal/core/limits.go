@@ -14,8 +14,7 @@ import (
 
 // Limits change strategy; they never end a run. A run ends when the work is
 // done, when it needs the person, or on an error nothing can recover from.
-// Heuristic stall checks climb an escalation ladder that ends in asking; a
-// misbehaving model is excluded and the turn rerouted; budgets the person set
+// A misbehaving model is excluded and the turn rerouted; budgets the person set
 // pause and ask to continue. Headless runs exit at the question, resumable.
 
 const (
@@ -84,51 +83,8 @@ func (e *Engine) limitAnswer(ctx context.Context, sid string) (answeredLimit, bo
 	return answeredLimit{budget: strings.HasPrefix(last.ID, budgetQuestion), declined: declines(last.Answer)}, true
 }
 
-// Escalation ladder for heuristic stall checks. Each trip climbs one rung and
-// resets the trip, so the next rung needs the condition to hold again.
-const (
-	rungNudge = iota + 1
-	rungSwitchModel
-	rungRestate
-	rungAsk
-)
-
-// escalate handles a tripped stall check. It returns true when the run
-// should pause to ask the person, which is the last rung.
-func (e *Engine) escalate(ctx context.Context, sid, kind, reason string, progress *progressTracker, emit EmitFunc) bool {
-	progress.escalation++
-	progress.resetStall()
-	rung := progress.escalation
-	e.emit(ctx, sid, "progress.escalation", map[string]any{"kind": kind, "reason": reason, "rung": rung}, emit)
-	switch rung {
-	case rungNudge:
-		e.harnessMessage(ctx, sid, "Progress check: "+reason+". Step back: state plainly what is blocking you, then take a materially different approach. Do not repeat what has not worked.")
-	case rungSwitchModel:
-		progress.switchModel = true
-		e.harnessMessage(ctx, sid, "Progress check: "+reason+", again. A different model is taking over; re-read what you need and continue from the evidence you have.")
-	case rungRestate:
-		e.markCompacted(sid)
-		e.compact(ctx, sid, emit)
-		latest, _ := e.store.LatestRequest(ctx, sid)
-		if latest == "" {
-			if s, err := e.store.Session(ctx, sid); err == nil {
-				latest = s.Spec
-			}
-		}
-		e.harnessMessage(ctx, sid, "Progress check: "+reason+", after a model change. History has been compacted. The request is:\n\n"+latest+"\n\nWork from the durable summary and the current state of the workspace.")
-	default:
-		return true
-	}
-	return false
-}
-
 func (e *Engine) harnessMessage(ctx context.Context, sid, text string) {
 	_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: text})
-}
-
-// stuckQuestion is what the last rung asks.
-func stuckQuestion(reason string) string {
-	return "I seem to be stuck: " + reason + ". I have tried a nudge, a different model, and a fresh start from the summary. Keep going, stop here, or reply with guidance."
 }
 
 func storePendingInput(sid string, in agentproto.InputRequest) store.PendingInput {

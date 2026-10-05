@@ -75,44 +75,8 @@ func TestUnchangedTodoDoesNotResetStallDetection(t *testing.T) {
 		}
 		p.endTurn()
 	}
-	if p.noProgressTurns != 4 || !p.shouldNudge() {
+	if p.noProgressTurns != 4 {
 		t.Fatalf("tracker=%+v", p)
-	}
-}
-
-func TestRepeatedUnchangedTodoTerminatesStall(t *testing.T) {
-	p := newProgressTracker()
-	call := provider.ToolCall{Name: "todo", Arguments: map[string]any{"items": []any{map[string]any{"text": "find missing source", "status": "in_progress"}}}}
-	for range 7 {
-		p.beginTurn("plan")
-		p.observe(call, map[string]any{"phase": "plan"}, nil)
-		p.endTurn()
-	}
-	if p.repeatedTodos != 6 || p.noProgressTurns != 6 {
-		t.Fatalf("tracker=%+v", p)
-	}
-	if got := p.terminalStallReason(); got == "" {
-		t.Fatal("repeated unchanged todo did not terminate the stall")
-	}
-}
-
-func TestRootReviewAndDiagnosisHaveTerminalBounds(t *testing.T) {
-	if got := terminalPhaseStallReason("", "plan", 10); got == "" {
-		t.Fatal("root plan phase was not bounded")
-	}
-	if got := terminalPhaseStallReason("child", "plan", 20); got != "" {
-		t.Fatalf("child plan phase was incorrectly bounded: %s", got)
-	}
-	for _, phase := range []string{"review", "diagnose"} {
-		if got := terminalPhaseStallReason("", phase, 12); got == "" {
-			t.Fatalf("phase %q was not bounded", phase)
-		}
-		if got := terminalPhaseStallReason("child", phase, 20); got != "" {
-			t.Fatalf("child phase %q was incorrectly bounded: %s", phase, got)
-		}
-	}
-	if got := terminalPhaseStallReason("", "implement", 20); got != "" {
-		t.Fatalf("implementation incorrectly used review bound: %s", got)
 	}
 }
 
@@ -169,29 +133,34 @@ func TestVerifiedCompletionIsForcedAfterReviewWithoutEdits(t *testing.T) {
 	}
 }
 
-func TestIndependentReviewRemediationBoundSurvivesPhaseChanges(t *testing.T) {
+func TestIndependentReviewRejectionCapSurvivesPhaseChanges(t *testing.T) {
 	p := newProgressTracker()
-	p.beginTurn("review")
-	p.markReviewRejected(true)
-	for i, phase := range []string{"diagnose", "explore", "plan", "implement", "review", "explore"} {
-		p.beginTurn(phase)
+	for i := range maxReviewRejections {
+		p.beginTurn("review")
+		p.markReviewRejected(true)
+		if i == maxReviewRejections-1 {
+			break
+		}
+		for _, phase := range []string{"diagnose", "explore", "plan", "implement"} {
+			p.beginTurn(phase)
+		}
+		p.observe(provider.ToolCall{Name: "edit", Arguments: map[string]any{"path": "a.go"}}, map[string]any{}, nil)
 		if got := p.reviewRemediationReason(""); got != "" {
-			t.Fatalf("remediation terminated early at turn %d: %s", i+2, got)
+			t.Fatalf("cap fired after only %d rejections: %s", i+1, got)
 		}
 	}
-	p.beginTurn("explore")
 	if got := p.reviewRemediationReason(""); got == "" {
-		t.Fatal("phase changes bypassed independent-review remediation bound")
+		t.Fatal("phase changes bypassed the independent-review rejection cap")
 	}
 	if got := p.reviewRemediationReason("child"); got != "" {
 		t.Fatalf("child remediation was incorrectly bounded: %s", got)
 	}
 }
 
-func TestReviewRemediationTurnsResetEachCycle(t *testing.T) {
+func TestReviewRemediationCyclesDoNotReachTheCapEarly(t *testing.T) {
 	// Each cycle rejects a fresh diff and then answers it with edits a few
-	// turns later. The bound counts turns since the latest rejection that did
-	// not fix anything, so fixed cycles must not accumulate turns.
+	// turns later. Only repeated independent rejections are capped, so a
+	// review-fix cycle that fixes the findings must not trip it.
 	p := newProgressTracker()
 	for cycle := range maxReviewRejections - 1 {
 		p.beginTurn("review")
@@ -201,15 +170,15 @@ func TestReviewRemediationTurnsResetEachCycle(t *testing.T) {
 		}
 		p.observe(provider.ToolCall{Name: "edit", Arguments: map[string]any{"path": "a.go"}}, map[string]any{}, nil)
 		if got := p.reviewRemediationReason(""); got != "" {
-			t.Fatalf("cycle %d escalated after a fix: %s", cycle+1, got)
+			t.Fatalf("cycle %d tripped the cap after a fix: %s", cycle+1, got)
 		}
-		if p.reviewRemediationTurns != 4 {
-			t.Fatalf("cycle %d left %d remediation turns; each rejection must count its turn", cycle+1, p.reviewRemediationTurns)
-		}
+	}
+	if p.reviewRejections != maxReviewRejections-1 {
+		t.Fatalf("cycles counted %d rejections, want %d", p.reviewRejections, maxReviewRejections-1)
 	}
 }
 
-func TestReviewRemediationUnchangedSubmissionsPreserveClock(t *testing.T) {
+func TestUnchangedSubmissionsDoNotCountAsRejections(t *testing.T) {
 	p := newProgressTracker()
 	p.beginTurn("review")
 	p.markReviewRejected(true)
@@ -218,42 +187,24 @@ func TestReviewRemediationUnchangedSubmissionsPreserveClock(t *testing.T) {
 		// Even a successful edit may leave the rejected diff unchanged.
 		p.observe(provider.ToolCall{Name: "edit", Arguments: map[string]any{"path": "a.go"}}, map[string]any{}, nil)
 		p.markReviewRejected(false)
-		if p.reviewRemediationTurns != turn {
-			t.Fatalf("unchanged submission at turn %d reset clock to %d", turn, p.reviewRemediationTurns)
+		if got := p.reviewRemediationReason(""); got != "" {
+			t.Fatalf("unchanged submission at turn %d ended remediation early: %s", turn, got)
 		}
-		if turn < 8 && p.reviewRemediationReason("") != "" {
-			t.Fatalf("remediation escalated early at turn %d", turn)
-		}
-	}
-	if p.reviewRemediationTurns != 8 {
-		t.Fatalf("rejection turn was not counted: clock is %d", p.reviewRemediationTurns)
 	}
 	if p.reviewRejections != 1 {
 		t.Fatalf("unchanged submissions counted as reviews: %d", p.reviewRejections)
 	}
-	if got := p.reviewRemediationReason(""); got == "" {
-		t.Fatal("unchanged submissions bypassed remediation bound")
+	if !p.awaitingFix() {
+		t.Fatal("an unchanged refusal still awaits a fix")
 	}
 }
 
-func TestSuccessfulSpawnMarksDelegationAndNudgeIsOncePerPhase(t *testing.T) {
+func TestSuccessfulSpawnMarksDelegation(t *testing.T) {
 	p := newProgressTracker()
 	p.beginTurn("explore")
 	p.observe(provider.ToolCall{Name: "spawn"}, map[string]any{"id": "job"}, nil)
 	if !p.delegated {
 		t.Fatal("successful spawn did not satisfy delegation")
-	}
-	p.phaseTurns = 7
-	if !p.shouldNudge() {
-		t.Fatal("expected phase nudge")
-	}
-	p.markNudged()
-	if p.shouldNudge() {
-		t.Fatal("nudge repeated in same phase")
-	}
-	p.beginTurn("implement")
-	if p.nudges != 0 {
-		t.Fatal("phase change did not reset nudge")
 	}
 }
 

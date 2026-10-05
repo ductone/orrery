@@ -99,36 +99,6 @@ func TestDecliningAHarnessQuestionStops(t *testing.T) {
 	}
 }
 
-func TestEscalationLadder(t *testing.T) {
-	e, st := testEngine(t)
-	ctx := context.Background()
-	sid := uuid.NewString()
-	_ = st.CreateSession(ctx, store.Session{ID: sid, Spec: "fix the bug", BudgetUSD: 1, WorkspacePath: t.TempDir()})
-	_, _ = st.AcceptMessage(ctx, sid, "r1", "t1", "message", "h", provider.Message{Role: "user", Content: "now fix the other bug"}, nil)
-	p := newProgressTracker()
-	messages := func() int { ms, _ := st.Messages(ctx, sid); return len(ms) }
-	p.phaseTurns, p.reviewRejections = 12, 4
-	if e.escalate(ctx, sid, "phase_stall", "the plan phase ran long", p, nil) || messages() != 2 || p.phaseTurns != 0 || p.reviewRejections != 0 {
-		t.Fatal("rung 1 nudges and resets the trip")
-	}
-	if e.escalate(ctx, sid, "phase_stall", "the plan phase ran long", p, nil) || !p.switchModel {
-		t.Fatal("rung 2 switches model")
-	}
-	if e.escalate(ctx, sid, "phase_stall", "the plan phase ran long", p, nil) {
-		t.Fatal("rung 3 restates the request")
-	}
-	ms, _ := st.Messages(ctx, sid)
-	if !strings.Contains(ms[len(ms)-1].ContentJSON, "now fix the other bug") {
-		t.Fatalf("the restatement must carry the latest request: %s", ms[len(ms)-1].ContentJSON)
-	}
-	if !e.escalate(ctx, sid, "phase_stall", "the plan phase ran long", p, nil) {
-		t.Fatal("rung 4 asks the person")
-	}
-	if q := stuckQuestion("the plan phase ran long"); !strings.Contains(q, "Keep going, stop here, or reply with guidance") {
-		t.Fatalf("question = %q", q)
-	}
-}
-
 // A model that keeps returning empty replies is set aside and another model
 // finishes the work, instead of the run failing.
 func TestMisbehavingModelIsSetAside(t *testing.T) {

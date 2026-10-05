@@ -18,8 +18,7 @@ type progressTracker struct {
 	phaseTurns, noProgressTurns   int
 	repeatedReads, repeatedSearch int
 	repeatedTodos                 int
-	nudges, completionRejections  int
-	reviewRemediationTurns        int
+	completionRejections          int
 	delegated, edited, verified   bool
 	turnsSinceEdit                int
 	reviewed                      bool
@@ -46,12 +45,8 @@ type progressTracker struct {
 	fixPending bool
 	// reviewRejections counts reviews that rejected this run's change.
 	reviewRejections int
-	// escalation is the stall-ladder rung reached this run; switchModel asks
-	// the next routing decision to leave the current model; excluded are
-	// models taken out of this run for misbehaving.
-	escalation  int
-	switchModel bool
-	excluded    []string
+	// excluded are models taken out of this run for misbehaving.
+	excluded []string
 	// strikes count a model's repeated misbehaviour of one kind;
 	// exclusionReasons say why each excluded model was set aside.
 	strikes          map[string]int
@@ -80,16 +75,10 @@ func newProgressTracker() *progressTracker {
 }
 
 func (p *progressTracker) beginTurn(phase string) {
-	// Remediation is bounded by turns that do not fix anything, not by all
-	// turns: an agent editing its way through findings is making progress.
-	if p.reviewRemediation && p.fixPending {
-		p.reviewRemediationTurns++
-	}
 	if phase != p.phase {
 		p.phase = phase
 		p.phaseTurns = 0
 		p.noProgressTurns = 0
-		p.nudges = 0
 		clear(p.floors)
 	}
 	p.phaseTurns++
@@ -205,10 +194,6 @@ func (p *progressTracker) shouldDelegate() bool {
 	return !p.delegated && p.phase == "explore" && p.noProgressTurns >= 3
 }
 
-func (p *progressTracker) shouldNudge() bool {
-	return p.nudges == 0 && (p.phase == "explore" || p.phase == "plan") && (p.noProgressTurns >= 4 || p.phaseTurns >= 7)
-}
-
 func (p *progressTracker) shouldForcePlanExecution() bool {
 	return p.repeatedTodos >= 2 || p.phaseTurns >= 6
 }
@@ -219,15 +204,6 @@ func (p *progressTracker) shouldForceVerifiedCompletion() bool {
 
 func shouldForceFinalResolution(phase string, phaseTurns int) bool {
 	return (phase == "review" || phase == "diagnose") && phaseTurns >= 9
-}
-
-func (p *progressTracker) markNudged() { p.nudges++ }
-
-// resetStall clears the counters stall checks trip on, so climbing a rung of
-// the escalation ladder needs the condition to recur.
-func (p *progressTracker) resetStall() {
-	p.phaseTurns, p.noProgressTurns, p.repeatedTodos = 0, 0, 0
-	p.reviewRemediationTurns, p.reviewRejections = 0, 0
 }
 
 // strike records one misbehaviour of a kind by a model and reports whether
@@ -256,13 +232,7 @@ func (p *progressTracker) exclude(model string) {
 // was refused unchanged without running a reviewer.
 func (p *progressTracker) markReviewRejected(reviewed bool) {
 	p.reviewRemediation = true
-	// Only a new independent review restarts the clock. The engine has already
-	// counted this turn, so it is turn 1 rather than discarded. Unchanged
-	// refusals preserve the clock even when an edit left the rejected diff
-	// unchanged.
-	
 	if reviewed {
-		p.reviewRemediationTurns = 1
 		p.reviewRejections++
 	}
 	p.fixPending = true
@@ -282,33 +252,8 @@ func (p *progressTracker) reviewRemediationReason(parentJob string) string {
 	if parentJob != "" || !p.reviewRemediation {
 		return ""
 	}
-	if p.reviewRemediationTurns >= 8 {
-		return "agent spent eight turns after a failed independent review without fixing anything"
-	}
 	if p.reviewRejections >= maxReviewRejections {
 		return fmt.Sprintf("independent review rejected the change %d times", p.reviewRejections)
-	}
-	return ""
-}
-
-// terminalStallReason is deliberately narrow: an agent may spend many turns on
-// terminalStallReason is deliberately narrow: an agent may spend many turns on
-// a hard task, but repeatedly submitting the exact same plan after a progress
-// intervention cannot create new evidence. Ending the run preserves budget and
-// gives the caller an actionable failure instead of an unbounded loop.
-func (p *progressTracker) terminalStallReason() string {
-	if p.repeatedTodos >= 6 && p.noProgressTurns >= 6 {
-		return "agent stalled after repeatedly submitting an unchanged todo plan"
-	}
-	return ""
-}
-
-func terminalPhaseStallReason(parentJob, phase string, phaseTurns int) string {
-	if parentJob == "" && phaseTurns >= 10 && phase == "plan" {
-		return "agent exceeded the bounded plan phase without beginning execution"
-	}
-	if parentJob == "" && phaseTurns >= 12 && (phase == "review" || phase == "diagnose") {
-		return "agent exceeded the bounded " + phase + " phase without reaching a terminal result"
 	}
 	return ""
 }
@@ -338,12 +283,11 @@ func (p *progressTracker) backoff(signal string, observed int, factor float64) {
 
 func (p *progressTracker) stall() map[string]int {
 	return map[string]int{
-		"no_progress_turns":        p.noProgressTurns,
-		"phase_turns":              p.phaseTurns,
-		"repeated_reads":           p.repeatedReads,
-		"repeated_searches":        p.repeatedSearch,
-		"repeated_todos":           p.repeatedTodos,
-		"review_remediation_turns": p.reviewRemediationTurns,
+		"no_progress_turns": p.noProgressTurns,
+		"phase_turns":       p.phaseTurns,
+		"repeated_reads":    p.repeatedReads,
+		"repeated_searches": p.repeatedSearch,
+		"repeated_todos":    p.repeatedTodos,
 	}
 }
 
@@ -351,7 +295,6 @@ func (p *progressTracker) export(outcome *agentproto.Outcome) {
 	outcome.NoProgressTurns = p.noProgressTurns
 	outcome.DuplicateReads = p.repeatedReads
 	outcome.DuplicateSearches = p.repeatedSearch
-	outcome.ProgressNudges = p.nudges
 	outcome.CompletionRejects = p.completionRejections
 	outcome.ExplorationWorker = p.delegated
 	outcome.Verified = p.verified

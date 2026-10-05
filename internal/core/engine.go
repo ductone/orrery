@@ -789,20 +789,11 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		}
 		progress.beginTurn(s.Phase)
 		e.refreshMemory(ctx, sid, req.Workspace.Path, req.Spec, s.Phase, memoryBoundaryReason(s.Turn), s.Turn, emit)
-		// Stall checks are guesses: they climb the escalation ladder, which
-		// ends in asking the person, never in failing the run.
-		for _, stall := range []struct{ kind, reason string }{
-			{"review_remediation_stall", progress.reviewRemediationReason(parentJob)},
-			{"phase_stall", terminalPhaseStallReason(parentJob, s.Phase, progress.phaseTurns)},
-		} {
-			if stall.reason == "" {
-				continue
-			}
-			if e.escalate(ctx, sid, stall.kind, stall.reason, progress, emit) {
-				progress.export(&outcome)
-				return e.askAboutLimit(sid, stuckQuestion(stall.reason), outcome, emit)
-			}
-			break
+		// A repeated independent review rejection asks the person. Turn counts
+		// are not a stall: a long review-fix is not evidence the agent is stuck.
+		if reason := progress.reviewRemediationReason(parentJob); reason != "" {
+			progress.export(&outcome)
+			return e.askAboutLimit(sid, reason+". Keep going, stop here, or reply with guidance.", outcome, emit)
 		}
 		reserved, _ := e.store.ReservedJobUSD(ctx, sid)
 		// A root session's budget is the person's to extend: pause and ask.
@@ -852,12 +843,6 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			state.Phase = state.InstructionPhase.Phase
 		}
 		state.ExcludeModels = append(state.ExcludeModels, progress.excluded...)
-		if progress.switchModel && currentModel != "" {
-			// The escalation ladder asked for a different model.
-			state.ExcludeModels = append(state.ExcludeModels, currentModel)
-			state.Point = router.Escalation
-			progress.switchModel = false
-		}
 		applyHints(&state, req.Hints)
 		decision, why, err := e.decideWaiting(ctx, sid, runtimePolicy, runtimeProviders, &state, emit)
 		// No model can hold the history: bound stored tool results, compact,
@@ -895,7 +880,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		forcePlanExecution := parentJob == "" && s.Phase == string(router.Plan) && progress.shouldForcePlanExecution()
 		forceImplementation := parentJob == "" && s.Phase == string(router.Implement) && progress.noProgressTurns >= 3
 		forceVerifiedCompletion := parentJob == "" && progress.shouldForceVerifiedCompletion() && !progress.awaitingFix()
-		forceResolution := parentJob == "" && ((s.Phase == string(router.Review) || s.Phase == string(router.Diagnose)) && progress.phaseTurns >= 6 || progress.reviewRemediation && progress.reviewRemediationTurns >= 4)
+		forceResolution := parentJob == "" && (s.Phase == string(router.Review) || s.Phase == string(router.Diagnose)) && progress.phaseTurns >= 6
 		forceFinalResolution := parentJob == "" && shouldForceFinalResolution(s.Phase, progress.phaseTurns) && !progress.awaitingFix()
 		latestRequest, _ := e.store.LatestRequest(ctx, sid)
 		var mode turnMode
@@ -1344,14 +1329,6 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "duplicate_tool_calls", "count": duplicateCalls}, emit)
 		}
 		progress.endTurn()
-		if reason := progress.terminalStallReason(); reason != "" {
-			if e.allowIntervention(ctx, sid, "terminal_stall", "no_progress_turns", progress.noProgressTurns, progress, emit) {
-				if e.escalate(ctx, sid, "plan_stall", reason, progress, emit) {
-					progress.export(&outcome)
-					return e.askAboutLimit(sid, stuckQuestion(reason), outcome, emit)
-				}
-			}
-		}
 		if parentJob == "" && progress.shouldDelegate() && req.Depth > 0 && e.hasEfficientWorker() &&
 			e.allowIntervention(ctx, sid, "exploration_worker", "no_progress_turns", progress.noProgressTurns, progress, emit) {
 			job, spawnErr := e.spawn(ctx, sid, parentJob, req, map[string]any{
@@ -1367,11 +1344,6 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Exploration has stalled, so Orrery delegated bounded repository discovery to a lower-cost worker: " + store.JSON(job) + ". Do not repeat broad reads while it runs. Continue with known evidence or retrieve job_result when ready."})
 				e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "exploration_worker", "job": job, "signals": progress.stall()}, emit)
 			}
-		}
-		if progress.shouldNudge() {
-			progress.markNudged()
-			_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Progress check: this phase is consuming turns without enough semantic progress. State the current hypothesis and decisive missing evidence, then either advance the todo, use the exploration worker, make the smallest justified edit, or escalate. Do not reread unchanged evidence."})
-			e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "phase_nudge", "signals": progress.stall()}, emit)
 		}
 		turnOutcome["tool_calls"] = len(resp.Message.ToolCalls)
 		turnOutcome["progress"] = progress.stall()
