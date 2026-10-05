@@ -83,7 +83,7 @@ func TestFailedReviewRestoresToolsAndIsNotRepeated(t *testing.T) {
 	if result.Status != agentproto.InputRequired || !strings.HasPrefix(input.ID, limitQuestion) || !strings.Contains(input.Question, "rejected the change 4 times") {
 		t.Fatalf("the rejection cap must pause and ask, not end the run: %+v", result)
 	}
-	if reviews != maxReviewRejections {
+	if reviews != maxReviewRejections-1 {
 		t.Fatalf("each new diff must be reviewed once, got %d reviews", reviews)
 	}
 	if len(afterRejection) == 0 {

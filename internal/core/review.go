@@ -82,8 +82,9 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 	}
 	if len(retry) > 0 {
 		opts := spawnOptions{workerTurns: plan.Turns + max(2, plan.Turns/2), excludeFamilies: retryFamilies}
-		again, _ := e.runReviewShards(ctx, sid, parent, req, plan, retry, opts, emit)
+		again, againFamilies := e.runReviewShards(ctx, sid, parent, req, plan, retry, opts, emit)
 		for j, i := range retry {
+			families[i] = againFamilies[j]
 			verdicts[i] = again[j]
 		}
 	}
@@ -105,7 +106,13 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 		}
 		return false, "", fmt.Errorf("%w: %s", ErrReviewInconclusive, strings.Join(reasons, "; "))
 	}
-	return out.Pass, store.JSON(map[string]any{"pass": out.Pass, "findings": out.Findings, "notes": out.Notes}), nil
+	implementer := ""
+	if s, err := e.store.Session(ctx, sid); err == nil {
+		if m, ok := model.Get(s.Model); ok {
+			implementer = string(m.Family)
+		}
+	}
+	return out.Pass, store.JSON(map[string]any{"pass": out.Pass, "findings": out.Findings, "notes": out.Notes, "families": families, "implementer_family": implementer}), nil
 }
 
 func (e *Engine) reviewClassifier() review.Classifier {
@@ -125,8 +132,12 @@ func (e *Engine) runReviewShards(ctx context.Context, sid, parent string, req ag
 	ids := make([]string, len(shards))
 	for j, i := range shards {
 		verdicts[j] = review.Verdict{Shard: i}
+		spec := opts.reviewSpec
+		if spec == "" {
+			spec = plan.Spec(i)
+		}
 		job, err := e.spawnWith(ctx, sid, parent, req, map[string]any{
-			"spec":            plan.Spec(i),
+			"spec":            spec,
 			"result_schema":   reviewResultSchema,
 			"budget_fraction": 0.10,
 			"workspace_mode":  "read",

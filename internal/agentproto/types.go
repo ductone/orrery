@@ -70,6 +70,7 @@ type Outcome struct {
 	CompletionRejects     int           `json:"completion_rejections,omitempty"`
 	ExplorationWorker     bool          `json:"exploration_worker,omitempty"`
 	Verified              bool          `json:"verified,omitempty"`
+	ReviewDisputed        bool          `json:"review_disputed,omitempty"`
 	IndependentlyReviewed bool          `json:"independently_reviewed,omitempty"`
 	BudgetReason          string        `json:"budget_reason,omitempty"`
 }

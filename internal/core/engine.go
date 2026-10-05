@@ -1191,19 +1191,35 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				}
 			}
 			if progress.edited && !progress.reviewed && req.Depth > 0 {
-				// A diff a review just rejected gets the same findings again;
-				// repeating the review would only cost minutes and money.
 				diffHash := e.reviewDiffHash(ctx, sid, req.Workspace.Path)
-				if diffHash != "" && diffHash == progress.rejectedDiff {
-					progress.completionRejections++
-					progress.markReviewRejected(false)
-					e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "diff unchanged since a failed review", "review": progress.rejectedReview}, emit)
-					_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Completion rejected: the workspace diff has not changed since the independent review that rejected it, so the findings still stand. Fix them with edit, re-run verification, then complete:\n" + progress.rejectedReview})
-					continue
+				var passed bool
+				var reviewText string
+				var reviewErr error
+				unchanged := diffHash != "" && diffHash == progress.rejectedDiff
+				if unchanged {
+					if !progress.adjudicatedDiffs[diffHash] && disputesReview(resp.Message.Content) {
+						if progress.adjudicatedDiffs == nil {
+							progress.adjudicatedDiffs = map[string]bool{}
+						}
+						progress.adjudicatedDiffs[diffHash] = true
+						passed, reviewText, reviewErr = e.adjudicateReview(ctx, sid, parentJob, req, progress.rejectedReview, resp.Message.Content, emit)
+						if reviewErr != nil {
+							progress.completionRejections++
+							progress.markReviewRejected(false)
+							e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "adjudication inconclusive; original findings stand", "review": progress.rejectedReview, "error": reviewErr.Error()}, emit)
+							_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Adjudication could not provide a consistent independent verdict. The original findings still stand; fix them and re-run verification:\n" + progress.rejectedReview})
+							continue
+						}
+					} else {
+						progress.completionRejections++
+						progress.markReviewRejected(true)
+						e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "diff unchanged since a failed review", "review": progress.rejectedReview}, emit)
+						_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Completion rejected: the workspace diff has not changed since the independent review that rejected it. Fix the findings with edit and re-run verification, or explicitly dispute them with a correctness rebuttal for one adjudication per diff:\n" + progress.rejectedReview})
+						continue
+					}
+				} else {
+					passed, reviewText, reviewErr = e.reviewWorkspace(ctx, sid, parentJob, req, emit)
 				}
-				// Inconclusive parts are retried or accepted inside the review, so
-				// an inconclusive result here is final for this completion.
-				passed, reviewText, reviewErr := e.reviewWorkspace(ctx, sid, parentJob, req, emit)
 				if reviewErr != nil && errors.Is(reviewErr, ErrReviewInconclusive) {
 					e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "review_inconclusive", "error": reviewErr.Error()}, emit)
 					progress.reviewed = true

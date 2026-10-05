@@ -335,13 +335,22 @@ func TestInconclusiveRiskyReviewIsRerunWithMoreRoom(t *testing.T) {
 		}
 		return verdictJSON(true)
 	}
-	passed, _, err := h.run()
+	passed, text, err := h.run()
 	if err != nil || !passed {
 		t.Fatalf("passed=%v err=%v", passed, err)
 	}
 	jobs, _ := h.st.Jobs(context.Background(), h.sid)
 	if len(jobs) != 2 {
 		t.Fatalf("reviewers = %d, want a retry", len(jobs))
+	}
+	var result struct {
+		Families []string `json:"families"`
+	}
+	if err := json.Unmarshal([]byte(text), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Families) != 1 || result.Families[0] != "openai" {
+		t.Fatalf("families must align with final shard verdicts: %v", result.Families)
 	}
 	var firstHints, retryHints agentproto.RoutingHints
 	_ = json.Unmarshal([]byte(jobs[0].HintsJSON), &firstHints)

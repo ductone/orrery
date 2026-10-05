@@ -265,6 +265,8 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 type spawnOptions struct {
 	tierPin         string
 	workerTurns     int
+	reviewSpec      string
+	strictFamilies  bool
 	excludeFamilies []string
 }
 
@@ -356,7 +358,7 @@ func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq ag
 		child.Budget.MaxUSD = min(child.Budget.MaxUSD, 0.35)
 	}
 	jobDecision, jobWhy, err := e.decideWaiting(ctx, sid, runtimePolicy, runtimeProviders, &jobState, emit)
-	if err != nil && (opts.tierPin != "" || len(opts.excludeFamilies) > 0) {
+	if err != nil && !opts.strictFamilies && (opts.tierPin != "" || len(opts.excludeFamilies) > 0) {
 		// Harness preferences (a cheaper tier, a different family for a retry)
 		// are not requirements: fall back to ordinary routing when nothing
 		// satisfies them, as on a single-provider deployment.

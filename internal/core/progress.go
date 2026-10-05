@@ -49,8 +49,9 @@ type progressTracker struct {
 	strikes          map[string]int
 	exclusionReasons map[string]string
 	// rejectedDiff and rejectedReview hold the diff the last failed review
-	// covered and its findings, so an unchanged diff is not reviewed again.
+	// covered and its findings. Adjudication is allowed once per diff hash.
 	rejectedDiff, rejectedReview string
+	adjudicatedDiffs             map[string]bool
 	// answerRejections counts completions refused for answering something
 	// other than the latest request.
 	answerRejections int
@@ -267,6 +268,7 @@ func (p *progressTracker) export(outcome *agentproto.Outcome) {
 	outcome.CompletionRejects = p.completionRejections
 	outcome.ExplorationWorker = p.delegated
 	outcome.Verified = p.verified
+	outcome.ReviewDisputed = len(p.adjudicatedDiffs) > 0
 	outcome.IndependentlyReviewed = p.reviewed
 }
 
