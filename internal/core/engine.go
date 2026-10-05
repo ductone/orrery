@@ -864,6 +864,13 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		if newInstruction {
 			state.InstructionPhase = e.instructionPhase(ctx, s, stored, emit)
 			state.Phase = state.InstructionPhase.Phase
+			// The chosen phase belongs to the session, not just this turn's routing:
+			// later turns, the TUI, and the review resolution limit all read it back.
+			if s.Phase != string(state.Phase) {
+				s.Phase = string(state.Phase)
+				_ = e.store.UpdateSession(ctx, s)
+				progress.beginTurn(s.Phase)
+			}
 		}
 		state.ExcludeModels = append(state.ExcludeModels, progress.excluded...)
 		applyHints(&state, req.Hints)

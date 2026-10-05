@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -157,5 +158,49 @@ func TestUserFollowUpIsRoutedByJev(t *testing.T) {
 	states := routingStates(t, e, sid)
 	if len(states) == 0 || !states[0].NewInstruction || states[0].Phase != router.Implement || states[0].InstructionPhase == nil || states[0].InstructionPhase.Source != "jev" {
 		t.Fatalf("first turn state = %+v", states)
+	}
+}
+
+func TestFollowUpResetsStoredPhase(t *testing.T) {
+	e := phaseEngine(t, "implement", 0.95, 200)
+	s := &scriptedResponses{reply: func(n int, _ map[string]any) map[string]any {
+		if n <= 6 {
+			return responsesCall("r"+strconv.Itoa(n), "read", map[string]any{"path": "README"})
+		}
+		return responsesText("done")
+	}}
+	srv := s.serve(t)
+	cfg, _, _, _, _ := e.runtimeSnapshot()
+	workspace := t.TempDir()
+	cfg.WorkspaceRoot = workspace
+	cfg.Providers = map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: srv.URL}}
+	cfg.Router = config.RouterConfig{DisableSwitch: true, DefaultModel: "openai/gpt-5.6-terra"}
+	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
+	ctx := context.Background()
+	sid := uuid.NewString()
+	if err := e.store.CreateSession(ctx, store.Session{ID: sid, Spec: "build the feature", Phase: "review", BudgetUSD: 5, WorkspacePath: workspace}); err != nil {
+		t.Fatal(err)
+	}
+	_ = e.store.AddMessage(ctx, sid, "assistant", provider.Message{Role: "assistant", Content: "The previous task is reviewed."})
+	_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Content: "now implement the next part"})
+	req := agentproto.TaskRequest{Spec: "build the feature", Budget: agentproto.Budget{MaxUSD: 5, MaxTokens: 1_000_000, MaxWallClock: time.Minute}, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"}}
+	if r := e.run(ctx, sid, "", req, nil); r.Status != agentproto.Pass {
+		t.Fatalf("result = %+v", r)
+	}
+	got, err := e.store.Session(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Phase != string(router.Implement) {
+		t.Fatalf("session phase = %q, want implement", got.Phase)
+	}
+	states := routingStates(t, e, sid)
+	if len(states) < 6 {
+		t.Fatalf("turns = %d, want at least 6", len(states))
+	}
+	for _, state := range states {
+		if state.Phase == router.Review || state.Phase == router.Diagnose {
+			t.Fatalf("follow-up inherited review resolution: %+v", state)
+		}
 	}
 }

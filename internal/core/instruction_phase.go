@@ -15,8 +15,8 @@ import (
 // at high effort. That is right for a new request and wasteful for "keep
 // going" or "also fix the typo". With jev.routing, Jev reads the message
 // against the current plan and chooses the phase; below the confidence bar the
-// turn is planned, as before. Only the arriving turn is affected: from the next
-// turn the agent's own todo plan decides the phase again.
+// turn is planned, as before. The choice is stored as the session phase; from
+// the next turn the agent's own todo plan decides again.
 const (
 	instructionPhaseConfidence = 0.8
 	instructionPhaseTimeout    = 3 * time.Second
