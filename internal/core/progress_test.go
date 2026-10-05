@@ -24,7 +24,7 @@ func TestProgressSuppressesUnchangedReadsAndDetectsStall(t *testing.T) {
 		}
 		p.endTurn()
 	}
-	if !p.shouldDelegate() || p.repeatedReads != 3 {
+	if p.repeatedReads != 3 {
 		t.Fatalf("tracker=%+v", p)
 	}
 }

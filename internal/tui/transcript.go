@@ -343,29 +343,6 @@ func (s *state) apply(ev Event) []block {
 			text += ": " + detail
 		}
 		return []block{notice("◎", toneWarn, "%s", text)}
-	case "progress.judge":
-		var d struct {
-			Kind      string `json:"kind"`
-			Intervene *bool  `json:"intervene"`
-			Reason    string `json:"reason"`
-			Error     string `json:"error"`
-		}
-		_ = json.Unmarshal(ev.Data, &d)
-		text := "progress judge"
-		if d.Kind != "" {
-			text += " · " + strings.ReplaceAll(d.Kind, "_", " ")
-		}
-		if d.Intervene != nil {
-			if *d.Intervene {
-				text += " · intervene"
-			} else {
-				text += " · keep going"
-			}
-		}
-		if detail := firstNonEmpty(d.Reason, d.Error); detail != "" {
-			text += ": " + detail
-		}
-		return []block{notice("◎", toneDim, "%s", text)}
 	case "completion.rejected":
 		var d struct {
 			Reason string `json:"reason"`

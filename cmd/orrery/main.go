@@ -362,7 +362,7 @@ func export(ctx context.Context, rt *runtime, args []string) int {
 func exportShadow(ctx context.Context, rt *runtime, args []string) int {
 	fs := flag.NewFlagSet("shadow", flag.ContinueOnError)
 	sinceArg := fs.String("since", "0", "RFC3339 timestamp or duration such as 24h")
-	site := fs.String("site", "", "only this site: stall_judge, turn, spawn, review_risk, or review_verdict")
+	site := fs.String("site", "", "only this site: turn, spawn, review_risk, or review_verdict")
 	includeState := fs.Bool("include-state", false, "include the state sent to Jev (contains source content)")
 	report := fs.Bool("report", false, "print an agreement and calibration summary instead of JSONL")
 	if fs.Parse(args) != nil {

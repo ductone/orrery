@@ -146,7 +146,6 @@ func TestStaleAnswerToAnEarlierRequestIsRefused(t *testing.T) {
 		WorkspaceRoot: workspace,
 		Providers:     map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: srv.URL}},
 		Router:        config.RouterConfig{DisableSwitch: true, DefaultModel: "openai/gpt-5.6-terra"},
-		Interventions: config.InterventionConfig{JudgeEnabled: new(bool)},
 		Jev:           config.JevConfig{APIKey: "k", BaseURL: jevSrv.URL, Review: true},
 	}
 	e.ReplaceRuntime(cfg, provider.New(cfg), nil)

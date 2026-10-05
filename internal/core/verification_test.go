@@ -241,7 +241,6 @@ func gateRun(t *testing.T, file, command string, jevScore float64) (agentproto.T
 		WorkspaceRoot: workspace,
 		Providers:     map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: srv.URL}},
 		Router:        config.RouterConfig{DisableSwitch: true, DefaultModel: "openai/gpt-5.6-terra"},
-		Interventions: config.InterventionConfig{JudgeEnabled: new(bool)},
 	}
 	if jevScore >= 0 {
 		jevSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

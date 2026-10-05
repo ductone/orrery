@@ -342,7 +342,6 @@
       const succeeded = status === "pass" || status === "complete";
       if (succeeded || outcome.verified !== undefined) flags.push(`<span class="flag ${outcome.verified ? "" : "miss"}">${outcome.verified ? "✓ verified" : "unverified"}</span>`);
       if (outcome.independently_reviewed) flags.push(`<span class="flag">✓ independently reviewed</span>`);
-      if (outcome.exploration_worker) flags.push(`<span class="flag miss">exploration worker</span>`);
       if (outcome.budget_reason) flags.push(`<span class="flag alert">budget: ${escapeHTML(outcome.budget_reason)}</span>`);
       if (Number(outcome.duplicate_reads) || Number(outcome.duplicate_searches)) {
         const total = (Number(outcome.duplicate_reads) || 0) + (Number(outcome.duplicate_searches) || 0);

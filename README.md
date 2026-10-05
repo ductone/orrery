@@ -125,7 +125,6 @@ Orrery can ask TypeSafe's [Jev](https://docs.typesafe.ai/) classifier the same q
 
 | Site | Asked when | Compared with |
 |---|---|---|
-| `stall_judge` | the LLM stall judge runs, on the same evidence | the judge's verdict; also records a stall kind (capability, discipline, environment, missing information) |
 | `phase` | every turn, after routing | the phase the router used (review workers excluded, since their phase is fixed) |
 | `review` | before each independent review (bug risk of the diff) and after an inconclusive one (reading the reviewer's output) | the review verdict, and the next conclusive review attempt |
 

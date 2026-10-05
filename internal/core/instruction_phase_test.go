@@ -142,7 +142,6 @@ func TestUserFollowUpIsRoutedByJev(t *testing.T) {
 	cfg.WorkspaceRoot = workspace
 	cfg.Providers = map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: srv.URL}}
 	cfg.Router = config.RouterConfig{DisableSwitch: true, DefaultModel: "openai/gpt-5.6-terra"}
-	cfg.Interventions = config.InterventionConfig{JudgeEnabled: new(bool)}
 	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
 	ctx := context.Background()
 	sid := uuid.NewString()

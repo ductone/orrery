@@ -86,7 +86,6 @@ func newReviewHarness(t *testing.T, withJev bool) *reviewHarness {
 		Providers:     map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: models.URL}},
 		Router:        config.RouterConfig{DisableSwitch: true, DefaultModel: "openai/gpt-5.6-terra"},
 		Budget:        config.BudgetConfig{SessionUSD: 50, JobDefaultFraction: 0.2},
-		Interventions: config.InterventionConfig{JudgeEnabled: new(bool)},
 	}
 	if withJev {
 		jevServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

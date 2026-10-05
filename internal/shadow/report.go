@@ -6,7 +6,6 @@ import (
 	"io"
 	"slices"
 	"sort"
-	"strings"
 
 	"github.com/ductone/orrey/internal/jev"
 	"github.com/ductone/orrey/internal/store"
@@ -32,12 +31,6 @@ func Checks(r store.ShadowRecord) []Check {
 	baseline, outcome := object(r.Baseline), object(r.Outcome)
 	var out []Check
 	switch r.Site {
-	case StallJudge:
-		if intervene, ok := baseline["intervene"].(bool); ok {
-			if p, ok := noul(answers["stuck"]); ok {
-				out = append(out, Check{"stuck_vs_llm_judge", (p >= .5) == intervene, noulCertainty(p)})
-			}
-		}
 	case Turn:
 		// Review workers are routed as review by construction, whatever they
 		// are doing, so disagreeing with that phase is not a routing error.
@@ -102,7 +95,7 @@ func bucketFor(c float64) int {
 }
 
 // WriteReport summarises observations: volume, errors and latency per site,
-// agreement per check broken down by classifier certainty, the stall-kind mix,
+// agreement per check broken down by classifier certainty,
 // and how difficulty scores line up with the tier the router chose and with
 // worker outcomes.
 func WriteReport(w io.Writer, records []store.ShadowRecord) {
@@ -112,7 +105,6 @@ func WriteReport(w io.Writer, records []store.ShadowRecord) {
 	}
 	sites := map[string]*siteStats{}
 	checks := map[string]*checkStats{}
-	stallKinds := map[string]map[string]int{}
 	difficultyBy := map[string][]float64{}
 	for _, r := range records {
 		s := sites[r.Site]
@@ -140,19 +132,6 @@ func WriteReport(w io.Writer, records []store.ShadowRecord) {
 			cs.n, b.n = cs.n+1, b.n+1
 			if c.Agree {
 				cs.agree, b.agree = cs.agree+1, b.agree+1
-			}
-		}
-		if r.Site == StallJudge {
-			var answers map[string]jev.Answer
-			if json.Unmarshal([]byte(r.Answers), &answers) == nil && answers["stall_kind"].Choice != "" {
-				verdict := "judge_unavailable"
-				if v, ok := object(r.Baseline)["intervene"].(bool); ok {
-					verdict = map[bool]string{true: "judge_intervened", false: "judge_declined"}[v]
-				}
-				if stallKinds[verdict] == nil {
-					stallKinds[verdict] = map[string]int{}
-				}
-				stallKinds[verdict][answers["stall_kind"].Choice]++
 			}
 		}
 		if d, ok := Difficulty(r); ok {
@@ -190,17 +169,6 @@ func WriteReport(w io.Writer, records []store.ShadowRecord) {
 				fmt.Fprintf(w, " %14s", rate(b))
 			}
 			fmt.Fprintln(w)
-		}
-	}
-	if len(stallKinds) > 0 {
-		fmt.Fprintln(w, "\nStall kind by LLM judge verdict")
-		for _, verdict := range sortedKeys(stallKinds) {
-			kinds := stallKinds[verdict]
-			parts := make([]string, 0, len(kinds))
-			for _, k := range sortedKeys(kinds) {
-				parts = append(parts, fmt.Sprintf("%s=%d", k, kinds[k]))
-			}
-			fmt.Fprintf(w, "  %-18s %s\n", verdict, strings.Join(parts, " "))
 		}
 	}
 	if len(difficultyBy) > 0 {

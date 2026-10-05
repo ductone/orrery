@@ -71,59 +71,12 @@ func shadowRecords(t *testing.T, e *Engine, st *store.Store) []store.ShadowRecor
 	return recs
 }
 
-func TestStallJudgeShadowRecordsJudgeVerdictAsBaseline(t *testing.T) {
-	e, st, _ := judgeEngine(t, `"{\"intervene\":false,\"reason\":\"searching new terms\"}"`, 200)
-	url, calls, _ := fakeJev(t, 200)
-	enableShadow(e, url, "stall_judge")
-	sid := judgeSession(t, e, st)
-	p := newProgressTracker()
-	p.beginTurn("explore")
-	if e.allowIntervention(context.Background(), sid, "escalation", "no_progress_turns", 4, p, nil) {
-		t.Fatal("the LLM judge declined; the shadow must not change that")
-	}
-	recs := shadowRecords(t, e, st)
-	if len(recs) != 1 || calls.Load() != 1 {
-		t.Fatalf("records=%d calls=%d", len(recs), calls.Load())
-	}
-	r := recs[0]
-	if r.Site != shadow.StallJudge || r.QuestionVersion != shadow.StallJudgeVersion || r.ClassifierModel != "jev-1.13.0" {
-		t.Fatalf("record = %+v", r)
-	}
-	if !strings.Contains(string(r.State), "topbar") || !strings.Contains(string(r.Baseline), `"intervene":false`) {
-		t.Fatalf("state=%s baseline=%s", r.State, r.Baseline)
-	}
-	checks := shadow.Checks(r)
-	if len(checks) != 1 || checks[0].Agree {
-		t.Fatalf("jev said stuck (0.9) and the judge declined; checks = %+v", checks)
-	}
-}
-
-func TestShadowFailureIsInert(t *testing.T) {
-	e, st, _ := judgeEngine(t, `"{\"intervene\":true,\"reason\":\"repeating\"}"`, 200)
-	url, _, _ := fakeJev(t, 529)
-	enableShadow(e, url, "stall_judge")
-	sid := judgeSession(t, e, st)
-	p := newProgressTracker()
-	p.beginTurn("explore")
-	if !e.allowIntervention(context.Background(), sid, "escalation", "no_progress_turns", 4, p, nil) {
-		t.Fatal("a failing shadow must not change the judge's verdict")
-	}
-	recs := shadowRecords(t, e, st)
-	if len(recs) != 1 || !strings.Contains(recs[0].Error, "529") || recs[0].Answers != "" {
-		t.Fatalf("records = %+v", recs)
-	}
-	if s, _ := st.Session(context.Background(), sid); s.SpentUSD <= 0 {
-		t.Fatal("the LLM judge's spend must still be recorded")
-	}
-}
-
 func TestShadowOffByDefault(t *testing.T) {
-	e, st, _ := judgeEngine(t, `"{\"intervene\":true,\"reason\":\"repeating\"}"`, 200)
+	e, st := testEngine(t)
 	_, calls, _ := fakeJev(t, 200)
-	sid := judgeSession(t, e, st)
+	sid := uuid.NewString()
 	p := newProgressTracker()
 	p.beginTurn("explore")
-	e.allowIntervention(context.Background(), sid, "escalation", "no_progress_turns", 4, p, nil)
 	e.shadowTurn(context.Background(), store.Session{ID: sid, Spec: "x"}, nil, router.RoutingState{Turn: 1}, router.Decision{})
 	if recs := shadowRecords(t, e, st); len(recs) != 0 || calls.Load() != 0 {
 		t.Fatalf("records=%d calls=%d", len(recs), calls.Load())

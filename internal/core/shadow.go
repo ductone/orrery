@@ -3,6 +3,9 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/ductone/orrey/internal/jev"
@@ -22,6 +25,52 @@ const (
 	shadowReplyChars   = 4_000
 	shadowReplyTurns   = 3
 )
+
+// recentToolCalls renders a bounded activity digest for the phase shadow.
+func recentToolCalls(messages []store.Message) string {
+	const digestTurns = 8
+	var turns []string
+	for _, stored := range messages {
+		if stored.Role != "assistant" {
+			continue
+		}
+		var msg provider.Message
+		if json.Unmarshal([]byte(stored.ContentJSON), &msg) != nil || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		calls := make([]string, 0, len(msg.ToolCalls))
+		for _, call := range msg.ToolCalls {
+			calls = append(calls, call.Name+"("+summariseArgs(call.Arguments)+")")
+		}
+		turns = append(turns, strings.Join(calls, ", "))
+	}
+	if len(turns) > digestTurns {
+		turns = turns[len(turns)-digestTurns:]
+	}
+	lines := make([]string, 0, len(turns))
+	for i, turn := range turns {
+		lines = append(lines, fmt.Sprintf("  %d. %s", i+1, turn))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// summariseArgs keeps the phase shadow's tool arguments compact.
+func summariseArgs(args map[string]any) string {
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		value := fmt.Sprint(args[k])
+		if len(value) > 80 {
+			value = value[:80] + "…"
+		}
+		parts = append(parts, k+"="+value)
+	}
+	return strings.Join(parts, " ")
+}
 
 // shadowAsk records a shadow question and asks Jev in the background. It
 // returns the observation id for attaching a baseline or outcome later, or ""
@@ -101,7 +150,7 @@ func (e *Engine) shadowTurn(ctx context.Context, s store.Session, stored []store
 	view := map[string]any{
 		"task":              truncate(s.Spec, shadowSpecChars),
 		"plan":              plan,
-		"recent_tool_calls": activityDigest(stored),
+		"recent_tool_calls": recentToolCalls(stored),
 	}
 	if s.DurableSummary != "" {
 		view["durable_summary"] = truncate(s.DurableSummary, shadowSummaryChars)

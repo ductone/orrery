@@ -96,7 +96,6 @@ func runScripted(t *testing.T, s *scriptedResponses, mode string) agentproto.Tas
 		WorkspaceRoot: workspace,
 		Providers:     map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: srv.URL}},
 		Router:        config.RouterConfig{DisableSwitch: true, DefaultModel: "openai/gpt-5.6-terra"},
-		Interventions: config.InterventionConfig{JudgeEnabled: new(bool)},
 	}
 	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
 	req := agentproto.TaskRequest{
@@ -251,7 +250,6 @@ func TestTurnWaitsOutARateLimitOnTheOnlyCredential(t *testing.T) {
 		WorkspaceRoot: workspace,
 		Providers:     map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: srv.URL}},
 		Router:        config.RouterConfig{DisableSwitch: true, DefaultModel: "openai/gpt-5.6-terra"},
-		Interventions: config.InterventionConfig{JudgeEnabled: new(bool)},
 	}
 	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
 	req := agentproto.TaskRequest{Spec: "answer", Budget: agentproto.Budget{MaxUSD: 5, MaxTokens: 1_000_000, MaxWallClock: time.Minute}, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"}}
@@ -300,7 +298,6 @@ func TestRefusedModelIsRoutedAround(t *testing.T) {
 	cfg := config.Config{
 		WorkspaceRoot: workspace,
 		Providers:     map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: srv.URL}},
-		Interventions: config.InterventionConfig{JudgeEnabled: new(bool)},
 		Router:        config.RouterConfig{LambdaCost: .35},
 	}
 	providers := provider.New(cfg)

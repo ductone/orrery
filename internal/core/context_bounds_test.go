@@ -106,6 +106,5 @@ func gateConfig(workspace, url string) config.Config {
 		WorkspaceRoot: workspace,
 		Providers:     map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: url}},
 		Router:        config.RouterConfig{DisableSwitch: true, DefaultModel: "openai/gpt-5.6-terra"},
-		Interventions: config.InterventionConfig{JudgeEnabled: new(bool)},
 	}
 }

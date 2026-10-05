@@ -38,21 +38,12 @@ budget:
 #     tier: efficient
 #   - id: ramp/some-flaky-model
 #     disabled: true
-interventions:
-  # Expensive interventions (worker spawn, model escalation, terminal stall) are
-  # gated by a cheap LLM judge; the counters that trigger them are deliberately
-  # over-sensitive. On a "not stuck" verdict the tripping signal's floor rises
-  # to 1.5x its observed value, so the same question is not re-asked every turn.
-  judge_enabled: true
-  judge_backoff: 1.5
-  judge_timeout_seconds: 20
-  # judge_model: ramp/gpt-6-luna   # default: cheapest configured model
 # Shadow observations from TypeSafe's Jev classifier. Answers are recorded next
 # to the harness's own decision and never change behaviour. Each listed site
 # sends session content (task text, plan, tool calls, diffs) to TypeSafe.
 # jev:
 #   api_key: "!env TYPESAFE_API_KEY"
-#   shadow: [stall_judge, phase, difficulty, review]
+#   shadow: [phase, difficulty, review]
 #   # Adds an intent parameter to search; broad matches are ranked by relevance.
 #   # Sends each matching file's path and sampled matching lines to TypeSafe.
 #   search_ranking: true

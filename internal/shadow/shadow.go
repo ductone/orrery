@@ -1,6 +1,6 @@
 // Package shadow defines the questions Orrery asks a shadow classifier at its
 // decision sites, and how recorded answers are compared with what the harness
-// actually decided. Answers never feed back into routing or interventions.
+// actually decided. Answers never feed back into routing.
 //
 // Each request site has a question version. Changing a question's wording or
 // criteria must bump its version, because observations under different
@@ -11,8 +11,6 @@ import "github.com/ductone/orrey/internal/jev"
 
 // Request sites, as stored with each observation.
 const (
-	// StallJudge mirrors the LLM stall judge on the same evidence.
-	StallJudge = "stall_judge"
 	// Turn cross-checks the declared phase and scores difficulty at turn start.
 	Turn = "turn"
 	// Spawn scores a worker spec's difficulty at job creation.
@@ -32,7 +30,6 @@ const (
 )
 
 const (
-	StallJudgeVersion        = "stall_judge/v1"
 	TurnVersion              = "turn/v1"
 	SpawnVersion             = "spawn/v1"
 	ReviewRiskVersion        = "review_risk/v1"
@@ -41,22 +38,6 @@ const (
 	CompactionBenefitVersion = "compaction_benefit/v1"
 )
 
-func StallQuestions() map[string]jev.Question {
-	return map[string]jev.Question{
-		"stuck": jev.Noul(
-			"Is this autonomous coding agent genuinely stuck, rather than making steady progress?",
-			"It repeats equivalent calls, re-reads content it already has, oscillates between the same few actions, or shows no path from its recent activity to the task.",
-			"Its recent calls gather new information that plausibly advances the task: reading different files, searching different terms, narrowing toward a location, or verifying a change.",
-		),
-		"stall_kind": jev.Choice("What best explains the agent's recent lack of measurable progress?", map[string]string{
-			"not_stuck":           "The agent is making real progress; the counters are tripping on productive reading or searching.",
-			"capability":          "The problem is genuinely hard: reasonable attempts keep failing, such as a fix that does not work or a test that fails for a subtle reason.",
-			"discipline":          "Redundant exploration: re-reading or re-searching what the agent already has instead of acting on it.",
-			"environment":         "The environment is broken: a missing dependency, a service that is down, permission denied, command not found, or a network failure.",
-			"missing_information": "The agent needs information from the user that it cannot find in the workspace.",
-		}),
-	}
-}
 
 // Phases mirrors router phases; the classifier chooses among them.
 var phaseCriteria = map[string]string{

@@ -29,7 +29,9 @@ type Config struct {
 	WebSearch     WebSearchConfig           `yaml:"web_search"`
 	Instructions  []string                  `yaml:"instructions"`
 	LSP           map[string]LSPConfig      `yaml:"lsp"`
-	Interventions InterventionConfig        `yaml:"interventions"`
+	// LegacyInterventions accepts the removed interventions block so existing
+	// configs still load. Its value is ignored.
+	LegacyInterventions map[string]any `yaml:"interventions,omitempty"`
 	Memory        MemoryConfig              `yaml:"memory"`
 	Jev           JevConfig                 `yaml:"jev"`
 }
@@ -63,9 +65,10 @@ type JevConfig struct {
 }
 
 // JevShadowSites are the decision sites that can be shadowed. "difficulty"
-// is still accepted so existing configs load, but it is no longer asked: it
-// showed no signal.
-var JevShadowSites = []string{"stall_judge", "phase", "difficulty", "review"}
+// and "stall_judge" are still accepted so existing configs load, but they
+// are no longer asked: difficulty showed no signal, and the stall judge
+// was removed.
+var JevShadowSites = []string{"phase", "difficulty", "stall_judge", "review"}
 
 const defaultJevTimeout = 5 * time.Second
 
@@ -224,26 +227,6 @@ func clampInt(value, def, lo, hi int) int {
 	return value
 }
 
-// InterventionConfig governs the LLM judge that gates expensive progress
-// interventions. The counters that trigger an intervention are deliberately
-// loose; the judge decides whether the trigger reflects a real stall.
-type InterventionConfig struct {
-	// JudgeEnabled turns the cascade off entirely. Disabled reproduces the
-	// pre-judge behaviour: a tripped counter acts immediately.
-	JudgeEnabled *bool `yaml:"judge_enabled"`
-	// JudgeBackoff multiplies a signal's observed value to set its new floor
-	// when the judge declines to intervene, so the same question is not asked
-	// again every turn. Optional: zero means defaultJudgeBackoff.
-	JudgeBackoff float64 `yaml:"judge_backoff"`
-	// JudgeTimeoutSeconds bounds the synchronous judge call. Optional: zero
-	// means defaultJudgeTimeout.
-	JudgeTimeoutSeconds int `yaml:"judge_timeout_seconds"`
-	// JudgeModel pins the judge to a catalog model id. Empty selects the
-	// cheapest configured model.
-	JudgeModel string `yaml:"judge_model"`
-}
-
-// ModelConfig is an optional field-level override for a catalog model, built
 // in or discovered. Pointer fields distinguish omission from an explicit zero
 // or false value. The id names one route ("ramp/grok-4.7"), or, without a
 // provider prefix, a model ("grok-4.7") and so every route serving it. An
@@ -351,14 +334,6 @@ const defaultSessionTokens = 4_000_000
 // floor makes budget exhaustion the reviewer's normal outcome.
 const defaultMinReviewUSD = 2.0
 
-// Judge defaults. The backoff is multiplicative rather than additive because
-// the right threshold varies by task and is not known in advance: 1.5x
-// converges on a session's real exploration depth in a logarithmic number of
-// judge calls instead of a linear one.
-const (
-	defaultJudgeBackoff = 1.5
-	defaultJudgeTimeout = 20 * time.Second
-)
 
 // SessionTokenLimit returns the configured per-session token cap, or the
 // default when unset/zero.
@@ -378,29 +353,6 @@ func (b BudgetConfig) ReviewFloorUSD() float64 {
 	return b.MinReviewUSD
 }
 
-// Enabled reports whether the intervention judge runs. It defaults to true, so
-// an omitted interventions block still gets the cascade.
-func (i InterventionConfig) Enabled() bool {
-	return i.JudgeEnabled == nil || *i.JudgeEnabled
-}
-
-// Backoff returns the configured judge backoff multiplier, or the default when
-// unset/zero.
-func (i InterventionConfig) Backoff() float64 {
-	if i.JudgeBackoff <= 0 {
-		return defaultJudgeBackoff
-	}
-	return i.JudgeBackoff
-}
-
-// JudgeTimeout returns the configured judge call timeout, or the default when
-// unset/zero.
-func (i InterventionConfig) JudgeTimeout() time.Duration {
-	if i.JudgeTimeoutSeconds <= 0 {
-		return defaultJudgeTimeout
-	}
-	return time.Duration(i.JudgeTimeoutSeconds) * time.Second
-}
 
 type TelemetryConfig struct {
 	OTLPEndpoint string `yaml:"otlp_endpoint"`
@@ -509,14 +461,6 @@ func load(path string, overrides map[string]string, secrets bool) (Config, error
 	}
 	if cfg.Budget.MinReviewUSD < 0 {
 		return cfg, errors.New("config: budget.min_review_usd must be non-negative")
-	}
-	// A backoff at or below 1 would set a floor no higher than the value that
-	// just tripped, so the judge would be re-asked every turn forever.
-	if cfg.Interventions.JudgeBackoff != 0 && cfg.Interventions.JudgeBackoff <= 1 {
-		return cfg, errors.New("config: interventions.judge_backoff must be greater than 1")
-	}
-	if cfg.Interventions.JudgeTimeoutSeconds < 0 {
-		return cfg, errors.New("config: interventions.judge_timeout_seconds must be non-negative")
 	}
 	for _, site := range cfg.Jev.Shadow {
 		if !slices.Contains(JevShadowSites, site) {

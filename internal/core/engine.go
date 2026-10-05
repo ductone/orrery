@@ -823,11 +823,6 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		stall.PhaseTurns = progress.phaseTurns
 		stall.RepeatedReads = progress.repeatedReads
 		stall.RepeatedSearches = progress.repeatedSearch
-		if signal, observed, tripped := escalationTrigger(stall, progress); tripped {
-			if e.allowIntervention(ctx, sid, "escalation", signal, observed, progress, emit) {
-				point = router.Escalation
-			}
-		}
 		// A compaction during the previous turn invalidated every warm prefix;
 		// clear current-model stickiness so routing picks by cost/quality fresh.
 		currentModel := s.Model
@@ -1329,22 +1324,6 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "duplicate_tool_calls", "count": duplicateCalls}, emit)
 		}
 		progress.endTurn()
-		if parentJob == "" && progress.shouldDelegate() && req.Depth > 0 && e.hasEfficientWorker() &&
-			e.allowIntervention(ctx, sid, "exploration_worker", "no_progress_turns", progress.noProgressTurns, progress, emit) {
-			job, spawnErr := e.spawn(ctx, sid, parentJob, req, map[string]any{
-				"spec":            "You are a bounded read-only exploration worker assisting a parent agent. The parent's task is:\n\n" + s.Spec + "\n\nFind the smallest relevant code path for that task, collect decisive evidence, and return concise findings with exact file paths, symbols, and a recommended next action. Do not edit files and do not repeat broad repository scans.",
-				"result_schema":   map[string]any{"type": "object"},
-				"budget_fraction": 0.10,
-				"workspace_mode":  "read",
-				"phase":           "explore",
-			}, emit)
-			if spawnErr == nil {
-				progress.delegated = true
-				progress.turnProgress = true
-				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Exploration has stalled, so Orrery delegated bounded repository discovery to a lower-cost worker: " + store.JSON(job) + ". Do not repeat broad reads while it runs. Continue with known evidence or retrieve job_result when ready."})
-				e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "exploration_worker", "job": job, "signals": progress.stall()}, emit)
-			}
-		}
 		turnOutcome["tool_calls"] = len(resp.Message.ToolCalls)
 		turnOutcome["progress"] = progress.stall()
 		turnOutcome["edited"] = progress.turnEdited
