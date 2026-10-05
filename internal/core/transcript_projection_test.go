@@ -40,7 +40,7 @@ func TestMaskingAndRecentContextRetention(t *testing.T) {
 		msgs = append(msgs, store.Message{Role: "assistant", ContentJSON: store.JSON(provider.Message{ToolCalls: []provider.ToolCall{{ID: "c", Name: "read"}}})})
 		msgs = append(msgs, store.Message{Role: "tool", ContentJSON: store.JSON(provider.Message{ToolCallID: "c", Content: "old output"})})
 	}
-	if !maskOldToolResults(msgs) || !strings.Contains(msgs[1].ContentJSON, "cleared") || strings.Contains(msgs[len(msgs)-1].ContentJSON, "cleared") {
+	if !maskOldToolResults(t.Context(), nil, "", msgs) || !strings.Contains(msgs[1].ContentJSON, "cleared") || strings.Contains(msgs[len(msgs)-1].ContentJSON, "cleared") {
 		t.Fatal("old tool output was not masked in batch")
 	}
 	recent := []store.Message{{Role: "assistant", ContentJSON: "{}"}, {Role: "user", ContentJSON: store.JSON(provider.Message{Content: "latest"})}, {Role: "assistant", ContentJSON: "{}"}}

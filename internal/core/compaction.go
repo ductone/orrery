@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ductone/orrey/internal/jev"
 	"github.com/ductone/orrey/internal/model"
 	"github.com/ductone/orrey/internal/provider"
 	"github.com/ductone/orrey/internal/router"
@@ -804,7 +805,7 @@ func recallHistory(checkpoints []store.Checkpoint, query string) []string {
 	return out
 }
 
-func maskOldToolResults(msgs []store.Message) bool {
+func maskOldToolResults(ctx context.Context, client *jev.Client, objective string, msgs []store.Message) bool {
 	assistants := 0
 	keepVerification := true
 	changed := false
@@ -822,6 +823,9 @@ func maskOldToolResults(msgs []store.Message) bool {
 		name, args := matchingCall(msgs, i, parsed.ToolCallID)
 		if name == "edit" || (keepVerification && name == "exec" && (strings.Contains(args, "test") || strings.Contains(args, "build"))) {
 			keepVerification = name != "exec"
+			continue
+		}
+		if relevanceKeeps(ctx, client, objective, name, args, parsed.Content) {
 			continue
 		}
 		parsed.Content = fmt.Sprintf("{\"cleared\":true,\"tool\":%q,\"original_chars\":%d,\"hint\":\"re-run to see it\"}", name, len(parsed.Content))

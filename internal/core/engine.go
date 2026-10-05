@@ -22,6 +22,7 @@ import (
 
 	"github.com/ductone/orrey/internal/agentproto"
 	"github.com/ductone/orrey/internal/config"
+	"github.com/ductone/orrey/internal/jev"
 	"github.com/ductone/orrey/internal/lsp"
 	"github.com/ductone/orrey/internal/mcp"
 	"github.com/ductone/orrey/internal/model"
@@ -1421,7 +1422,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		turnOutcome["verified"] = progress.turnVerified
 		_ = e.store.UpdateLatestTurnRoutingOutcome(ctx, sid, s.Turn, turnOutcome)
 		current, _ := e.store.Session(ctx, sid)
-		if masked := maskOldToolResults(stored); masked {
+		if masked := maskOldToolResults(ctx, e.relevanceClient(), currentRequest(current, ""), stored); masked {
 			_ = e.store.ReplaceMessages(ctx, sid, stored)
 		}
 		compactNow := inputTokens > effectiveContextWindow(decision.Model)*3/5
@@ -1474,6 +1475,15 @@ func currentRequest(s store.Session, latest string) string {
 		text += "\n\nPENDING REPORT (continuation context; the latest request takes precedence)\n" + state.PendingReport
 	}
 	return text
+}
+
+func (e *Engine) relevanceClient() *jev.Client {
+	cfg, _, _, _, _ := e.runtimeSnapshot()
+	cfg.Jev = cfg.EffectiveJev()
+	if !cfg.Jev.Review || cfg.Jev.APIKey == "" {
+		return nil
+	}
+	return jev.New(cfg.Jev.APIKey, cfg.Jev.BaseURL, cfg.Jev.Model, cfg.Jev.Timeout())
 }
 
 func shouldBlockEditForInstructions(call provider.ToolCall, instructionBoundaryHit bool) bool {
