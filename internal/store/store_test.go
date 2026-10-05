@@ -1210,13 +1210,21 @@ func TestMarkRunningInterruptedLeavesLiveOwnersAlone(t *testing.T) {
 	if _, err := s.db.Exec(`UPDATE sessions SET owner_pid=999999999 WHERE id='dead'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec(`UPDATE sessions SET owner_pid=0 WHERE id='legacy'`); err != nil {
+	if _, err := s.db.Exec(`UPDATE sessions SET owner_pid=0, updated_at=? WHERE id='legacy'`, time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	// An unowned session updated moments ago may belong to a process running
+	// an older binary, so it is left alone.
+	if err := s.CreateSession(ctx, Session{ID: "legacy-live", Spec: "x", Phase: "plan", BudgetUSD: 1, Status: "running"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE sessions SET owner_pid=0 WHERE id='legacy-live'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.MarkRunningInterrupted(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for id, want := range map[string]string{"mine": "interrupted", "live": "running", "dead": "interrupted", "legacy": "interrupted"} {
+	for id, want := range map[string]string{"mine": "interrupted", "live": "running", "dead": "interrupted", "legacy": "interrupted", "legacy-live": "running"} {
 		got, err := s.Session(ctx, id)
 		if err != nil {
 			t.Fatal(err)

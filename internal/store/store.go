@@ -282,24 +282,37 @@ func ownerPID(status string) int {
 	return 0
 }
 
+// unownedSessionIdle is how long a running session with no recorded owner
+// must have been idle before startup treats it as orphaned.
+const unownedSessionIdle = 15 * time.Minute
+
 // MarkRunningInterrupted marks running sessions whose owning process is gone
 // as interrupted, so a restart can resume them. Several Orrery processes may
 // share one database (a TUI, orrery serve, background orrery run), so a
 // session another live process is running is left alone.
 func (s *Store) MarkRunningInterrupted(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,owner_pid FROM sessions WHERE status='running'`)
+	rows, err := s.db.QueryContext(ctx, `SELECT s.id,s.owner_pid,MAX(s.updated_at,COALESCE((SELECT MAX(created_at) FROM events e WHERE e.session_id=s.id OR e.session_id IN (SELECT id FROM sessions c WHERE c.parent_session_id=s.id)),'')) FROM sessions s WHERE s.status='running'`)
 	if err != nil {
 		return err
 	}
 	var orphaned []string
 	for rows.Next() {
-		var id string
+		var id, updated string
 		var pid int
-		if err := rows.Scan(&id, &pid); err != nil {
+		if err := rows.Scan(&id, &pid, &updated); err != nil {
 			rows.Close()
 			return err
 		}
-		if pid == 0 || pid == os.Getpid() || !processAlive(pid) {
+		switch {
+		case pid == 0:
+			// Written by a binary that did not record owners: it may still be
+			// running, so only a session (and its workers) idle long enough
+			// to be dead counts.
+			at, err := time.Parse(time.RFC3339Nano, updated)
+			if err != nil || time.Since(at) > unownedSessionIdle {
+				orphaned = append(orphaned, id)
+			}
+		case pid == os.Getpid() || !processAlive(pid):
 			orphaned = append(orphaned, id)
 		}
 	}
