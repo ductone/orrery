@@ -191,23 +191,53 @@ func TestReviewWithNoRunChangesPasses(t *testing.T) {
 }
 
 func TestCompactionGate(t *testing.T) {
-	var g compactionGate
-	if due, why := g.phaseChange("plan", "implement", 3, 10_000); due || !strings.Contains(why, "too small") {
-		t.Fatalf("small history: %v %q", due, why)
+	// Each case runs on a fresh gate at turn 10 with 60K tokens in a 100K
+	// window, past the floor, so only the boundary itself decides.
+	cases := []struct {
+		name string
+		from string
+		to   string
+		due  bool
+	}{
+		{"explore to plan", "explore", "plan", true},
+		{"explore to implement", "explore", "implement", true},
+		{"wrap-up to implement", "wrap-up", "implement", true},
+		{"wrap-up to review", "wrap-up", "review", false},
+		{"plan to implement", "plan", "implement", false},
+		{"implement to diagnose", "implement", "diagnose", false},
+		{"diagnose to implement", "diagnose", "implement", false},
+		{"implement to review", "implement", "review", false},
+		{"review to implement", "review", "implement", false},
+		{"review to diagnose", "review", "diagnose", false},
+		{"explore to wrap-up", "explore", "wrap-up", false},
 	}
-	if due, _ := g.phaseChange("implement", "review", 10, 50_000); !due {
-		t.Fatal("a real boundary with history compacts")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var g compactionGate
+			due, why := g.phaseChange(c.from, c.to, 10, 60_000, 100_000)
+			if due != c.due {
+				t.Fatalf("%s to %s: due=%v why=%q", c.from, c.to, due, why)
+			}
+		})
+	}
+
+	var g compactionGate
+	if due, why := g.phaseChange("explore", "plan", 10, 49_999, 100_000); due || !strings.Contains(why, "half") {
+		t.Fatalf("below the floor: %v %q", due, why)
+	}
+	if due, _ := g.phaseChange("explore", "implement", 10, 50_000, 100_000); !due {
+		t.Fatal("half the window is enough history to summarise")
 	}
 	g.record(10)
-	if due, why := g.phaseChange("review", "wrap-up", 12, 50_000); due || !strings.Contains(why, "recently") {
+	if due, why := g.phaseChange("wrap-up", "implement", 12, 60_000, 100_000); due || !strings.Contains(why, "recently") {
 		t.Fatalf("too soon: %v %q", due, why)
 	}
-	// Flipping back to a phase just left is not a boundary.
-	if due, why := g.phaseChange("wrap-up", "review", 17, 50_000); due || !strings.Contains(why, "returned") {
+	// Returning to a phase left this recently is a flip, not a boundary.
+	if due, why := g.phaseChange("wrap-up", "explore", 17, 60_000, 100_000); due || !strings.Contains(why, "returned") {
 		t.Fatalf("oscillation: %v %q", due, why)
 	}
-	if due, _ := g.phaseChange("review", "diagnose", 30, 50_000); !due {
-		t.Fatal("a new phase long after the last compaction compacts")
+	if due, _ := g.phaseChange("wrap-up", "diagnose", 30, 60_000, 100_000); !due {
+		t.Fatal("leaving wrap-up long after the last compaction compacts")
 	}
 }
 

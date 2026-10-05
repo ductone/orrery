@@ -1356,7 +1356,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		compactNow := inputTokens > decision.Model.ContextWindow*3/4
 		e.maybeShadowCompactionBenefit(ctx, sid, s.Turn, inputTokens, decision.Model.ContextWindow)
 		if current.Phase != s.Phase && !compactNow {
-			due, why := compactions.phaseChange(s.Phase, current.Phase, s.Turn, inputTokens)
+			due, why := compactions.phaseChange(s.Phase, current.Phase, s.Turn, inputTokens, decision.Model.ContextWindow)
 			if !due {
 				e.emit(ctx, sid, "compaction.skipped", map[string]any{"from": s.Phase, "to": current.Phase, "reason": why}, emit)
 			}
