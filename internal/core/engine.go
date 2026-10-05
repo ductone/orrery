@@ -1421,10 +1421,13 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		turnOutcome["verified"] = progress.turnVerified
 		_ = e.store.UpdateLatestTurnRoutingOutcome(ctx, sid, s.Turn, turnOutcome)
 		current, _ := e.store.Session(ctx, sid)
-		compactNow := inputTokens > decision.Model.ContextWindow*3/4
+		if masked := maskOldToolResults(stored); masked {
+			_ = e.store.ReplaceMessages(ctx, sid, stored)
+		}
+		compactNow := inputTokens > effectiveContextWindow(decision.Model)*3/5
 		e.maybeShadowCompactionBenefit(ctx, sid, s.Turn, inputTokens, decision.Model.ContextWindow)
 		if current.Phase != s.Phase && !compactNow {
-			due, why := compactions.phaseChange(s.Phase, current.Phase, s.Turn, inputTokens, decision.Model.ContextWindow)
+			due, why := compactions.phaseChange(s.Phase, current.Phase, s.Turn, inputTokens, effectiveContextWindow(decision.Model))
 			if !due {
 				e.emit(ctx, sid, "compaction.skipped", map[string]any{"from": s.Phase, "to": current.Phase, "reason": why}, emit)
 			}

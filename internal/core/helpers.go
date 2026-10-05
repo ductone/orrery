@@ -18,6 +18,26 @@ func emptyFinalResponse(m provider.Message) bool {
 }
 
 func compactionKeepIndex(msgs []store.Message, turnsToKeep int) int {
+	latest := 0
+	for i := len(msgs) - 1; i >= 0; i-- {
+		var parsed provider.Message
+		_ = json.Unmarshal([]byte(msgs[i].ContentJSON), &parsed)
+		if msgs[i].Role == "user" && !parsed.Harness {
+			latest = i
+			break
+		}
+	}
+	kept := 0
+	for i := latest; i < len(msgs); i++ {
+		kept += len(msgs[i].ContentJSON)
+		if kept > 40_000 {
+			latest = -1
+			break
+		}
+	}
+	if latest > 0 {
+		return latest
+	}
 	turns := 0
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == "assistant" {

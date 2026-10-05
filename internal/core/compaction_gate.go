@@ -1,6 +1,10 @@
 package core
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/ductone/orrey/internal/model"
+)
 
 // compactionGate decides whether a phase change is worth a compaction. A
 // compaction at a real phase boundary keeps durable state tidy, but each one
@@ -34,8 +38,8 @@ func (g *compactionGate) phaseChange(from, to string, turn, inputTokens, window 
 	leftAt, returning := g.left[to]
 	g.left[from] = turn
 	switch {
-	case window <= 0 || inputTokens < window/2:
-		return false, "history below half the context window"
+	case window <= 0 || inputTokens < window*2/5:
+		return false, "history below the context floor"
 	case !cleanPhaseBoundary(from, to):
 		return false, "not a clean phase boundary"
 	case g.compacted && turn-g.lastCompaction < minTurnsBetweenPhaseCompactions:
@@ -60,6 +64,15 @@ func cleanPhaseBoundary(from, to string) bool {
 		return true
 	}
 	return false
+}
+
+func effectiveContextWindow(spec model.ModelSpec) int {
+	switch spec.Tier {
+	case model.Efficient, model.Tiny:
+		return min(spec.ContextWindow, 250_000)
+	default:
+		return spec.ContextWindow
+	}
 }
 
 func (g *compactionGate) record(turn int) {

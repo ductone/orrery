@@ -865,6 +865,23 @@ func (s *Store) Messages(ctx context.Context, sid string) ([]Message, error) {
 	return out, rows.Err()
 }
 
+func (s *Store) ReplaceMessages(ctx context.Context, sid string, msgs []Message) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM messages WHERE session_id=?`, sid); err != nil {
+		return err
+	}
+	for _, m := range msgs {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO messages(session_id,role,content_json,created_at)VALUES(?,?,?,?)`, sid, m.Role, m.ContentJSON, m.CreatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // AcknowledgeReport clears the continuation's report obligation and active work
 // item after a final report is delivered, and replaces the durable summary with
 // the supplied (anchor-cleared) version so a follow-up turn does not re-assert

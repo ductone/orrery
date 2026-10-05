@@ -222,11 +222,11 @@ func TestCompactionGate(t *testing.T) {
 	}
 
 	var g compactionGate
-	if due, why := g.phaseChange("explore", "plan", 10, 49_999, 100_000); due || !strings.Contains(why, "half") {
+	if due, why := g.phaseChange("explore", "plan", 10, 39_999, 100_000); due || !strings.Contains(why, "floor") {
 		t.Fatalf("below the floor: %v %q", due, why)
 	}
-	if due, _ := g.phaseChange("explore", "implement", 10, 50_000, 100_000); !due {
-		t.Fatal("half the window is enough history to summarise")
+	if due, _ := g.phaseChange("explore", "implement", 10, 40_000, 100_000); !due {
+		t.Fatal("the context floor is enough history to summarise")
 	}
 	g.record(10)
 	if due, why := g.phaseChange("wrap-up", "implement", 12, 60_000, 100_000); due || !strings.Contains(why, "recently") {

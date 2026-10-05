@@ -33,3 +33,18 @@ func TestTranscriptProjectionKeepsMiddleFactsWithinBudget(t *testing.T) {
 		t.Fatalf("budget = %d", got)
 	}
 }
+
+func TestMaskingAndRecentContextRetention(t *testing.T) {
+	msgs := []store.Message{}
+	for i := 0; i < 12; i++ {
+		msgs = append(msgs, store.Message{Role: "assistant", ContentJSON: store.JSON(provider.Message{ToolCalls: []provider.ToolCall{{ID: "c", Name: "read"}}})})
+		msgs = append(msgs, store.Message{Role: "tool", ContentJSON: store.JSON(provider.Message{ToolCallID: "c", Content: "old output"})})
+	}
+	if !maskOldToolResults(msgs) || !strings.Contains(msgs[1].ContentJSON, "cleared") || strings.Contains(msgs[len(msgs)-1].ContentJSON, "cleared") {
+		t.Fatal("old tool output was not masked in batch")
+	}
+	recent := []store.Message{{Role: "assistant", ContentJSON: "{}"}, {Role: "user", ContentJSON: store.JSON(provider.Message{Content: "latest"})}, {Role: "assistant", ContentJSON: "{}"}}
+	if got := compactionKeepIndex(recent, 4); got != 1 {
+		t.Fatalf("keep index = %d", got)
+	}
+}
