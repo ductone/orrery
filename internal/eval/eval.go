@@ -300,7 +300,30 @@ func caseWorkspace(c Case) (string, func(), error) {
 		_ = os.RemoveAll(destination)
 		return "", func() {}, err
 	}
+	if err := commitFixture(destination); err != nil {
+		_ = os.RemoveAll(destination)
+		return "", func() {}, err
+	}
 	return destination, func() { _ = os.RemoveAll(destination) }, nil
+}
+
+// commitFixture makes a fixture copy a git checkout with the fixture as its
+// only commit. Real workspaces are git checkouts, and Orrery tells a run's own
+// changes apart from what was already there by comparing against git: without
+// it, verification and review cannot see changes made through exec.
+func commitFixture(dir string) error {
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"add", "-A"},
+		{"-c", "user.name=orrery-benchmark", "-c", "user.email=benchmark@orrery.invalid", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("prepare fixture: git %s: %v: %s", args[0], err, out)
+		}
+	}
+	return nil
 }
 
 func copyDir(source, destination string) error {

@@ -2,6 +2,7 @@ package eval
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -73,5 +74,26 @@ func TestCaseWorkspaceCopiesFixture(t *testing.T) {
 	original, _ := os.ReadFile(filepath.Join(source, "file.txt"))
 	if string(original) != "original" {
 		t.Fatalf("fixture mutated: %q", original)
+	}
+}
+
+// A fixture copy is a clean git checkout, so a run's changes can be told
+// apart from the fixture, as in a real workspace.
+func TestCaseWorkspaceIsACleanGitCheckout(t *testing.T) {
+	fixture := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fixture, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir, cleanup, err := caseWorkspace(Case{Fixture: fixture})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	out, err := exec.Command("git", "-C", dir, "status", "--porcelain").CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("git status: %v %q", err, out)
+	}
+	if out, err := exec.Command("git", "-C", dir, "log", "--oneline").CombinedOutput(); err != nil || !strings.Contains(string(out), "fixture") {
+		t.Fatalf("git log: %v %q", err, out)
 	}
 }
