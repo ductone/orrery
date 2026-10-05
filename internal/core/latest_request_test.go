@@ -224,11 +224,73 @@ func TestAnswerCheckSendsTodoPlanForPointerRequest(t *testing.T) {
 	if body.State["latest_request"] != request || body.State["final_result"] != draft {
 		t.Fatalf("state = %v", body.State)
 	}
-	if got := body.State["todo_plan"]; got != "Implement session resume in the TUI\nVerify session resume" {
+	if got := body.State["todo_plan"]; got != "completed: Implement session resume in the TUI\ncompleted: Verify session resume" {
 		t.Fatalf("todo_plan = %q", got)
 	}
 	if _, ok := body.State["earlier_request"]; ok {
 		t.Fatal("the earlier request must not be sent to Jev")
+	}
+}
+
+func TestAnswerAnnouncementFollowsOpenTodos(t *testing.T) {
+	const announcement = "The bead is closed. Now I'll start orrery-qqb and inspect the issue plus rate-limit handling."
+	const report = "Implemented the rate-limit fix, verified it, and closed the bead."
+	for _, tc := range []struct {
+		name, status string
+		wantQuestion bool
+		wantReason   bool
+	}{
+		{"announces unfinished work", "pending", true, true},
+		{"reports despite stale todos", "pending", true, false},
+		{"completed todos need no announcement question", "completed", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			e, st := testEngine(t)
+			s := store.Session{ID: uuid.NewString(), Spec: "Implement orrery-qqb", BudgetUSD: 1}
+			if err := st.CreateSession(ctx, s); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.SetTodos(ctx, s.ID, []store.Todo{{Text: "Inspect rate-limit handling", Status: tc.status}}); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			sawQuestion := false
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				var req struct {
+					Questions map[string]any    `json:"questions"`
+					State     map[string]string `json:"state"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				_, sawQuestion = req.Questions["reports_completed_work"]
+				p := 0.9
+				if strings.Contains(req.State["final_result"], "Now I'll start") {
+					p = 0.05
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"answers": map[string]any{
+					"addresses_request":      map[string]any{"type": "noul", "noul": 0.81},
+					"reports_completed_work": map[string]any{"type": "noul", "noul": p},
+				}})
+			}))
+			t.Cleanup(srv.Close)
+			e.ReplaceRuntime(config.Config{Jev: config.JevConfig{APIKey: "k", BaseURL: srv.URL, Review: true}}, nil, nil)
+			result := announcement
+			if !tc.wantReason {
+				result = report
+			}
+			_, _, reason := e.checkAnswer(ctx, s.ID, s, s.Spec, result, nil)
+			if calls != 1 || sawQuestion != tc.wantQuestion || (reason != "") != tc.wantReason {
+				t.Fatalf("calls=%d question=%v reason=%q", calls, sawQuestion, reason)
+			}
+		})
+	}
+	ctx := context.Background()
+	e, _ := testEngine(t)
+	e.ReplaceRuntime(config.Config{Jev: config.JevConfig{APIKey: "k", BaseURL: "http://127.0.0.1:1", Review: true}}, nil, nil)
+	s := store.Session{ID: uuid.NewString(), Spec: "Implement orrery-qqb"}
+	if _, _, reason := e.checkAnswer(ctx, s.ID, s, s.Spec, announcement, nil); reason != "" {
+		t.Fatal("a classifier outage must not reject an announcement")
 	}
 }
 

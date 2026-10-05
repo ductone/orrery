@@ -1160,12 +1160,16 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				if parentJob != "" {
 					requestToCheck = req.Spec
 				}
-				if request, off := e.answerOffTopic(ctx, sid, s, requestToCheck, resp.Message.Content, emit); off {
+				if request, off, unfinished := e.checkAnswer(ctx, sid, s, requestToCheck, resp.Message.Content, emit); off || unfinished != "" {
 					progress.answerRejections++
 					progress.completionRejections++
 					reason := "final result does not address the latest request"
 					nudge := "Completion rejected: your final result does not address the person's latest request:\n\n" + request + "\n\nEarlier requests in this session are already answered. Continue the work for the latest request, or explain plainly why it cannot be done."
-					if parentJob != "" {
+					if unfinished != "" {
+						reason = "final result announces work instead of reporting it"
+						nudge = "Completion rejected: this announces work instead of reporting completed work. Continue the unfinished work, or update the todo plan if items are done or dropped:\n\n" + unfinished
+					}
+					if parentJob != "" && unfinished == "" {
 						reason = "final result does not address the assigned task"
 						nudge = "Completion rejected: your final result does not address the assigned task (the spec):\n\n" + request + "\n\nContinue the assigned work, or explain plainly why it cannot be done."
 					}
