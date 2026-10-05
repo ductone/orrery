@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -1188,4 +1189,74 @@ func TestAddBudgetUnknownSessionIsNotFound(t *testing.T) {
 	if err := s.AddBudget(context.Background(), "no-such-session", 5); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("err=%v want sql.ErrNoRows", err)
 	}
+}
+
+// Several Orrery processes share one database. Opening the runtime marks only
+// sessions whose owning process is gone as interrupted, not a session another
+// live process is running.
+func TestMarkRunningInterruptedLeavesLiveOwnersAlone(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	for _, id := range []string{"mine", "live", "dead", "legacy"} {
+		if err := s.CreateSession(ctx, Session{ID: id, Spec: id, Phase: "plan", BudgetUSD: 1, Status: "running"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A live process that is not this one (the test's parent), a pid that
+	// cannot exist, and a row from before ownership was recorded.
+	if _, err := s.db.Exec(`UPDATE sessions SET owner_pid=? WHERE id='live'`, os.Getppid()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE sessions SET owner_pid=999999999 WHERE id='dead'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE sessions SET owner_pid=0 WHERE id='legacy'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkRunningInterrupted(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]string{"mine": "interrupted", "live": "running", "dead": "interrupted", "legacy": "interrupted"} {
+		got, err := s.Session(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != want {
+			t.Errorf("%s: status %q, want %q", id, got.Status, want)
+		}
+	}
+}
+
+func TestRunningStatusRecordsTheOwningProcess(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	if err := s.CreateSession(ctx, Session{ID: "a", Spec: "a", Phase: "plan", BudgetUSD: 1, Status: "interrupted"}); err != nil {
+		t.Fatal(err)
+	}
+	owner := func() int {
+		var pid int
+		if err := s.db.QueryRow(`SELECT owner_pid FROM sessions WHERE id='a'`).Scan(&pid); err != nil {
+			t.Fatal(err)
+		}
+		return pid
+	}
+	if owner() != 0 {
+		t.Fatal("a session that is not running has no owner")
+	}
+	if err := s.SetSessionStatus(ctx, "a", "running"); err != nil {
+		t.Fatal(err)
+	}
+	if owner() != os.Getpid() {
+		t.Fatalf("owner = %d, want %d", owner(), os.Getpid())
+	}
+}
+
+func openTestStore(t *testing.T) *Store {
+	t.Helper()
+	s, err := Open(t.TempDir() + "/db.sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
 }

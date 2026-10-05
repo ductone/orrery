@@ -57,6 +57,7 @@ func (s *Store) migrate() error {
 		"request_json":             "TEXT NOT NULL DEFAULT '{}'",
 		"parent_session_id":        "TEXT NOT NULL DEFAULT ''",
 		"latest_request":           "TEXT NOT NULL DEFAULT ''",
+		"owner_pid":                "INTEGER NOT NULL DEFAULT 0",
 	} {
 		if err := s.ensureColumn("sessions", name, definition); err != nil {
 			return err
@@ -146,7 +147,7 @@ func (s *Store) CreateSession(ctx context.Context, x Session) error {
 	if x.Title == "" {
 		x.Title = SessionTitle(x.Spec)
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO sessions(id,spec,title,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.Spec, x.Title, x.DurableSummary, x.Phase, x.Model, x.Turn, x.SpentUSD, x.BudgetUSD, x.Status, x.Integration, x.ExternalID, x.ExternalIncarnation, x.WorkspacePath, x.WorkspaceOwnership, x.IntegrationContextJSON, x.RequestJSON, x.ParentSessionID, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO sessions(id,spec,title,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at,owner_pid) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.Spec, x.Title, x.DurableSummary, x.Phase, x.Model, x.Turn, x.SpentUSD, x.BudgetUSD, x.Status, x.Integration, x.ExternalID, x.ExternalIncarnation, x.WorkspacePath, x.WorkspaceOwnership, x.IntegrationContextJSON, x.RequestJSON, x.ParentSessionID, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), ownerPID(x.Status))
 	return err
 }
 
@@ -195,7 +196,7 @@ func (s *Store) CreateSessionAccepted(ctx context.Context, x Session, requestID,
 	if x.Title == "" {
 		x.Title = SessionTitle(x.Spec)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,spec,title,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.Spec, x.Title, x.DurableSummary, x.Phase, x.Model, x.Turn, x.SpentUSD, x.BudgetUSD, x.Status, x.Integration, x.ExternalID, x.ExternalIncarnation, x.WorkspacePath, x.WorkspaceOwnership, x.IntegrationContextJSON, x.RequestJSON, x.ParentSessionID, stamp, stamp)
+	_, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,spec,title,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at,owner_pid) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.Spec, x.Title, x.DurableSummary, x.Phase, x.Model, x.Turn, x.SpentUSD, x.BudgetUSD, x.Status, x.Integration, x.ExternalID, x.ExternalIncarnation, x.WorkspacePath, x.WorkspaceOwnership, x.IntegrationContextJSON, x.RequestJSON, x.ParentSessionID, stamp, stamp, ownerPID(x.Status))
 	if err != nil {
 		return Session{}, false, err
 	}
@@ -257,7 +258,7 @@ func (s *Store) Sessions(ctx context.Context) ([]Session, error) {
 	return out, nil
 }
 func (s *Store) UpdateSession(ctx context.Context, x Session) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET durable_summary=?,phase=?,model=?,turn=?,status=?,updated_at=? WHERE id=?`, x.DurableSummary, x.Phase, x.Model, x.Turn, x.Status, time.Now().UTC().Format(time.RFC3339Nano), x.ID)
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET durable_summary=?,phase=?,model=?,turn=?,status=?,owner_pid=CASE WHEN ?='running' THEN ? ELSE owner_pid END,updated_at=? WHERE id=?`, x.DurableSummary, x.Phase, x.Model, x.Turn, x.Status, x.Status, os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano), x.ID)
 	return err
 }
 
@@ -268,12 +269,50 @@ func (s *Store) UpdateSessionTitle(ctx context.Context, id, title string) error 
 	return err
 }
 func (s *Store) SetSessionStatus(ctx context.Context, id, status string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET status=?,updated_at=? WHERE id=?`, status, time.Now().UTC().Format(time.RFC3339Nano), id)
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET status=?,owner_pid=CASE WHEN ?='running' THEN ? ELSE owner_pid END,updated_at=? WHERE id=?`, status, status, os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano), id)
 	return err
 }
+
+// ownerPID is the process that owns a session row being written: this one
+// while the session is running, none otherwise.
+func ownerPID(status string) int {
+	if status == "running" {
+		return os.Getpid()
+	}
+	return 0
+}
+
+// MarkRunningInterrupted marks running sessions whose owning process is gone
+// as interrupted, so a restart can resume them. Several Orrery processes may
+// share one database (a TUI, orrery serve, background orrery run), so a
+// session another live process is running is left alone.
 func (s *Store) MarkRunningInterrupted(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET status='interrupted',updated_at=? WHERE status='running'`, time.Now().UTC().Format(time.RFC3339Nano))
-	return err
+	rows, err := s.db.QueryContext(ctx, `SELECT id,owner_pid FROM sessions WHERE status='running'`)
+	if err != nil {
+		return err
+	}
+	var orphaned []string
+	for rows.Next() {
+		var id string
+		var pid int
+		if err := rows.Scan(&id, &pid); err != nil {
+			rows.Close()
+			return err
+		}
+		if pid == 0 || pid == os.Getpid() || !processAlive(pid) {
+			orphaned = append(orphaned, id)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, id := range orphaned {
+		if _, err := s.db.ExecContext(ctx, `UPDATE sessions SET status='interrupted',owner_pid=0,updated_at=? WHERE id=? AND status='running'`, now, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -749,7 +788,7 @@ func (s *Store) ForkSession(ctx context.Context, sourceID, newID string) (Sessio
 	if fork.Title == "" {
 		fork.Title = SessionTitle(fork.Spec)
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,spec,title,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, fork.ID, fork.Spec, fork.Title, fork.DurableSummary, fork.Phase, fork.Model, fork.Turn, fork.SpentUSD, fork.BudgetUSD, fork.Status, fork.Integration, fork.ExternalID, fork.ExternalIncarnation, fork.WorkspacePath, fork.WorkspaceOwnership, fork.IntegrationContextJSON, fork.RequestJSON, fork.ParentSessionID, stamp, stamp); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,spec,title,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at,owner_pid) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, fork.ID, fork.Spec, fork.Title, fork.DurableSummary, fork.Phase, fork.Model, fork.Turn, fork.SpentUSD, fork.BudgetUSD, fork.Status, fork.Integration, fork.ExternalID, fork.ExternalIncarnation, fork.WorkspacePath, fork.WorkspaceOwnership, fork.IntegrationContextJSON, fork.RequestJSON, fork.ParentSessionID, stamp, stamp, ownerPID(fork.Status)); err != nil {
 		return Session{}, err
 	}
 	for _, m := range messages {
@@ -844,7 +883,7 @@ func (s *Store) ApplyCompaction(ctx context.Context, session Session, keep int) 
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET durable_summary=?,phase=?,model=?,turn=?,status=?,updated_at=? WHERE id=?`, session.DurableSummary, session.Phase, session.Model, session.Turn, session.Status, now, session.ID); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET durable_summary=?,phase=?,model=?,turn=?,status=?,owner_pid=CASE WHEN ?='running' THEN ? ELSE owner_pid END,updated_at=? WHERE id=?`, session.DurableSummary, session.Phase, session.Model, session.Turn, session.Status, session.Status, os.Getpid(), now, session.ID); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM messages WHERE session_id=? AND id NOT IN (SELECT id FROM messages WHERE session_id=? ORDER BY id DESC LIMIT ?)`, session.ID, session.ID, keep); err != nil {
