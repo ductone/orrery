@@ -12,7 +12,7 @@ import (
 )
 
 func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec, r Request) (Response, error) {
-	key, ok := c.pool.take(time.Now())
+	key, ok := c.pool.take(time.Now(), m.ID)
 	if !ok {
 		return Response{}, ErrCredentialsBackoff
 	}
@@ -90,7 +90,7 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if resp.StatusCode/100 != 2 {
 		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
-			c.pool.backoff(key, backoffFor(resp))
+			c.pool.backoff(key, m.ID, backoffFor(resp))
 		}
 		return Response{}, &HTTPError{resp.StatusCode, string(raw)}
 	}

@@ -139,39 +139,57 @@ type credential struct {
 	key          string
 	backoffUntil time.Time
 }
+
+// route is one model reached through one credential. Behind a gateway one
+// key serves every model, so a 429 or 5xx from one model's upstream must cool
+// only that route, not the key.
+type route struct{ key, model string }
+
 type pool struct {
-	mu    sync.Mutex
-	next  int
-	creds []credential
+	mu     sync.Mutex
+	next   int
+	creds  []credential
+	routes map[route]time.Time
 }
 
-func (p *pool) take(now time.Time) (string, bool) {
+// until is when cred can next serve model: the later of a key-wide and a
+// route backoff. Callers hold p.mu.
+func (p *pool) until(cred credential, model string) time.Time {
+	at := cred.backoffUntil
+	if r := p.routes[route{cred.key, model}]; r.After(at) {
+		at = r
+	}
+	return at
+}
+
+func (p *pool) take(now time.Time, model string) (string, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for range p.creds {
 		idx := p.next % len(p.creds)
 		p.next++
-		if now.After(p.creds[idx].backoffUntil) {
+		if now.After(p.until(p.creds[idx], model)) {
 			return p.creds[idx].key, true
 		}
 	}
 	return "", false
 }
-func (p *pool) backoff(key string, d time.Duration) {
+
+// backoff cools the route from key to model for d.
+func (p *pool) backoff(key, model string, d time.Duration) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for i := range p.creds {
-		if p.creds[i].key == key {
-			p.creds[i].backoffUntil = time.Now().Add(d)
-		}
+	if p.routes == nil {
+		p.routes = map[route]time.Time{}
 	}
+	p.routes[route{key, model}] = time.Now().Add(d)
 }
 
-func (p *pool) available(now time.Time) bool {
+func (p *pool) available(now time.Time, model string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, cred := range p.creds {
-		if !now.Before(cred.backoffUntil) {
+		if !now.Before(p.until(cred, model)) {
 			return true
 		}
 	}
@@ -179,9 +197,9 @@ func (p *pool) available(now time.Time) bool {
 }
 
 type availability interface {
-	Available(time.Time) bool
-	// ReadyAt is when the client's earliest credential leaves backoff.
-	ReadyAt() time.Time
+	Available(now time.Time, model string) bool
+	// ReadyAt is when the client's earliest credential can next serve model.
+	ReadyAt(model string) time.Time
 }
 
 const (
@@ -206,41 +224,40 @@ func backoffFor(resp *http.Response) time.Duration {
 
 // readyAt returns when the earliest credential leaves backoff; the zero time
 // means one is usable now.
-func (p *pool) readyAt(now time.Time) time.Time {
+func (p *pool) readyAt(now time.Time, model string) time.Time {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var earliest time.Time
 	for _, cred := range p.creds {
-		if !now.Before(cred.backoffUntil) {
+		at := p.until(cred, model)
+		if !now.Before(at) {
 			return time.Time{}
 		}
-		if earliest.IsZero() || cred.backoffUntil.Before(earliest) {
-			earliest = cred.backoffUntil
+		if earliest.IsZero() || at.Before(earliest) {
+			earliest = at
 		}
 	}
 	return earliest
 }
 
-// WaitForCredentials blocks until some configured provider has a usable
-// credential, when that will happen within maxWait. Credential backoff is a
-// short, known wait (a rate limit, or credits reserved by requests still in
-// flight); failing the whole task over it would throw away the work done so
-// far. It returns ErrCredentialsBackoff when the wait would be longer, and
-// the context's error if it ends first.
-func (r *Registry) WaitForCredentials(ctx context.Context, maxWait time.Duration) error {
+// WaitForCredentials waits for the earliest cooling route among specs (or
+// the catalog when omitted), bounded by maxWait and the context.
+func (r *Registry) WaitForCredentials(ctx context.Context, maxWait time.Duration, specs ...model.ModelSpec) error {
 	now := time.Now()
 	var earliest time.Time
-	for _, c := range r.clients {
-		a, ok := c.(availability)
-		if !ok || a.Available(now) {
+	if len(specs) == 0 {
+		specs = model.All()
+	}
+	for _, spec := range specs {
+		if r.Available(spec) {
 			return nil
 		}
-		if at := a.ReadyAt(); earliest.IsZero() || at.Before(earliest) {
+		if at := r.ReadyAt(spec); !at.IsZero() && (earliest.IsZero() || at.Before(earliest)) {
 			earliest = at
 		}
 	}
-	if len(r.clients) == 0 {
-		return nil
+	if earliest.IsZero() {
+		return ErrCredentialsBackoff
 	}
 	wait := earliest.Sub(now)
 	if wait > maxWait {
@@ -347,10 +364,34 @@ func (r *Registry) Available(spec model.ModelSpec) bool {
 		return false
 	}
 	if a, ok := c.(availability); ok {
-		return a.Available(time.Now())
+		return a.Available(time.Now(), spec.ID)
 	}
 	return true
 }
+
+// ReadyAt reports the earliest recovery of a cooling model route. Zero means
+// it is available now or is unavailable for a reason other than backoff.
+func (r *Registry) ReadyAt(spec model.ModelSpec) time.Time {
+	if _, refused := r.unavailable.Load(spec.ID); refused {
+		return time.Time{}
+	}
+	if a, ok := r.clients[providerName(spec.ID)].(availability); ok {
+		return a.ReadyAt(spec.ID)
+	}
+	return time.Time{}
+}
+
+// CoolingSummary names routes and their recovery times without exposing keys.
+func (r *Registry) CoolingSummary() string {
+	var parts []string
+	for _, spec := range model.All() {
+		if at := r.ReadyAt(spec); !at.IsZero() {
+			parts = append(parts, spec.ID+" until "+at.UTC().Format(time.RFC3339))
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
 func (r *Registry) AvailableIDs() []string {
 	out := []string{}
 	for _, m := range model.All() {

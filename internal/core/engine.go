@@ -1052,30 +1052,24 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 					continue
 				}
 			}
-			// Whole-provider credential cooldown cannot succeed by retrying the
-			// same model, so reroute immediately; the router will pick a provider
-			// that still has an available credential. Exclude the whole family so
-			// the router does not reroute to a sibling model on the same cooled
-			// provider.
-			if errors.Is(err, provider.ErrCredentialsBackoff) {
-				// With nothing else to route to, wait for a credential and
-				// retry the same decision rather than failing the turn.
-				if credentialWaits < maxCredentialWaitsPerTurn && e.waitForCredentials(ctx, sid, runtimeProviders, emit) {
-					credentialWaits++
-					continue
-				}
-				failed = append(failed, decision.Model.ID)
-				state.ExcludeModels = failed
-				if !slices.Contains(state.ExcludeFamilies, decision.Model.Family) {
-					state.ExcludeFamilies = append(state.ExcludeFamilies, decision.Model.Family)
-				}
+			// A cooling route says nothing about sibling models on the key.
+			// Reroute immediately; if only cooling blocks compatibility, wait.
+			if errors.Is(err, provider.ErrCredentialsBackoff) || !runtimeProviders.ReadyAt(decision.Model).IsZero() {
 				state.AvailableModels = runtimeProviders.AvailableIDs()
 				state.CurrentModel = decision.Model.ID
 				decision, why, err = runtimePolicy.Decide(ctx, state)
+				if err != nil && credentialWaits < maxCredentialWaitsPerTurn {
+					credentialWaits++
+					decision, why, err = e.decideWaiting(ctx, sid, runtimePolicy, runtimeProviders, &state, emit)
+				}
 				if err != nil {
+					if cooling := runtimeProviders.CoolingSummary(); cooling != "" {
+						err = fmt.Errorf("routes cooling down: %s (%w)", cooling, err)
+					}
 					return e.routeFailureAfter(sid, parentJob, err, progress, outcome, emit)
 				}
 				modelAttempts = 0
+				outputCap = capFor(decision.Model.ID)
 				e.emit(ctx, sid, "routing.fallback", map[string]any{"decision": decision, "explanation": why}, emit)
 				continue
 			}

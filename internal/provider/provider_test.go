@@ -332,11 +332,11 @@ func TestCompleteOneHonorsModelRequestTimeout(t *testing.T) {
 func TestCredentialPoolAvailabilityHonorsCooldown(t *testing.T) {
 	now := time.Now()
 	p := &pool{creds: []credential{{key: "a", backoffUntil: now.Add(time.Minute)}, {key: "b", backoffUntil: now.Add(-time.Second)}}}
-	if !p.available(now) {
+	if !p.available(now, "model") {
 		t.Fatal("one usable credential should keep provider available")
 	}
 	p.creds[1].backoffUntil = now.Add(time.Minute)
-	if p.available(now) {
+	if p.available(now, "model") {
 		t.Fatal("provider should be unavailable while all credentials cool down")
 	}
 }

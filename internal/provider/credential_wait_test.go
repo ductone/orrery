@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"github.com/ductone/orrey/internal/model"
 	"net/http"
 	"testing"
 	"time"
@@ -40,21 +41,29 @@ func TestWaitForCredentials(t *testing.T) {
 	if err := r.WaitForCredentials(ctx, time.Second); err != nil {
 		t.Fatalf("an available credential needs no wait: %v", err)
 	}
-	c.pool.backoff("k", 80*time.Millisecond)
+	for _, spec := range model.All() {
+		c.pool.backoff("k", spec.ID, 80*time.Millisecond)
+	}
 	start := time.Now()
 	if err := r.WaitForCredentials(ctx, time.Second); err != nil || time.Since(start) < 70*time.Millisecond {
 		t.Fatalf("err=%v waited=%v", err, time.Since(start))
 	}
-	c.pool.backoff("k", time.Hour)
+	for _, spec := range model.All() {
+		c.pool.backoff("k", spec.ID, time.Hour)
+	}
 	if err := r.WaitForCredentials(ctx, time.Second); !errors.Is(err, ErrCredentialsBackoff) {
 		t.Fatalf("a wait beyond the bound must not block: %v", err)
 	}
-	c.pool.backoff("k", 500*time.Millisecond)
+	for _, spec := range model.All() {
+		c.pool.backoff("k", spec.ID, 500*time.Millisecond)
+	}
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
 	if err := r.WaitForCredentials(cancelled, time.Second); !errors.Is(err, context.Canceled) {
 		t.Fatalf("a cancelled wait returns the context error: %v", err)
 	}
+	// A sibling model on this same key is independently available.
+	c.pool.backoff("k", "ramp/free", 0)
 	// One provider with a free credential is enough.
 	other := newOpenAI("http://unused", []string{"k2"}, true)
 	r.clients["openai"] = other
