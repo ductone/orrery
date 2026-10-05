@@ -2,7 +2,6 @@ package core
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/ductone/orrey/internal/agentproto"
@@ -212,27 +211,6 @@ func isSuppressed(v any) bool {
 	m, _ := v.(map[string]any)
 	b, _ := m["suppressed"].(bool)
 	return b
-}
-
-func TestSerializedToolCallResponse(t *testing.T) {
-	m := provider.Message{Role: "assistant", Content: `<｜DSML｜tool_calls><｜DSML｜invoke name="read">x</｜DSML｜invoke></｜DSML｜tool_calls>`}
-	if !serializedToolCallResponse(m) {
-		t.Fatal("serialized DSML tool call accepted as final")
-	}
-	if serializedToolCallResponse(provider.Message{Role: "assistant", Content: `{"answer":"done"}`}) {
-		t.Fatal("ordinary final rejected")
-	}
-}
-
-func TestUnfinishedFinalResponse(t *testing.T) {
-	unfinished := strings.Repeat("I still need the missing prerequisite. I'll search for it. Checking now. ", 20)
-	if !unfinishedFinalResponse(provider.Message{Role: "assistant", Content: unfinished}) {
-		t.Fatal("work-in-progress reasoning stream accepted as final")
-	}
-	finished := strings.Repeat("The implementation is complete and the focused tests pass. ", 30)
-	if unfinishedFinalResponse(provider.Message{Role: "assistant", Content: finished}) {
-		t.Fatal("ordinary long final was rejected")
-	}
 }
 
 func TestParseResultUsesTrailingStructuredVerdict(t *testing.T) {

@@ -231,3 +231,82 @@ func TestAnswerCheckSendsTodoPlanForPointerRequest(t *testing.T) {
 		t.Fatal("the earlier request must not be sent to Jev")
 	}
 }
+
+func TestWorkerAnswerIsCheckedAgainstItsSpec(t *testing.T) {
+	for _, alwaysOffTopic := range []bool{false, true} {
+		name := "recovers"
+		if alwaysOffTopic {
+			name = "bounded"
+		}
+		t.Run(name, func(t *testing.T) {
+			e, st := testEngine(t)
+			const spec = "Explain the provider classification"
+			const answer = "Provider classification distinguishes transport errors from model refusals."
+			checks := 0
+			jevSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					State map[string]string `json:"state"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Error(err)
+				}
+				checks++
+				if req.State["latest_request"] != spec {
+					t.Errorf("checked request = %q, want spec %q", req.State["latest_request"], spec)
+				}
+				p := 0.05
+				if !alwaysOffTopic && req.State["final_result"] == answer {
+					p = 0.9
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"answers": map[string]any{"addresses_request": map[string]any{"type": "noul", "noul": p}}})
+			}))
+			t.Cleanup(jevSrv.Close)
+			nudged := false
+			turns := 0
+			s := &scriptedResponses{reply: func(n int, body map[string]any) map[string]any {
+				turns = n
+				for _, raw := range body["input"].([]any) {
+					if m, _ := raw.(map[string]any); m != nil {
+						if c, _ := m["content"].(string); strings.Contains(c, "does not address the assigned task (the spec)") && strings.Contains(c, spec) && !strings.Contains(c, "person's latest request") {
+							nudged = true
+						}
+					}
+				}
+				if n == 1 || alwaysOffTopic {
+					return responsesText("<invoke name=\"read\">internal/core/limits.go</invoke>")
+				}
+				return responsesText(answer)
+			}}
+			srv := s.serve(t)
+			workspace := t.TempDir()
+			cfg := config.Config{
+				WorkspaceRoot: workspace,
+				Providers:     map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: srv.URL}},
+				Router:        config.RouterConfig{DisableSwitch: true, DefaultModel: "openai/gpt-5.6-terra"},
+				Jev:           config.JevConfig{APIKey: "k", BaseURL: jevSrv.URL, Review: true},
+			}
+			e.ReplaceRuntime(cfg, provider.New(cfg), nil)
+			ctx := context.Background()
+			sid := uuid.NewString()
+			if err := st.CreateSession(ctx, store.Session{ID: sid, Spec: spec, Phase: "implement", BudgetUSD: 5, WorkspacePath: workspace}); err != nil {
+				t.Fatal(err)
+			}
+			// Even a stored follow-up cannot replace the worker's assigned spec.
+			if _, err := st.AcceptMessage(ctx, sid, "r1", "t1", "message", "h1", provider.Message{Role: "user", Content: "Explain session resume"}, nil); err != nil {
+				t.Fatal(err)
+			}
+			req := agentproto.TaskRequest{Spec: spec, Budget: agentproto.Budget{MaxUSD: 5, MaxTokens: 1_000_000, MaxWallClock: time.Minute}, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"}}
+			result := e.run(ctx, sid, "worker-job", req, nil)
+			wantRejects, wantChecks := 1, 2
+			if alwaysOffTopic {
+				wantRejects, wantChecks = maxAnswerRejections, maxAnswerRejections
+			}
+			if result.Status != agentproto.Pass || !nudged || result.Outcome.CompletionRejects != wantRejects || checks != wantChecks || turns != wantRejects+1 {
+				t.Fatalf("result=%+v nudged=%v checks=%d turns=%d", result, nudged, checks, turns)
+			}
+			if !alwaysOffTopic && result.Result["answer"] != answer {
+				t.Fatalf("result = %+v", result)
+			}
+		})
+	}
+}

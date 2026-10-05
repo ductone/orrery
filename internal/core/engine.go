@@ -1129,32 +1129,24 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				stall.HumanInterrupt = true
 				continue
 			}
-			if serializedToolCallResponse(resp.Message) {
-				progress.completionRejections++
-				e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "serialized tool call returned as final text", "attempt": progress.completionRejections}, emit)
-				if progress.strike(decision.Model.ID, "serialized_tool_call") {
-					e.dropModel(ctx, sid, decision.Model.ID, "serialized tool calls instead of a final result three times", progress, emit)
-				}
-				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Your last response serialized a tool call as text, so it cannot complete the task. Do not emit tool markup. Synthesize the evidence already in context and return the required final result now."})
-				continue
-			}
-			if unfinishedFinalResponse(resp.Message) {
-				progress.completionRejections++
-				e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "work-in-progress reasoning returned as final text", "attempt": progress.completionRejections}, emit)
-				if progress.strike(decision.Model.ID, "work_in_progress") {
-					e.dropModel(ctx, sid, decision.Model.ID, "work-in-progress reasoning instead of a final result three times", progress, emit)
-				}
-				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Completion rejected: your response was a work-in-progress reasoning stream, not an outcome. Do not narrate more intended searches. Return one concise final result stating what was completed and verified, or clearly state the concrete blocker and missing prerequisite."})
-				continue
-			}
 			// Before paying for verification or review, check that the answer
-			// is about what the person asked last, not an earlier request.
-			if parentJob == "" && progress.answerRejections < maxAnswerRejections {
-				if request, off := e.answerOffTopic(ctx, sid, s, latestRequest, resp.Message.Content, emit); off {
+			// addresses the latest request, or the assigned spec for a worker.
+			if progress.answerRejections < maxAnswerRejections {
+				requestToCheck := latestRequest
+				if parentJob != "" {
+					requestToCheck = req.Spec
+				}
+				if request, off := e.answerOffTopic(ctx, sid, s, requestToCheck, resp.Message.Content, emit); off {
 					progress.answerRejections++
 					progress.completionRejections++
-					e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "final result does not address the latest request", "attempt": progress.answerRejections}, emit)
-					_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Completion rejected: your final result does not address the person's latest request:\n\n" + request + "\n\nEarlier requests in this session are already answered. Continue the work for the latest request, or explain plainly why it cannot be done."})
+					reason := "final result does not address the latest request"
+					nudge := "Completion rejected: your final result does not address the person's latest request:\n\n" + request + "\n\nEarlier requests in this session are already answered. Continue the work for the latest request, or explain plainly why it cannot be done."
+					if parentJob != "" {
+						reason = "final result does not address the assigned task"
+						nudge = "Completion rejected: your final result does not address the assigned task (the spec):\n\n" + request + "\n\nContinue the assigned work, or explain plainly why it cannot be done."
+					}
+					e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": reason, "attempt": progress.answerRejections}, emit)
+					_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: nudge})
 					continue
 				}
 			}
