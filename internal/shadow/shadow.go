@@ -38,7 +38,6 @@ const (
 	CompactionBenefitVersion = "compaction_benefit/v1"
 )
 
-
 // Phases mirrors router phases; the classifier chooses among them.
 var phaseCriteria = map[string]string{
 	"explore":   "Gathering information: reading files, searching the codebase, or inspecting the environment to understand the task.",

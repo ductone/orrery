@@ -23,9 +23,9 @@ type progressTracker struct {
 	reviewed                      bool
 	reviewRemediation             bool
 	seenResults                   map[string]string
-	lastTodo                 string
-	turnProgress             bool
-	turnEdited, turnVerified bool
+	lastTodo                      string
+	turnProgress                  bool
+	turnEdited, turnVerified      bool
 	// editedPaths are files changed through the edit tool this run.
 	editedPaths map[string]bool
 	// checksSinceEdit are successful commands run since the last edit that

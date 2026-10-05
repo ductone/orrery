@@ -32,8 +32,8 @@ type Config struct {
 	// LegacyInterventions accepts the removed interventions block so existing
 	// configs still load. Its value is ignored.
 	LegacyInterventions map[string]any `yaml:"interventions,omitempty"`
-	Memory        MemoryConfig              `yaml:"memory"`
-	Jev           JevConfig                 `yaml:"jev"`
+	Memory              MemoryConfig   `yaml:"memory"`
+	Jev                 JevConfig      `yaml:"jev"`
 }
 
 // JevConfig enables shadow observations from TypeSafe's Jev classifier. Shadow
@@ -334,7 +334,6 @@ const defaultSessionTokens = 4_000_000
 // floor makes budget exhaustion the reviewer's normal outcome.
 const defaultMinReviewUSD = 2.0
 
-
 // SessionTokenLimit returns the configured per-session token cap, or the
 // default when unset/zero.
 func (b BudgetConfig) SessionTokenLimit() int {
@@ -352,7 +351,6 @@ func (b BudgetConfig) ReviewFloorUSD() float64 {
 	}
 	return b.MinReviewUSD
 }
-
 
 type TelemetryConfig struct {
 	OTLPEndpoint string `yaml:"otlp_endpoint"`
