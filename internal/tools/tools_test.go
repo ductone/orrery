@@ -421,3 +421,80 @@ func TestSuccessfulEditRefreshesOptimisticLockSnapshot(t *testing.T) {
 		t.Fatalf("second edit using returned fresh anchor failed: %v", err)
 	}
 }
+
+func TestEditTranslatesAnchorsFromBeforeOwnEdits(t *testing.T) {
+	for _, dialect := range []string{"hashline-json", "hashline-contextual", "text-anchor"} {
+		t.Run(dialect, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "file.txt")
+			if err := os.WriteFile(path, []byte("alpha\nbeta\ngamma\ndelta\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			state := &SessionState{}
+			r := NewWithStateDialect(root, state, dialect)
+			value, err := r.Call(context.Background(), "read", map[string]any{"path": "file.txt"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines := value.([]hashline.Line)
+			beta, gamma := lines[1].Hash, lines[2].Hash
+
+			value, err = r.Call(context.Background(), "edit", map[string]any{
+				"path":  "file.txt",
+				"hunks": []any{map[string]any{"anchor": beta, "delete": float64(1), "insert": []any{"BETA"}}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The engine rebuilds its registry every turn; the remembered anchors
+			// must survive that boundary.
+			r = NewWithStateDialect(root, state, dialect)
+			value, err = r.Call(context.Background(), "edit", map[string]any{
+				"path":  "file.txt",
+				"hunks": []any{map[string]any{"anchor": gamma, "delete": float64(1), "insert": []any{"GAMMA"}}},
+			})
+			if err != nil {
+				t.Fatalf("second edit using the original read's anchor failed: %v", err)
+			}
+			// Line and text anchors survive a neighbour change, so only the
+			// contextual dialect has to translate this one.
+			translated, _ := value.(map[string]any)["translated_anchors"].([]string)
+			if dialect == "hashline-contextual" {
+				if len(translated) != 1 || translated[0] != gamma {
+					t.Fatalf("translated_anchors=%#v", value)
+				}
+			} else if len(translated) != 0 {
+				t.Fatalf("translated_anchors=%#v", value)
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(b) != "alpha\nBETA\nGAMMA\ndelta\n" {
+				t.Fatalf("content=%q", b)
+			}
+
+			// An anchor whose line the first edit deleted is still stale.
+			_, err = r.Call(context.Background(), "edit", map[string]any{
+				"path":  "file.txt",
+				"hunks": []any{map[string]any{"anchor": beta, "delete": float64(1), "insert": []any{"gone"}}},
+			})
+			if err == nil || !strings.Contains(err.Error(), "stale anchor") {
+				t.Fatalf("deleted line: %v", err)
+			}
+
+			// A change on disk by someone else is still E_FILE_CHANGED, even when
+			// the anchor came from a version this session remembers.
+			if err := os.WriteFile(path, []byte("alpha\nBETA\nexternal\ndelta\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err = r.Call(context.Background(), "edit", map[string]any{
+				"path":  "file.txt",
+				"hunks": []any{map[string]any{"anchor": gamma, "delete": float64(1), "insert": []any{"nope"}}},
+			})
+			if err == nil || !strings.Contains(err.Error(), "E_FILE_CHANGED") {
+				t.Fatalf("external change: %v", err)
+			}
+		})
+	}
+}

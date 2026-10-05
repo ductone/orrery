@@ -73,6 +73,28 @@ type noopState struct {
 type fileSnapshot struct {
 	version string
 	content []string
+	// history remembers the anchors this session handed out for the last few
+	// versions of the file, so an edit invalidated by the session's own later
+	// edits can be translated instead of failing as stale.
+	history []anchorVersion
+}
+
+// anchorHistoryVersions bounds how many versions of a file the session
+// remembers anchors for.
+const anchorHistoryVersions = 8
+
+type rememberedAnchor struct {
+	text   string
+	number int
+}
+
+// anchorVersion records the anchors of one version of a file: the line hashes
+// of a read result or of a successful edit's result.
+type anchorVersion struct {
+	version string
+	// byEdit marks a version this session's own successful edit produced.
+	byEdit  bool
+	anchors map[string]rememberedAnchor
 }
 
 type anchorDialect string
@@ -323,7 +345,11 @@ func (r *Registry) read(ctx context.Context, a map[string]any) (any, error) {
 		return nil, err
 	}
 	r.state.mu.Lock()
-	r.state.snapshots[p] = fileSnapshot{version: currentVersion, content: lineText(lines)}
+	snapshot := r.state.snapshots[p]
+	snapshot.version = currentVersion
+	snapshot.content = lineText(lines)
+	snapshot.history = appendAnchorVersion(snapshot.history, currentVersion, false, lines)
+	r.state.snapshots[p] = snapshot
 	r.state.mu.Unlock()
 	if around, ok := a["around_line"]; ok && around != nil {
 		if len(lines) == 0 {
@@ -454,6 +480,10 @@ func (r *Registry) edit(_ context.Context, a map[string]any) (any, error) {
 			return details, errors.New("E_FILE_CHANGED: file changed since this session last read it")
 		}
 	}
+	var translated []string
+	if translated, err = r.translateStaleAnchors(&p, current); err != nil {
+		return nil, err
+	}
 	result, err := hashline.ApplyWithMode(p, r.dialect.mode())
 	if errors.Is(err, hashline.ErrNoChanges) {
 		r.state.noop.signature, r.state.noop.streak = signature, r.state.noop.streak+1
@@ -506,9 +536,135 @@ func (r *Registry) edit(_ context.Context, a map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	r.state.snapshots[p.Path] = fileSnapshot{version: currentVersion, content: lineText(result.Lines)}
+	snapshot := r.state.snapshots[p.Path]
+	snapshot.version = currentVersion
+	snapshot.content = lineText(result.Lines)
+	snapshot.history = appendAnchorVersion(snapshot.history, currentVersion, true, result.Lines)
+	r.state.snapshots[p.Path] = snapshot
 	windows := computeFreshWindows(result.Lines, result.Affected)
-	return map[string]any{"applied": len(p.Hunks), "fresh_anchors": windows}, nil
+	out := map[string]any{"applied": len(p.Hunks), "fresh_anchors": windows}
+	if len(translated) > 0 {
+		out["translated_anchors"] = translated
+	}
+	return out, nil
+}
+
+// appendAnchorVersion records the anchors this session handed out for one
+// version of a file, keeping the last anchorHistoryVersions versions.
+func appendAnchorVersion(history []anchorVersion, version string, byEdit bool, lines []hashline.Line) []anchorVersion {
+	anchors := make(map[string]rememberedAnchor, len(lines))
+	for _, line := range lines {
+		if line.Hash == "" {
+			continue
+		}
+		// A repeated hash matched several lines and cannot be translated.
+		// Mark it empty so lookup refuses it.
+		if _, ok := anchors[line.Hash]; !ok {
+			anchors[line.Hash] = rememberedAnchor{text: line.Text, number: line.Number}
+		} else {
+			anchors[line.Hash] = rememberedAnchor{}
+		}
+	}
+	history = append(history, anchorVersion{version: version, byEdit: byEdit, anchors: anchors})
+	if len(history) > anchorHistoryVersions {
+		history = history[len(history)-anchorHistoryVersions:]
+	}
+	return history
+}
+
+// translateStaleAnchors rewrites hunk anchors that are stale in the current
+// file but were handed out for an earlier version this session produced or
+// read. Translation only runs when the current version is one this session's
+// own edit produced; anything else is left for the caller, which reports
+// E_FILE_CHANGED. An anchor whose remembered line is gone or ambiguous stays
+// stale, and ApplyWithMode reports it as today.
+func (r *Registry) translateStaleAnchors(p *hashline.Patch, current []hashline.Line) ([]string, error) {
+	if len(current) == 0 {
+		return nil, nil
+	}
+	snapshot := r.state.snapshots[p.Path]
+	if len(snapshot.history) == 0 || !snapshot.history[len(snapshot.history)-1].byEdit {
+		return nil, nil
+	}
+	var translated []string
+	for i := range p.Hunks {
+		if r.anchorPresent(current, p.Hunks[i].Anchor) {
+			continue
+		}
+		remembered, ok := lookupRemembered(snapshot.history, p.Hunks[i].Anchor)
+		if !ok {
+			continue
+		}
+		line, ok := findRememberedLine(current, remembered)
+		if !ok {
+			continue
+		}
+		old := p.Hunks[i].Anchor
+		p.Hunks[i].Anchor = line.Hash
+		p.Hunks[i].Line = line.Number
+		translated = append(translated, old)
+	}
+	return translated, nil
+}
+
+func (r *Registry) anchorPresent(lines []hashline.Line, anchor string) bool {
+	for _, line := range lines {
+		if r.anchorMatches(line.Hash, anchor) {
+			return true
+		}
+	}
+	return false
+}
+
+// lookupRemembered finds the oldest remembered version that handed out this
+// anchor unambiguously. A contextual hash is valid only for the neighbours of
+// the version that produced it, so a later version must not shadow it. An
+// empty remembered anchor marks one that matched several lines.
+func lookupRemembered(history []anchorVersion, anchor string) (rememberedAnchor, bool) {
+	for i := 0; i < len(history); i++ {
+		remembered, ok := history[i].anchors[anchor]
+		if !ok {
+			continue
+		}
+		if remembered.number == 0 {
+			return rememberedAnchor{}, false
+		}
+		return remembered, true
+	}
+	return rememberedAnchor{}, false
+}
+
+// findRememberedLine locates the remembered line's text in the current file,
+// preferring the occurrence nearest its remembered line number. The match must
+// be unambiguous within that preference: two occurrences equally near, or none
+// at all, cannot be translated.
+func findRememberedLine(lines []hashline.Line, remembered rememberedAnchor) (hashline.Line, bool) {
+	best, second := -1, -1
+	for i, line := range lines {
+		if line.Text != remembered.text {
+			continue
+		}
+		d := abs(line.Number - remembered.number)
+		if best < 0 || d < abs(lines[best].Number-remembered.number) {
+			best, second = i, best
+		} else if second < 0 || d < abs(lines[second].Number-remembered.number) {
+			second = i
+		}
+	}
+	if best < 0 {
+		return hashline.Line{}, false
+	}
+	if second >= 0 && abs(lines[best].Number-remembered.number) == abs(lines[second].Number-remembered.number) {
+		return hashline.Line{}, false
+	}
+	return lines[best], true
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 func (r *Registry) anchorMatches(candidate, anchor string) bool {
