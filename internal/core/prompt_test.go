@@ -26,9 +26,9 @@ func TestSystemPromptSections(t *testing.T) {
 		`workspace at "/work/repo"`,
 		"\n\nSCOPE\n", "nothing more, nothing less", "Do not write files for it", "Uncommitted changes you did not make",
 		"\n\nTOOLS\n", "not for cat, grep, find, ls, or sed -n", "Do not open guessed paths", "Hashline editing is strict", "pass the line number",
-		"\n\nWORKFLOW\n", "Never spend a turn only on the todo list", "Do not re-read your own diff", "only to satisfy a harness check",
-		"\n\nDELIVERY\n", "Never present stubs", "Mark claims you did not verify as inference",
-		"\n\nWORKERS\n", "A worker sees only its spec", "No lower-cost worker model is configured",
+		"\n\nWORKFLOW\n", "Never spend a turn only on the todo list", "Do not re-read your own diff", "only to satisfy a harness check", "make at most two broad discovery calls yourself", "then use targeted reads and searches",
+		"\n\nDELIVERY\n", "Never present stubs", "Mark claims you did not verify as inference", "Orrery independently reviews every completed change", "do not spawn a worker to review your own diff",
+		"\n\nWORKERS\n", "A worker sees only its spec", "No lower-cost worker model is configured", "Spawn workers only for independent slices that run in parallel with work you continue yourself", "Never delegate the core of the task and then wait on it",
 		"Edit dialect: hashline-json. Remaining spawn depth: 2.",
 	} {
 		if !strings.Contains(p, want) {
@@ -48,14 +48,14 @@ func TestSystemPromptSections(t *testing.T) {
 func TestSystemPromptConditionalSections(t *testing.T) {
 	c := basePrompt()
 	c.tools = []string{"read", "search", "edit", "exec", "todo"}
-	if p := systemPrompt(c); strings.Contains(p, "WORKERS") || strings.Contains(p, "worker") && strings.Contains(p, "Delegate") {
-		t.Fatal("without spawn there is no workers section or delegation advice")
+	if p := systemPrompt(c); strings.Contains(p, "WORKERS") || strings.Contains(p, "Delegate further broad discovery") {
+		t.Fatal("without spawn there is no workers section or discovery delegation advice")
 	}
 	c = basePrompt()
 	c.efficientWorker = true
 	c.tools = append(c.tools, "lsp")
 	p := systemPrompt(c)
-	if !strings.Contains(p, "Delegate further broad discovery") || strings.Contains(p, "No lower-cost worker") || !strings.Contains(p, "Use lsp for definitions") {
+	if strings.Contains(p, "Delegate further broad discovery") || strings.Contains(p, "No lower-cost worker") || !strings.Contains(p, "Use lsp for definitions") || !strings.Contains(p, "run in parallel with work you continue yourself") || !strings.Contains(p, "do not spawn a worker to review your own diff") {
 		t.Fatal("efficient workers and lsp change their advice")
 	}
 	c = basePrompt()

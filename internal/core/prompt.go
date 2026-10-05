@@ -77,13 +77,9 @@ func systemPrompt(p promptContext) string {
 		"Call each tool with a given set of arguments at most once per response, and do not repeat unchanged reads or searches.",
 	)
 
-	discovery := "In exploration, make at most two broad discovery calls yourself."
-	if has("spawn") && p.efficientWorker {
-		discovery += " Delegate further broad discovery to a lower-cost read-only worker and continue from its findings."
-	}
 	section("WORKFLOW",
 		"Keep the todo plan as the truth about the work, and update it in the same turn as the work it describes. Never spend a turn only on the todo list.",
-		discovery,
+		"In exploration, make at most two broad discovery calls yourself; then use targeted reads and searches to continue the work.",
 		"Follow the repository's existing patterns instead of introducing a second convention.",
 		"Keep shell output concise; details go to the logs.",
 		"Before completing a change, inspect the final diff once and run verification that exercises the changed code: a build, test, type check, or linter. Do not re-read your own diff or rerun git commands repeatedly.",
@@ -96,6 +92,7 @@ func systemPrompt(p promptContext) string {
 		schema = "Return the final result as the JSON object the required result schema below describes."
 	}
 	section("DELIVERY",
+		"Orrery independently reviews every completed change, so do not spawn a worker to review your own diff.",
 		"Finish only when the request is done end to end. Never present stubs, placeholders, no-op fallbacks, or TODO markers as finished work.",
 		"Report only what you observed. Mark claims you did not verify as inference, and report only verification you actually ran.",
 		"Do not ask for information the workspace or your tools can provide.",
@@ -109,7 +106,7 @@ func systemPrompt(p promptContext) string {
 		}
 		section("WORKERS",
 			"A worker sees only its spec. Include the goal, the person's intent, the files or areas involved, and what it must return.",
-			"Spawn workers for independent slices of work. Do not spawn one and then wait idle on work you could do yourself.",
+			"Spawn workers only for independent slices that run in parallel with work you continue yourself. Never delegate the core of the task and then wait on it.",
 			explore,
 		)
 	}
