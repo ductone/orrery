@@ -188,3 +188,46 @@ func TestAnswerCheckFailsOpenAndIsBounded(t *testing.T) {
 		t.Fatalf("the refusal bound must stay small: %d", maxAnswerRejections)
 	}
 }
+
+func TestAnswerCheckSendsTodoPlanForPointerRequest(t *testing.T) {
+	ctx := context.Background()
+	e, st := testEngine(t)
+	s := store.Session{ID: uuid.NewString(), Spec: "Explain how sessions work", BudgetUSD: 1}
+	if err := st.CreateSession(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetTodos(ctx, s.ID, []store.Todo{{Text: "Old plan", Phase: "explore", Status: "completed"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetTodos(ctx, s.ID, []store.Todo{
+		{Text: "Implement session resume in the TUI", Phase: "implement", Status: "completed"},
+		{Text: "Verify session resume", Phase: "review", Status: "completed"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		State map[string]string `json:"state"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"answers": map[string]any{"addresses_request": map[string]any{"type": "noul", "noul": 0.9}}})
+	}))
+	t.Cleanup(srv.Close)
+	e.ReplaceRuntime(config.Config{Jev: config.JevConfig{APIKey: "k", BaseURL: srv.URL, Review: true}}, nil, nil)
+	request := "Implement bead orrery-vau"
+	draft := "Implemented session resume in the TUI and verified it."
+	if got, off := e.answerOffTopic(ctx, s.ID, s, request, draft, nil); got != request || off {
+		t.Fatalf("request=%q off_topic=%v", got, off)
+	}
+	if body.State["latest_request"] != request || body.State["final_result"] != draft {
+		t.Fatalf("state = %v", body.State)
+	}
+	if got := body.State["todo_plan"]; got != "Implement session resume in the TUI\nVerify session resume" {
+		t.Fatalf("todo_plan = %q", got)
+	}
+	if _, ok := body.State["earlier_request"]; ok {
+		t.Fatal("the earlier request must not be sent to Jev")
+	}
+}

@@ -36,6 +36,13 @@ func TestFailedReviewRestoresToolsAndIsNotRepeated(t *testing.T) {
 			if m, _ := raw.(map[string]any); m != nil {
 				if c, _ := m["content"].(string); strings.Contains(c, "Independent review rejected") || strings.Contains(c, "has not changed since") {
 					rejected = true
+					if strings.Contains(c, "Independent review rejected") {
+						for _, instruction := range []string{"final answer goes to the person, not the reviewer", "describe the whole change made for their request", "not only the fix for these findings"} {
+							if !strings.Contains(c, instruction) {
+								t.Errorf("review rejection missing %q: %s", instruction, c)
+							}
+						}
+					}
 				}
 			}
 		}

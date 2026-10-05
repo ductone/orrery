@@ -1176,7 +1176,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 						progress.markReviewRejected(true)
 						progress.rejectedDiff, progress.rejectedReview = diffHash, reviewText
 						e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "independent review failed", "review": reviewText}, emit)
-						_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Independent review rejected completion. Address these correctness findings, re-run verification, then complete:\n" + reviewText})
+						_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Independent review rejected completion. Address these correctness findings, re-run verification, then complete. The final answer goes to the person, not the reviewer: it must describe the whole change made for their request, not only the fix for these findings:\n" + reviewText})
 						continue
 					}
 				}

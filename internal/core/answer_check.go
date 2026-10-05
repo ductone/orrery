@@ -42,8 +42,16 @@ func (e *Engine) answerOffTopic(ctx context.Context, sid string, s store.Session
 		return request, false
 	}
 	state := map[string]any{"latest_request": truncate(request, answerCheckChars), "final_result": truncate(result, answerCheckChars)}
-	if first := strings.TrimSpace(s.Spec); first != "" && first != request {
-		state["earlier_request"] = truncate(first, answerCheckChars)
+	// A request can point at work instead of describing it ("Implement bead
+	// orrery-vau"); the todo plan is the request as the agent understood it.
+	plan := []string{}
+	if todos, err := e.store.Todos(ctx, sid); err == nil {
+		for _, td := range todos {
+			plan = append(plan, td.Text)
+		}
+	}
+	if len(plan) > 0 {
+		state["todo_plan"] = truncate(strings.Join(plan, "\n"), answerCheckChars)
 	}
 	askCtx, cancel := context.WithTimeout(ctx, answerCheckTimeout)
 	defer cancel()
