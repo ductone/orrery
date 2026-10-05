@@ -347,6 +347,11 @@ func (g *execGuard) rmDestroys(op string) bool {
 		// A computed operand could be anything, including the workspace.
 		return true
 	}
+	// A glob removes what its directory holds, so judge the directory:
+	// `*` and `./*` empty the workspace, `build/*` does not.
+	if strings.ContainsAny(op, "*?[") {
+		op = filepath.Dir(op)
+	}
 	if op == "/" || op == "~" || strings.HasPrefix(op, "~/") {
 		return true
 	}

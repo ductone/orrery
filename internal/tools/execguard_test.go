@@ -92,7 +92,12 @@ func TestGuardAllowsOrdinaryGit(t *testing.T) {
 		`rm -r internal/tools`,
 		`rm -rf ./build`,
 		`rm -rf /tmp/scratch`,
+		`rm -rf build/*`,
+		`rm -rf sub/*.o`,
+		`rm *.tmp`,
+		`rm -rf /tmp/*`,
 		`rm -rf /tmp`,
+		`rm -rf ` + filepath.Join(os.TempDir(), "*"),
 		`rm -rf ` + os.TempDir(),
 	} {
 		if reason := destructiveCommand(cmd, guardRoot); reason != "" {
@@ -143,6 +148,15 @@ func TestGuardRejectsDestructiveCommands(t *testing.T) {
 		{`rm -rf ../sibling`, `rm -r`},
 		{`rm -rf ..`, `rm -r`},
 		{`rm --recursive /work/repo`, `rm -r`},
+		{`rm -rf *`, `rm -r`},
+		{`rm -rf ./*`, `rm -r`},
+		{`rm -r * .*`, `rm -r`},
+		{`rm -rf .[!.]* *`, `rm -r`},
+		{`rm -rf ../*`, `rm -r`},
+		{`cd sub && rm -rf ../*`, `rm -r`},
+		{`rm -rf ?`, `rm -r`},
+		{`rm -rf [ab]*`, `rm -r`},
+		{`rm -rf $ROOT/*`, `rm -r`},
 		{`rm -rf "$DIR"`, `rm -r`},
 		// indirection: shells, wrappers, cd, and find -exec.
 		{`sh -c 'git reset --hard'`, `git reset --hard`},
