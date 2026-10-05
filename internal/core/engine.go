@@ -942,13 +942,15 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				break
 			}
 			e.emit(ctx, sid, "provider.error", map[string]any{"model": decision.Model.ID, "error": err.Error()}, emit)
+			_ = e.store.RecordModelFailure(ctx, decision.Model.ID, "provider_error")
 			_ = e.store.UpdateLatestTurnRoutingOutcome(ctx, sid, state.Turn, map[string]any{"provider_error": err.Error(), "model": decision.Model.ID})
 			// A malformed tool call is a recoverable model/protocol error, not a
 			// session failure: feed it back and let the same model retry with a
 			// smaller valid call. Only fail after repeated malformed responses.
 			if provider.IsMalformedToolArguments(err) {
 				malformedAttempts++
-				e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "malformed tool-call arguments", "attempt": malformedAttempts}, emit)
+				e.emit(ctx, sid, "completion.rejected", map[string]any{"model": decision.Model.ID, "reason": "malformed tool-call arguments", "attempt": malformedAttempts}, emit)
+				_ = e.store.RecordModelFailure(ctx, decision.Model.ID, "malformed")
 				if malformedAttempts >= 3 {
 					// This model keeps truncating its calls; another may not.
 					e.dropModel(ctx, sid, decision.Model.ID, "malformed tool-call arguments three times", progress, emit)
@@ -1103,6 +1105,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		_ = e.store.AddMessage(ctx, sid, "assistant", resp.Message)
 		e.emit(ctx, sid, "assistant.message", map[string]any{"message": resp.Message, "usage": resp.Usage, "cost_usd": cost, "model": decision.Model.ID, "stop_reason": resp.StopReason, "truncated": resp.Truncated, "output_kinds": resp.OutputKinds}, emit)
 		e.emit(ctx, sid, "usage.reported", map[string]any{"model": decision.Model.ID, "job_id": parentJob, "input_tokens": resp.Usage.InputTokens, "output_tokens": resp.Usage.OutputTokens, "cache_read_tokens": resp.Usage.CacheReadTokens, "cache_write_tokens": resp.Usage.CacheWriteTokens, "cost_usd": cost, "latency": resp.Latency, "stop_reason": resp.StopReason, "truncated": resp.Truncated, "output_cap": min(outputCap, decision.Model.MaxOutput)}, emit)
+		_ = e.store.RecordModelCall(ctx, decision.Model.ID, resp.Latency, resp.Usage.OutputTokens, resp.Truncated)
 		turnOutcome := map[string]any{"tokens": resp.Usage.InputTokens + resp.Usage.OutputTokens, "input_tokens": resp.Usage.InputTokens, "output_tokens": resp.Usage.OutputTokens, "cache_read_tokens": resp.Usage.CacheReadTokens, "cache_write_tokens": resp.Usage.CacheWriteTokens, "latency": resp.Latency, "cost_usd": cost, "model": decision.Model.ID}
 		if len(resp.Message.ToolCalls) == 0 {
 			if emptyFinalResponse(resp.Message) {
@@ -1116,7 +1119,8 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 					continue
 				}
 				emptyCompletions++
-				e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "empty assistant response", "attempt": emptyCompletions, "stop_reason": resp.StopReason, "truncated": resp.Truncated, "output_kinds": resp.OutputKinds}, emit)
+				e.emit(ctx, sid, "completion.rejected", map[string]any{"model": decision.Model.ID, "reason": "empty assistant response", "attempt": emptyCompletions, "stop_reason": resp.StopReason, "truncated": resp.Truncated, "output_kinds": resp.OutputKinds}, emit)
+				_ = e.store.RecordModelFailure(ctx, decision.Model.ID, "empty")
 				if emptyCompletions >= 3 {
 					e.dropModel(ctx, sid, decision.Model.ID, fmt.Sprintf("three empty final responses (last stop reason %q, output %v)", resp.StopReason, resp.OutputKinds), progress, emit)
 					emptyCompletions = 0

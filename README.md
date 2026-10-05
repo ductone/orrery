@@ -50,7 +50,17 @@ Provider keys may be literal strings or `!cmd <command>` values. Secret commands
   --policy v1 --output .orrery/benchmarks/baseline.json
 ./orrery benchmark --set benchmarks/engineering/cases.jsonl \
   --policy candidate --baseline .orrery/benchmarks/baseline.json
+
+# List the catalog startup would build (no provider keys needed)
+./orrery models
+./orrery models --stats            # add per-model call statistics
 ```
+
+### Model catalog and statistics
+
+`orrery models` lists the startup catalog: discovered routes (or their cache), built-in routes, and config overrides. The aligned table shows route and canonical model IDs, tier, family, input/output prices per million tokens, context window, and discovered/overridden flags. Disabled config entries and override warnings appear below it.
+
+The command does not resolve secrets or require provider keys. `--stats` adds call counts, EWMA latency and output tokens/s (alpha 0.1), truncated percentage, failure counts, and the age of the last slow call (over 120s). Existing main-loop usage and failure events are backfilled when the stats table is empty. These statistics do not yet affect routing.
 
 Benchmark cases run in disposable fixture copies. Reports include pass rate, cost per successful case, tokens, latency percentiles, tool errors, first-attempt edit land rate, verification, and independent review. A baseline comparison enforces the 97% pass-rate guardrail before cost improvements count. Keep private replay sets and reports under `.orrery/`; only synthetic, public-safe fixtures belong in the repository.
 

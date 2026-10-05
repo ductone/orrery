@@ -102,7 +102,7 @@ func realMain() int {
 		usage()
 		return 0
 	}
-	skipDiscovery = cmd == "export" || cmd == "shadow"
+	skipDiscovery = cmd == "export" || cmd == "shadow" || cmd == "models"
 	cfgPath, found, searched, err := config.Resolve(*configFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -114,7 +114,7 @@ func realMain() int {
 	if cmd == "tui" {
 		return runTUI(ctx, ref, args)
 	}
-	if cmd == "export" || cmd == "shadow" {
+	if cmd == "export" || cmd == "shadow" || cmd == "models" {
 		return readOnly(ctx, cmd, cfgPath, args)
 	}
 	rt, err := openRuntime(ctx, cfgPath)
@@ -467,7 +467,7 @@ func parseSince(v string) (time.Time, error) {
 }
 
 // commands lists every subcommand, for dispatch and typo suggestions.
-var commands = []string{"serve", "run", "tui", "rpc", "acp", "export", "shadow", "eval", "benchmark", "help", "-h", "--help"}
+var commands = []string{"serve", "run", "tui", "rpc", "acp", "export", "shadow", "models", "eval", "benchmark", "help", "-h", "--help"}
 
 // configRef records where the configuration came from, so startup errors can
 // say where Orrery looked.
@@ -510,6 +510,9 @@ func readOnly(ctx context.Context, cmd, cfgPath string, args []string) int {
 	rt := &runtime{cfg: cfg, configPath: cfgPath, store: s}
 	if cmd == "shadow" {
 		return exportShadow(ctx, rt, args)
+	}
+	if cmd == "models" {
+		return listModels(ctx, rt, args)
 	}
 	return export(ctx, rt, args)
 }
@@ -608,6 +611,7 @@ commands:
   rpc                            serve Orrery JSON-RPC 2.0 over stdio
   acp                            serve ACP v1 over stdio
   export [--since 24h]           emit routing records as JSONL
+  models [--stats]              list the catalog startup would build
   shadow [--report] [--since]    emit or summarise Jev shadow observations
   eval --set tasks.jsonl         run a replay set
   benchmark --set cases.jsonl    run isolated engineering cases and compare trends`)

@@ -81,8 +81,11 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(shadowSchema)
-	return err
+	_, err = s.db.Exec(shadowSchema + modelStatsSchema)
+	if err != nil {
+		return err
+	}
+	return s.backfillModelStats()
 }
 
 func (s *Store) ensureColumn(table, name, definition string) error {
