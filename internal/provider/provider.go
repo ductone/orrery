@@ -2,14 +2,19 @@ package provider
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/ductone/orrey/internal/config"
@@ -461,6 +466,9 @@ type ResponseDecodeError struct {
 func (e *ResponseDecodeError) Error() string { return "decode provider response: " + e.Err.Error() }
 func (e *ResponseDecodeError) Unwrap() error { return e.Err }
 func retryable(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
 	if errors.Is(err, ErrCredentialsBackoff) {
 		return true
 	}
@@ -471,7 +479,40 @@ func retryable(err error) bool {
 		return true
 	}
 	var h *HTTPError
-	return errors.As(err, &h) && (h.Status == 429 || h.Status >= 500)
+	if errors.As(err, &h) && (h.Status == 429 || h.Status >= 500) {
+		return true
+	}
+	return transientTransport(err)
+}
+
+// IsTransportError reports a network failure on the way to or from the
+// provider: a dropped or refused connection, a timeout, a truncated body, or a
+// garbled TLS record. These say nothing about the request or the model, so the
+// same request is worth retrying. Certificate failures are not transient and
+// cancellation is never retried.
+func IsTransportError(err error) bool { return transientTransport(err) }
+
+func transientTransport(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var certificate *tls.CertificateVerificationError
+	var unknownAuthority x509.UnknownAuthorityError
+	var hostname x509.HostnameError
+	var invalid x509.CertificateInvalidError
+	if errors.As(err, &certificate) || errors.As(err, &unknownAuthority) || errors.As(err, &hostname) || errors.As(err, &invalid) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNABORTED) || errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	var record tls.RecordHeaderError
+	if errors.As(err, &record) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 // ModelRefusal reports whether err is a provider refusing a specific model

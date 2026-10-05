@@ -923,6 +923,9 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		modelAttempts := 0
 		malformedAttempts := 0
 		credentialWaits := 0
+		// transportSince is when this turn's run of network failures began.
+		var transportSince time.Time
+		transportRetries := 0
 		for {
 			resp, err = runtimeProviders.CompleteOne(ctx, decision, build)
 			if err == nil {
@@ -974,6 +977,26 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			}
 			if !provider.IsRetryable(err) {
 				return e.routeFailureAfter(sid, parentJob, err, progress, outcome, emit)
+			}
+			// A network failure says nothing about the model or the request:
+			// retry the same decision with backoff until the network has been
+			// failing for maxTransportWait, then reroute like any other
+			// retryable error (and ask once nothing is left).
+			if provider.IsTransportError(err) && ctx.Err() == nil {
+				if transportSince.IsZero() {
+					transportSince = time.Now()
+				}
+				if time.Since(transportSince) < maxTransportWait {
+					transportRetries++
+					e.emit(ctx, sid, "routing.retry", map[string]any{"model": decision.Model.ID, "attempt": transportRetries, "transport": true, "failing_for": time.Since(transportSince).Round(time.Second).String()}, emit)
+					select {
+					case <-ctx.Done():
+						return e.finish(sid, agentproto.TaskResult{Status: agentproto.Cancelled, Outcome: outcome, Error: ctx.Err().Error()}, emit)
+					case <-time.After(retryDelay(transportRetries)):
+					}
+					state.CurrentModel = decision.Model.ID
+					continue
+				}
 			}
 			// Whole-provider credential cooldown cannot succeed by retrying the
 			// same model, so reroute immediately; the router will pick a provider

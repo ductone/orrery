@@ -18,6 +18,10 @@ const (
 	// maxCredentialWaitsPerTurn bounds repeated waits when a provider keeps
 	// returning rate limits.
 	maxCredentialWaitsPerTurn = 4
+	// maxTransportWait bounds how long a turn retries the same model through
+	// network failures (a dropped connection, a timeout) before rerouting; a
+	// blip should never need the person.
+	maxTransportWait = 2 * time.Minute
 )
 
 // decideWaiting routes, and when routing fails only because every credential

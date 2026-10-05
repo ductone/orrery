@@ -2,15 +2,23 @@ package provider
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"syscall"
+	"testing"
+	"time"
+
 	"github.com/ductone/orrey/internal/config"
 	"github.com/ductone/orrey/internal/model"
 	"github.com/ductone/orrey/internal/router"
-	"net/http"
-	"net/http/httptest"
-	"testing"
-	"time"
 )
 
 type blockingClient struct{}
@@ -330,6 +338,43 @@ func TestCredentialPoolAvailabilityHonorsCooldown(t *testing.T) {
 	p.creds[1].backoffUntil = now.Add(time.Minute)
 	if p.available(now) {
 		t.Fatal("provider should be unavailable while all credentials cool down")
+	}
+}
+
+func TestTransportErrorsAreRetryable(t *testing.T) {
+	reset := &net.OpError{Op: "read", Err: syscall.ECONNRESET}
+	refused := &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}
+	handshake := tls.RecordHeaderError{Msg: "first record does not look like a TLS handshake"}
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"connection reset", reset, true},
+		{"connection refused", refused, true},
+		{"eof", io.EOF, true},
+		{"unexpected eof", io.ErrUnexpectedEOF, true},
+		{"tls handshake", handshake, true},
+		{"net timeout", &net.DNSError{IsTimeout: true}, true},
+		{"deadline exceeded", context.DeadlineExceeded, true},
+		{"url error wrapping reset", &url.Error{Op: "Post", URL: "https://api.router.com/v1/responses", Err: reset}, true},
+		{"fmt wrapped reset", fmt.Errorf("post: %w", reset), true},
+		{"broken pipe", &net.OpError{Op: "write", Err: syscall.EPIPE}, true},
+		{"certificate", &url.Error{Op: "Post", URL: "https://api.router.com/v1/responses", Err: &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}}, false},
+		{"hostname mismatch", x509.HostnameError{Host: "api.router.com"}, false},
+		{"canceled", context.Canceled, false},
+		{"url error wrapping canceled", &url.Error{Op: "Post", URL: "https://api.router.com/v1/responses", Err: context.Canceled}, false},
+		{"decode wrapping canceled", &ResponseDecodeError{Err: context.Canceled}, false},
+		{"permanent url error", &url.Error{Op: "parse", URL: "://bad", Err: errors.New("invalid URL")}, false},
+		{"http 400", &HTTPError{Status: 400}, false},
+		{"plain error", errors.New("nope"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsRetryable(tc.err); got != tc.want {
+				t.Fatalf("IsRetryable(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 

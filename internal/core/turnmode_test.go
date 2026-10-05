@@ -271,6 +271,65 @@ func TestTurnWaitsOutARateLimitOnTheOnlyCredential(t *testing.T) {
 	}
 }
 
+// A dropped connection is a network blip, not a reason to ask the person:
+// the turn retries the same model and carries on. With the only model pinned,
+// this used to pause the run with "I couldn't reach a model".
+func TestTurnRetriesThroughDroppedConnections(t *testing.T) {
+	var calls int
+	restore := retryDelay
+	retryDelay = func(int) time.Duration { return 10 * time.Millisecond }
+	t.Cleanup(func() { retryDelay = restore })
+	e, _ := testEngine(t)
+	workspace := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if instructions, _ := body["instructions"].(string); !strings.Contains(instructions, systemPromptLead) {
+			_ = json.NewEncoder(w).Encode(responsesText("Title"))
+			return
+		}
+		calls++
+		if calls <= 3 {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		_ = json.NewEncoder(w).Encode(responsesText("done"))
+	}))
+	t.Cleanup(srv.Close)
+	cfg := config.Config{
+		WorkspaceRoot: workspace,
+		Providers:     map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: srv.URL}},
+		Router:        config.RouterConfig{DisableSwitch: true, DefaultModel: "openai/gpt-5.6-terra"},
+	}
+	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
+	req := agentproto.TaskRequest{Spec: "answer", Budget: agentproto.Budget{MaxUSD: 5, MaxTokens: 1_000_000, MaxWallClock: time.Minute}, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"}}
+	sid, results, err := e.Start(context.Background(), req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := <-results; r.Status != agentproto.Pass {
+		t.Fatalf("result = %+v", r)
+	}
+	retries := 0
+	es, _ := e.store.EventsAfter(context.Background(), sid, 0)
+	for _, ev := range es {
+		if ev.Type == "routing.retry" && strings.Contains(string(ev.Data), `"transport":true`) {
+			retries++
+		}
+		if ev.Type == "limit.reached" {
+			t.Fatalf("a dropped connection must not ask the person: %s", ev.Data)
+		}
+	}
+	if retries != 3 {
+		t.Fatalf("transport retries = %d, want 3", retries)
+	}
+}
+
 // A model the provider refuses for this account (here, one that needs a
 // provider key the account lacks) is routed around rather than failing the
 // turn, as a Bedrock-only discovered model once did.
