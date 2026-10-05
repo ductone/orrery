@@ -95,6 +95,8 @@ type anchorVersion struct {
 	// byEdit marks a version this session's own successful edit produced.
 	byEdit  bool
 	anchors map[string]rememberedAnchor
+	// content is the version's text, to align it with the current file.
+	content []string
 }
 
 type anchorDialect string
@@ -565,7 +567,7 @@ func appendAnchorVersion(history []anchorVersion, version string, byEdit bool, l
 			anchors[line.Hash] = rememberedAnchor{}
 		}
 	}
-	history = append(history, anchorVersion{version: version, byEdit: byEdit, anchors: anchors})
+	history = append(history, anchorVersion{version: version, byEdit: byEdit, anchors: anchors, content: lineText(lines)})
 	if len(history) > anchorHistoryVersions {
 		history = history[len(history)-anchorHistoryVersions:]
 	}
@@ -591,14 +593,15 @@ func (r *Registry) translateStaleAnchors(p *hashline.Patch, current []hashline.L
 		if r.anchorPresent(current, p.Hunks[i].Anchor) {
 			continue
 		}
-		remembered, ok := lookupRemembered(snapshot.history, p.Hunks[i].Anchor)
+		remembered, version, ok := lookupRemembered(snapshot.history, p.Hunks[i].Anchor)
 		if !ok {
 			continue
 		}
-		line, ok := findRememberedLine(current, remembered)
-		if !ok {
+		at, ok := retainedLine(version.content, lineText(current), remembered.number-1)
+		if !ok || current[at].Text != remembered.text {
 			continue
 		}
+		line := current[at]
 		old := p.Hunks[i].Anchor
 		p.Hunks[i].Anchor = line.Hash
 		p.Hunks[i].Line = line.Number
@@ -620,51 +623,82 @@ func (r *Registry) anchorPresent(lines []hashline.Line, anchor string) bool {
 // anchor unambiguously. A contextual hash is valid only for the neighbours of
 // the version that produced it, so a later version must not shadow it. An
 // empty remembered anchor marks one that matched several lines.
-func lookupRemembered(history []anchorVersion, anchor string) (rememberedAnchor, bool) {
+func lookupRemembered(history []anchorVersion, anchor string) (rememberedAnchor, anchorVersion, bool) {
 	for i := 0; i < len(history); i++ {
 		remembered, ok := history[i].anchors[anchor]
 		if !ok {
 			continue
 		}
 		if remembered.number == 0 {
-			return rememberedAnchor{}, false
+			return rememberedAnchor{}, anchorVersion{}, false
 		}
-		return remembered, true
+		return remembered, history[i], true
 	}
-	return rememberedAnchor{}, false
+	return rememberedAnchor{}, anchorVersion{}, false
 }
 
-// findRememberedLine locates the remembered line's text in the current file,
-// preferring the occurrence nearest its remembered line number. The match must
-// be unambiguous within that preference: two occurrences equally near, or none
-// at all, cannot be translated.
-func findRememberedLine(lines []hashline.Line, remembered rememberedAnchor) (hashline.Line, bool) {
-	best, second := -1, -1
-	for i, line := range lines {
-		if line.Text != remembered.text {
-			continue
-		}
-		d := abs(line.Number - remembered.number)
-		if best < 0 || d < abs(lines[best].Number-remembered.number) {
-			best, second = i, best
-		} else if second < 0 || d < abs(lines[second].Number-remembered.number) {
-			second = i
-		}
-	}
-	if best < 0 {
-		return hashline.Line{}, false
-	}
-	if second >= 0 && abs(lines[best].Number-remembered.number) == abs(lines[second].Number-remembered.number) {
-		return hashline.Line{}, false
-	}
-	return lines[best], true
-}
+// maxAlignCells bounds the alignment table retainedLine builds for the
+// region the session's edits changed; past it, anchors are not translated.
+const maxAlignCells = 4_000_000
 
-func abs(n int) int {
-	if n < 0 {
-		return -n
+// retainedLine maps line old (0-based) of an earlier version to its index in
+// the current file, when the session's own edits left that line in place. The
+// versions are aligned by their common prefix and suffix and a longest common
+// subsequence of the rest, so a line whose text merely recurs elsewhere (a
+// closing brace after its block was deleted) is not mistaken for it.
+func retainedLine(before, after []string, old int) (int, bool) {
+	if old < 0 || old >= len(before) {
+		return 0, false
 	}
-	return n
+	prefix := 0
+	for prefix < len(before) && prefix < len(after) && before[prefix] == after[prefix] {
+		prefix++
+	}
+	if old < prefix {
+		return old, true
+	}
+	suffix := 0
+	for suffix < len(before)-prefix && suffix < len(after)-prefix && before[len(before)-1-suffix] == after[len(after)-1-suffix] {
+		suffix++
+	}
+	if old >= len(before)-suffix {
+		return old - len(before) + len(after), true
+	}
+	b, a := before[prefix:len(before)-suffix], after[prefix:len(after)-suffix]
+	if len(b)*len(a) > maxAlignCells {
+		return 0, false
+	}
+	// lcs[i][j] is the common subsequence length of b[i:] and a[j:].
+	lcs := make([][]int, len(b)+1)
+	for i := range lcs {
+		lcs[i] = make([]int, len(a)+1)
+	}
+	for i := len(b) - 1; i >= 0; i-- {
+		for j := len(a) - 1; j >= 0; j-- {
+			if b[i] == a[j] {
+				lcs[i][j] = lcs[i+1][j+1] + 1
+			} else {
+				lcs[i][j] = max(lcs[i+1][j], lcs[i][j+1])
+			}
+		}
+	}
+	for i, j := 0, 0; i < len(b) && j < len(a); {
+		switch {
+		case b[i] == a[j] && lcs[i][j] == lcs[i+1][j+1]+1:
+			if prefix+i == old {
+				return prefix + j, true
+			}
+			i, j = i+1, j+1
+		case lcs[i+1][j] >= lcs[i][j+1]:
+			if prefix+i == old {
+				return 0, false
+			}
+			i++
+		default:
+			j++
+		}
+	}
+	return 0, false
 }
 
 func (r *Registry) anchorMatches(candidate, anchor string) bool {

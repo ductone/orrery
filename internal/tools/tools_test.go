@@ -498,3 +498,64 @@ func TestEditTranslatesAnchorsFromBeforeOwnEdits(t *testing.T) {
 		})
 	}
 }
+
+// A closing brace's old anchor must not be translated to a different brace
+// after the session's own edit deleted the block it closed.
+func TestEditDoesNotTranslateToARecurringLineAfterItsOriginalIsDeleted(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "file.go")
+	if err := os.WriteFile(path, []byte("func a() {\n\tx()\n}\nfunc b() {\n\ty()\n}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	state := &SessionState{}
+	r := NewWithStateDialect(root, state, "hashline-contextual")
+	value, err := r.Call(context.Background(), "read", map[string]any{"path": "file.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := value.([]hashline.Line)
+	funcA, closeA := lines[0].Hash, lines[2].Hash
+	if _, err := r.Call(context.Background(), "edit", map[string]any{
+		"path":  "file.go",
+		"hunks": []any{map[string]any{"anchor": funcA, "delete": float64(3), "insert": []any{}, "allow_structural_change": true}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Call(context.Background(), "edit", map[string]any{
+		"path":  "file.go",
+		"hunks": []any{map[string]any{"anchor": closeA, "delete": float64(1), "insert": []any{"} // end"}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "stale anchor") {
+		t.Fatalf("a deleted line's anchor must stay stale, got %v", err)
+	}
+	b, _ := os.ReadFile(path)
+	if string(b) != "func b() {\n\ty()\n}\n" {
+		t.Fatalf("content=%q", b)
+	}
+}
+
+func TestRetainedLine(t *testing.T) {
+	before := []string{"a", "}", "b", "c", "}", "d"}
+	for _, tc := range []struct {
+		name  string
+		after []string
+		old   int
+		want  int
+		ok    bool
+	}{
+		{"unchanged prefix", []string{"a", "}", "B", "c", "}", "d"}, 1, 1, true},
+		{"after an insertion", []string{"a", "new", "}", "b", "c", "}", "d"}, 3, 4, true},
+		{"deleted line", []string{"a", "b", "c", "}", "d"}, 1, 0, false},
+		{"recurring text kept elsewhere", []string{"a", "b", "c", "}", "d"}, 4, 3, true},
+		{"changed line", []string{"a", "}", "b", "C", "}", "d"}, 3, 0, false},
+		{"suffix", []string{"x", "}", "b", "c", "}", "d"}, 5, 5, true},
+		{"out of range", []string{"a"}, 9, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := retainedLine(before, tc.after, tc.old)
+			if ok != tc.ok || (ok && got != tc.want) {
+				t.Fatalf("retainedLine(%d) = %d, %v; want %d, %v", tc.old, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
