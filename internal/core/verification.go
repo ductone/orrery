@@ -326,6 +326,7 @@ func (e *Engine) verificationSatisfied(ctx context.Context, sid, root string, pr
 		return true
 	}
 	cfg, _, _, _, _ := e.runtimeSnapshot()
+	cfg.Jev = cfg.EffectiveJev()
 	if !cfg.Jev.Review || cfg.Jev.APIKey == "" || len(progress.checksSinceEdit) == 0 {
 		return false
 	}

@@ -133,6 +133,8 @@ Overrides change only the fields they set. An entry whose id has no provider pre
 
 Orrery can ask TypeSafe's [Jev](https://docs.typesafe.ai/) classifier the same questions its own heuristics answer, and record the answers without acting on them. Enable sites under `jev.shadow`; nothing is sent unless a site is listed.
 
+Jev uses the resolved `providers.ramp` key and base URL, which default to `https://api.router.com`, so no separate key is needed. Setting `jev.api_key` instead uses TypeSafe directly by default, and `jev.base_url` overrides the endpoint either way.
+
 | Site | Asked when | Compared with |
 |---|---|---|
 | `phase` | every turn, after routing | the phase the router used (review workers excluded, since their phase is fixed) |

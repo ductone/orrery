@@ -81,6 +81,7 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 			return e.controlMemory(ctx, sid, root, action, a, emit)
 		})
 	}
+	runtimeCfg.Jev = runtimeCfg.EffectiveJev()
 	if runtimeCfg.Jev.SearchRanking && runtimeCfg.Jev.APIKey != "" {
 		r.EnableSearchRanking(builtin.JevRanker{Client: jev.New(runtimeCfg.Jev.APIKey, runtimeCfg.Jev.BaseURL, runtimeCfg.Jev.Model, runtimeCfg.Jev.Timeout()), Concurrency: 16})
 	}

@@ -110,6 +110,7 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 
 func (e *Engine) reviewClassifier() review.Classifier {
 	cfg, _, _, _, _ := e.runtimeSnapshot()
+	cfg.Jev = cfg.EffectiveJev()
 	if !cfg.Jev.Review || cfg.Jev.APIKey == "" {
 		return nil
 	}
@@ -220,7 +221,7 @@ func planEvent(p review.Plan) map[string]any {
 // it with the review's outcome. It makes no classifier call of its own.
 func (e *Engine) recordReviewRisk(ctx context.Context, sid string, p review.Plan) string {
 	cfg, _, _, _, _ := e.runtimeSnapshot()
-	if !cfg.Jev.Shadows("review") || p.Bug == nil {
+	if !cfg.EffectiveJev().Shadows("review") || p.Bug == nil {
 		return ""
 	}
 	files := make([]string, 0, len(p.Decisions))

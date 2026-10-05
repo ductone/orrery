@@ -85,6 +85,7 @@ func (e *Engine) shadowAsk(ctx context.Context, sid, site, version string, turn 
 		return ""
 	}
 	cfg, _, _, _, _ := e.runtimeSnapshot()
+	cfg.Jev = cfg.EffectiveJev()
 	id := uuid.NewString()
 	obs := store.ShadowObservation{ID: id, SessionID: sid, TurnID: e.currentTurnID(ctx, sid), Turn: turn, Site: site, QuestionVersion: version, Questions: questions, State: state, Baseline: baseline}
 	if err := e.store.CreateShadow(context.WithoutCancel(ctx), obs); err != nil {
@@ -138,7 +139,7 @@ func (e *Engine) shadowTurn(ctx context.Context, s store.Session, stored []store
 	cfg, _, _, _, _ := e.runtimeSnapshot()
 	// Difficulty showed no signal in shadow data (frontier and efficient
 	// turns scored alike), so only the phase is asked.
-	questions := shadow.TurnQuestions(cfg.Jev.Shadows("phase"))
+	questions := shadow.TurnQuestions(cfg.EffectiveJev().Shadows("phase"))
 	if len(questions) == 0 {
 		return
 	}

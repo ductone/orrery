@@ -164,6 +164,42 @@ func TestJevShadowConfig(t *testing.T) {
 	}
 }
 
+func TestEffectiveJev(t *testing.T) {
+	t.Setenv("ORRERY_TEST_RAMP_KEY", " ramp-secret ")
+	t.Setenv("ORRERY_TEST_JEV_KEY", " jev-secret ")
+	for _, tt := range []struct {
+		name, body, key, baseURL string
+		review                   bool
+	}{
+		{"ramp", "providers:\n  ramp: {api_key: '!env ORRERY_TEST_RAMP_KEY'}\njev: {review: true}\n", "ramp-secret", "https://api.router.com", true},
+		{"explicit", "providers:\n  ramp: {api_key: ramp}\njev: {api_key: '!env ORRERY_TEST_JEV_KEY', base_url: 'https://jev.example', review: true}\n", "jev-secret", "https://jev.example", true},
+		{"direct default", "providers:\n  ramp: {api_key: ramp}\njev: {api_key: direct, review: true}\n", "direct", "", true},
+		{"ramp base", "providers:\n  ramp: {api_key: ramp, base_url: 'https://router.example'}\njev: {review: true}\n", "ramp", "https://router.example", true},
+		{"base override", "providers:\n  ramp: {api_key: ramp, base_url: 'https://router.example'}\njev: {base_url: 'https://jev.example', review: true}\n", "ramp", "https://jev.example", true},
+		{"ramp keys", "providers:\n  ramp: {api_keys: ['', '!env ORRERY_TEST_RAMP_KEY']}\njev: {review: true}\n", "ramp-secret", "https://api.router.com", true},
+		{"switches off", "providers:\n  ramp: {api_key: ramp}\n", "ramp", "https://api.router.com", false},
+		{"disabled", "jev: {}\n", "", "", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "c.yaml")
+			if err := os.WriteFile(path, []byte(tt.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			j := cfg.EffectiveJev()
+			if j.APIKey != tt.key || j.BaseURL != tt.baseURL || j.Review != tt.review {
+				t.Fatalf("effective Jev = %+v", j)
+			}
+			if j.Routing || j.SearchRanking || j.Shadows("phase") {
+				t.Fatal("fallback must not enable feature switches")
+			}
+		})
+	}
+}
+
 func TestResolvePrecedence(t *testing.T) {
 	home, cwd := t.TempDir(), t.TempDir()
 	t.Setenv("ORRERY_HOME", home)

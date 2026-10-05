@@ -40,6 +40,8 @@ type Config struct {
 // answers are recorded next to the harness's own decision and never change
 // behaviour. Every listed site sends session content (task text, tool calls,
 // diffs) to TypeSafe, so nothing runs unless sites are named explicitly.
+// APIKey defaults to the ramp provider's resolved key when omitted. BaseURL
+// defaults to the ramp endpoint with that key, or TypeSafe with an explicit key.
 type JevConfig struct {
 	APIKey  string `yaml:"api_key"`
 	BaseURL string `yaml:"base_url"`
@@ -62,6 +64,32 @@ type JevConfig struct {
 	// TimeoutSeconds bounds each asynchronous call. Optional: zero means
 	// defaultJevTimeout.
 	TimeoutSeconds int `yaml:"timeout_seconds"`
+}
+
+// EffectiveJev returns Jev's configuration with the resolved ramp credentials
+// as a fallback. An explicit Jev key keeps the direct TypeSafe default.
+func (c Config) EffectiveJev() JevConfig {
+	j := c.Jev
+	if j.APIKey != "" {
+		return j
+	}
+	p := c.Providers["ramp"]
+	j.APIKey = p.APIKey
+	if j.APIKey == "" {
+		for _, key := range p.Keys {
+			if key != "" {
+				j.APIKey = key
+				break
+			}
+		}
+	}
+	if j.APIKey != "" && j.BaseURL == "" {
+		j.BaseURL = p.BaseURL
+		if j.BaseURL == "" {
+			j.BaseURL = "https://api.router.com"
+		}
+	}
+	return j
 }
 
 // JevShadowSites are the decision sites that can be shadowed. "difficulty"
@@ -465,8 +493,8 @@ func load(path string, overrides map[string]string, secrets bool) (Config, error
 			return cfg, fmt.Errorf("config: jev.shadow site %q is unknown; valid sites are %s", site, strings.Join(JevShadowSites, ", "))
 		}
 	}
-	if (len(cfg.Jev.Shadow) > 0 || cfg.Jev.SearchRanking || cfg.Jev.Review || cfg.Jev.Routing) && cfg.Jev.APIKey == "" {
-		return cfg, errors.New("config: jev.shadow, jev.search_ranking, jev.review, and jev.routing require jev.api_key")
+	if (len(cfg.Jev.Shadow) > 0 || cfg.Jev.SearchRanking || cfg.Jev.Review || cfg.Jev.Routing) && cfg.EffectiveJev().APIKey == "" {
+		return cfg, errors.New("config: jev.shadow, jev.search_ranking, jev.review, and jev.routing require jev.api_key or providers.ramp credentials")
 	}
 	if cfg.Jev.TimeoutSeconds < 0 {
 		return cfg, errors.New("config: jev.timeout_seconds must be non-negative")

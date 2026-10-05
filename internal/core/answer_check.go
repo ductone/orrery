@@ -34,6 +34,7 @@ var answerQuestion = map[string]jev.Question{"addresses_request": jev.Noul(
 // request, returning the request it was checked against.
 func (e *Engine) answerOffTopic(ctx context.Context, sid string, s store.Session, latest, result string, emit EmitFunc) (string, bool) {
 	cfg, _, _, _, _ := e.runtimeSnapshot()
+	cfg.Jev = cfg.EffectiveJev()
 	request := strings.TrimSpace(latest)
 	if request == "" {
 		request = strings.TrimSpace(s.Spec)

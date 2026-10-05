@@ -52,6 +52,7 @@ func endsWithUserInstruction(stored []store.Message) bool {
 func (e *Engine) instructionPhase(ctx context.Context, s store.Session, stored []store.Message, emit EmitFunc) *router.InstructionPhase {
 	choice := &router.InstructionPhase{Phase: router.Plan, Source: "default"}
 	cfg, _, _, _, _ := e.runtimeSnapshot()
+	cfg.Jev = cfg.EffectiveJev()
 	if !cfg.Jev.Routing || cfg.Jev.APIKey == "" {
 		return choice
 	}

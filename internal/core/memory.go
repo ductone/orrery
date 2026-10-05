@@ -320,7 +320,7 @@ func (e *Engine) emitMemoryRetrieved(ctx context.Context, sid string, cfg config
 // observation compared against the deterministic ranking after the fact.
 func (e *Engine) maybeShadowMemorySelect(ctx context.Context, sid string, turn int, records []store.MemoryRecord, query string) {
 	cfg, _, _, _, _ := e.runtimeSnapshot()
-	if !cfg.Memory.Jev.Selection || cfg.Jev.APIKey == "" {
+	if !cfg.Memory.Jev.Selection || cfg.EffectiveJev().APIKey == "" {
 		return
 	}
 	max := cfg.Memory.Jev.MaxCandidatesLimit()
@@ -351,7 +351,7 @@ func (e *Engine) maybeShadowMemorySelect(ctx context.Context, sid string, turn i
 // compaction_gate.go and the token-pressure path remain authoritative.
 func (e *Engine) maybeShadowCompactionBenefit(ctx context.Context, sid string, turn, inputTokens, contextWindow int) {
 	cfg, _, _, _, _ := e.runtimeSnapshot()
-	if !cfg.Memory.Jev.CompactionBenefit || cfg.Jev.APIKey == "" {
+	if !cfg.Memory.Jev.CompactionBenefit || cfg.EffectiveJev().APIKey == "" {
 		return
 	}
 	state := map[string]any{
