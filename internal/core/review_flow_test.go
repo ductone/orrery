@@ -173,6 +173,33 @@ func emptyReply() map[string]any {
 func stateFile(state map[string]any) string {
 	f, _ := state["file"].(string)
 	return f
+
+}
+func TestReviewClassifierSeesTheLatestRequestAndPlan(t *testing.T) {
+	h := newReviewHarness(t, true)
+	h.write("internal/feature.go", "package internal\n")
+	ctx := context.Background()
+	if _, err := h.st.AcceptMessage(ctx, h.sid, "r1", "t1", "message", "h1", provider.Message{Role: "user", Content: "Rename the catalog export"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.st.SetTodos(ctx, h.sid, []store.Todo{{Text: "Rename the export function", Phase: "implement", Status: "in_progress"}}); err != nil {
+		t.Fatal(err)
+	}
+	var sawLatest atomic.Bool
+	h.jev = func(state map[string]any, q string) float64 {
+		task, _ := state["task"].(string)
+		if strings.Contains(task, "Rename the catalog export") && strings.Contains(task, "in_progress: Rename the export function") && !strings.Contains(task, "Add the feature") {
+			sawLatest.Store(true)
+		}
+		return 0.1
+	}
+	h.reviewer = func(string, int) map[string]any { return verdictJSON(true) }
+	if _, _, err := h.run(); err != nil {
+		t.Fatal(err)
+	}
+	if !sawLatest.Load() {
+		t.Fatal("classifier task must be the latest request plus the current todo plan, not the session's first message")
+	}
 }
 
 func TestReviewSkipsWhenOnlyProseAndAssetsChanged(t *testing.T) {

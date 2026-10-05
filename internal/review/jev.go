@@ -10,7 +10,7 @@ import (
 
 // QuestionVersion identifies the review questions below. Bump it when their
 // wording or criteria change, so recorded plans stay interpretable.
-const QuestionVersion = "review/v1"
+const QuestionVersion = "review/v2"
 
 // Per-question patch budgets. Jev is billed per input token and scores one
 // file or finding per call, so each call carries only what it is asked about.

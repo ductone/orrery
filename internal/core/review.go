@@ -46,10 +46,7 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 		e.emit(ctx, sid, "review.scope", map[string]any{"changed": changed}, emit)
 	}
 	classifier := e.reviewClassifier()
-	task := ""
-	if s, err := e.store.Session(ctx, sid); err == nil {
-		task = s.Spec
-	}
+	task := e.reviewTask(ctx, sid)
 	planCtx, cancel := context.WithTimeout(ctx, reviewPlanTimeout)
 	plan := review.Build(planCtx, review.ParseDiff(diff), task, classifier, review.Options{})
 	cancel()
@@ -113,6 +110,32 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 		}
 	}
 	return out.Pass, store.JSON(map[string]any{"pass": out.Pass, "findings": out.Findings, "notes": out.Notes, "families": families, "implementer_family": implementer}), nil
+}
+
+// reviewTask is the request the workspace diff is for: the person's latest
+// request, falling back to the session's first message, plus the current todo
+// plan with statuses. The plan has its own field so a short request such as
+// "Implement bead orrery-vau" still tells the classifier what the change means.
+func (e *Engine) reviewTask(ctx context.Context, sid string) string {
+	request := ""
+	if latest, err := e.store.LatestRequest(ctx, sid); err == nil {
+		request = strings.TrimSpace(latest)
+	}
+	if request == "" {
+		if s, err := e.store.Session(ctx, sid); err == nil {
+			request = strings.TrimSpace(s.Spec)
+		}
+	}
+	var plan []string
+	if todos, err := e.store.Todos(ctx, sid); err == nil {
+		for _, td := range todos {
+			plan = append(plan, td.Status+": "+td.Text)
+		}
+	}
+	if len(plan) == 0 {
+		return request
+	}
+	return request + "\n\nCURRENT TODO PLAN\n" + strings.Join(plan, "\n")
 }
 
 func (e *Engine) reviewClassifier() review.Classifier {
