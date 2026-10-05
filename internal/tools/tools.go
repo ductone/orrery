@@ -40,8 +40,6 @@ type Registry struct {
 	defs     []provider.Tool
 	handlers map[string]Handler
 	schemes  map[string]Handler
-	mu       sync.Mutex
-	jobs     map[string]*commandJob
 	state    *SessionState
 	dialect  anchorDialect
 	ranker   SearchRanker
@@ -55,7 +53,7 @@ func (r *Registry) SetJobFallback(f func(ctx context.Context, id, action string)
 	r.jobFallback = f
 }
 
-// SessionState holds edit recovery state across model turns. Engine tool
+// SessionState holds edit recovery and command jobs across model turns. Engine tool
 // registries are intentionally rebuilt each turn, so this state must be owned
 // by the session rather than by an individual Registry.
 type SessionState struct {
@@ -63,6 +61,7 @@ type SessionState struct {
 	anchorFailures map[string]int
 	noop           noopState
 	snapshots      map[string]fileSnapshot
+	jobs           map[string]*commandJob
 }
 
 type noopState struct {
@@ -157,7 +156,8 @@ func readDescription(d anchorDialect) string {
 type commandJob struct {
 	cmd  *exec.Cmd
 	path string
-	done chan error
+	done chan struct{}
+	err  error // Written before done closes; readers wait for done.
 }
 
 func New(root string) *Registry {
@@ -176,7 +176,7 @@ func NewWithStateDialect(root string, state *SessionState, dialect string) *Regi
 	}
 	r.add("edit", editDescription(r.dialect), schema(map[string]any{"path": str(), "hunks": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"anchor": anchor, "line": map[string]any{"type": "integer", "description": "The anchor's line number from the latest read. Needed only when identical lines share a hash."}, "offset": num(), "delete": num(), "insert": map[string]any{"type": "array", "items": str()}, "allow_structural_change": boolean()}, "required": []string{"anchor", "delete", "insert"}, "additionalProperties": false}}}, "path", "hunks"), r.edit)
 	r.add("exec", "Run a shell command in the workspace. Use background=true for long jobs.", schema(map[string]any{"command": str(), "background": boolean(), "timeout_seconds": num()}, "command"), r.run)
-	r.add("job", "Wait for, cancel, or read logs from a background exec job, or wait for (or check on) a worker job started by spawn.", schema(map[string]any{"id": str(), "action": map[string]any{"type": "string", "enum": []string{"wait", "cancel", "logs"}}}, "id", "action"), r.job)
+	r.add("job", "Wait for, cancel, or read logs from an exec command, or wait for (or check on) a worker job started by spawn. Accepts this session's cmd-… IDs, including the basename without .log from foreground exec log paths.", schema(map[string]any{"id": str(), "action": map[string]any{"type": "string", "enum": []string{"wait", "cancel", "logs"}}}, "id", "action"), r.job)
 	return r
 }
 
@@ -199,8 +199,11 @@ func NewReadOnlyWithStateDialect(root string, state *SessionState, dialect strin
 	if state.snapshots == nil {
 		state.snapshots = map[string]fileSnapshot{}
 	}
+	if state.jobs == nil {
+		state.jobs = map[string]*commandJob{}
+	}
 	state.mu.Unlock()
-	r := &Registry{root: root, handlers: map[string]Handler{}, schemes: map[string]Handler{}, jobs: map[string]*commandJob{}, state: state, dialect: anchorDialect(dialect)}
+	r := &Registry{root: root, handlers: map[string]Handler{}, schemes: map[string]Handler{}, state: state, dialect: anchorDialect(dialect)}
 	r.add("read", readDescription(r.dialect), schema(map[string]any{"path": str(), "start": num(), "limit": num(), "around_line": num()}, "path"), r.read)
 	r.add("search", searchDescription, searchSchema(false), r.search)
 	return r
@@ -770,18 +773,18 @@ func (r *Registry) run(ctx context.Context, a map[string]any) (any, error) {
 		f.Close()
 		return nil, err
 	}
-	j := &commandJob{cmd: cmd, path: path, done: make(chan error, 1)}
-	r.mu.Lock()
-	r.jobs[id] = j
-	r.mu.Unlock()
-	go func() { err := cmd.Wait(); f.Close(); j.done <- err; close(j.done) }()
+	j := &commandJob{cmd: cmd, path: path, done: make(chan struct{})}
+	r.state.mu.Lock()
+	r.state.jobs[id] = j
+	r.state.mu.Unlock()
+	go func() { j.err = cmd.Wait(); f.Close(); close(j.done) }()
 	if bg, _ := a["background"].(bool); bg {
 		return map[string]any{"id": id, "log": path}, nil
 	}
 	timeout := time.Duration(asInt(a["timeout_seconds"], 120)) * time.Second
 	select {
-	case err := <-j.done:
-		return commandSummary(path, err)
+	case <-j.done:
+		return commandSummary(path, j.err)
 	case <-time.After(timeout):
 		_ = cmd.Process.Kill()
 		return nil, fmt.Errorf("command timed out; log: %s", path)
@@ -792,9 +795,9 @@ func (r *Registry) run(ctx context.Context, a map[string]any) (any, error) {
 
 func (r *Registry) job(ctx context.Context, a map[string]any) (any, error) {
 	id := asString(a["id"])
-	r.mu.Lock()
-	j := r.jobs[id]
-	r.mu.Unlock()
+	r.state.mu.Lock()
+	j := r.state.jobs[id]
+	r.state.mu.Unlock()
 	if j == nil {
 		if r.jobFallback != nil {
 			return r.jobFallback(ctx, id, asString(a["action"]))
@@ -808,8 +811,8 @@ func (r *Registry) job(ctx context.Context, a map[string]any) (any, error) {
 		return map[string]any{"cancelled": j.cmd.Process.Kill() == nil}, nil
 	case "wait":
 		select {
-		case err := <-j.done:
-			return commandSummary(j.path, err)
+		case <-j.done:
+			return commandSummary(j.path, j.err)
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
