@@ -38,6 +38,11 @@ func TestTaskSectionLeadsWithTheLatestRequest(t *testing.T) {
 	if got := durableSpec(s); got != spec {
 		t.Fatalf("acknowledging a report changed the cached prefix:\n%s\n%s", spec, got)
 	}
+	first := provider.Request{System: "stable", Memory: "memory", DurableSpec: spec, Plan: "plan"}
+	second := provider.Request{System: "stable", Memory: "memory", DurableSpec: durableSpec(s), Plan: "plan", Messages: []provider.Message{{Role: "user", Content: currentRequest(s, "A different follow-up")}}}
+	if strings.Join(provider.SystemSections(first), "\n") != strings.Join(provider.SystemSections(second), "\n") {
+		t.Fatal("follow-up changed system sections")
+	}
 }
 
 func TestStoreTracksTheLatestRequest(t *testing.T) {

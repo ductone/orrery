@@ -100,6 +100,7 @@ type Request struct {
 // System, Memory, DurableSpec, Plan: stable instructions first, then the
 // pinned memory and durable state. Latest requests and pending reports travel
 // in Messages instead, so follow-ups preserve this prefix.
+func SystemSections(r Request) []string { return systemSections(r) }
 func systemSections(r Request) []string {
 	sections := []string{r.System}
 	if r.Memory != "" {
