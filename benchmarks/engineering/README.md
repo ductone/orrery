@@ -2,6 +2,10 @@
 
 This replay set measures whether Orrery can diagnose, edit, verify, and finish small software-engineering tasks. Every case runs in a temporary copy of a synthetic fixture, so repeated runs are isolated and do not mutate the checked-in source.
 
+The ten cases cover retry boundaries, immutable label merging, a concurrent counter, a multi-file rename, rune-aware truncation, wrapped errors, quoted configuration values, deduplication performance, documentation correction, and a diagnose-only question. Each fixture is a separate Go module, excluded from root `go test ./...` by its own `go.mod`.
+
+The diagnose-only case passes unchanged: its checksums reject edits to the source and tests rather than requiring a code fix. Acceptance does not grade the written diagnosis or detect newly added files. Its checksum command requires `sha256sum`.
+
 Run it with a configured model provider:
 
 ```sh
