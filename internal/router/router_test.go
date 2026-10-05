@@ -2,12 +2,14 @@ package router
 
 import (
 	"context"
-	"github.com/ductone/orrey/internal/config"
-	"github.com/ductone/orrey/internal/model"
-	"github.com/ductone/orrey/internal/store"
+	"math"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ductone/orrey/internal/config"
+	"github.com/ductone/orrey/internal/model"
+	"github.com/ductone/orrey/internal/store"
 )
 
 type ledger struct{ records []store.RoutingRecord }
@@ -223,5 +225,122 @@ func TestReviewFindingsNeedAFrontierModel(t *testing.T) {
 	// Workers created for other purposes are not affected.
 	if d := decideWith(t, c, RoutingState{Point: JobCreation, Phase: Explore, Stall: StallSignals{ReviewRejected: true}}); d.Model.Tier == model.Frontier && d.Model.ID != "ramp/claude-opus-5-5" {
 		t.Fatalf("unexpected %s", d.Model.ID)
+	}
+}
+
+func candidateByModel(d Decision, id string) (Candidate, bool) {
+	for _, c := range d.Candidates {
+		if c.Model == id {
+			return c, true
+		}
+	}
+	return Candidate{}, false
+}
+
+func TestSlowRouteLosesToFasterSlightlyPricierRoute(t *testing.T) {
+	// Same-tier efficient models; cheap slow route would win on price alone.
+	slow, _ := model.Get("ramp/claude-sonnet-5-5")
+	fast, _ := model.Get("openai/gpt-5.6-terra")
+	catalog := []model.ModelSpec{slow, fast}
+	base := decideWith(t, catalog, RoutingState{Point: TurnStart, Phase: Implement})
+	if base.Model.ID != slow.ID {
+		t.Fatalf("without stats expected cheaper %s, got %s", slow.ID, base.Model.ID)
+	}
+	d := decideWith(t, catalog, RoutingState{
+		Point: TurnStart, Phase: Implement,
+		Performance: map[string]RoutePerformance{
+			slow.ID: {Calls: 100, LatencySeconds: 40},
+			fast.ID: {Calls: 100, LatencySeconds: 4},
+		},
+	})
+	if d.Model.ID != fast.ID {
+		t.Fatalf("slow route still won: %s", d.Model.ID)
+	}
+	slowCand, ok := candidateByModel(d, slow.ID)
+	if !ok || slowCand.PerformancePenalty <= 0 {
+		t.Fatalf("slow candidate penalty=%v ok=%v", slowCand.PerformancePenalty, ok)
+	}
+	fastCand, _ := candidateByModel(d, fast.ID)
+	if fastCand.PerformancePenalty != 0 {
+		t.Fatalf("fast candidate penalty=%v", fastCand.PerformancePenalty)
+	}
+}
+
+func TestFewCallsShrinkPerformancePenalty(t *testing.T) {
+	now := time.Now()
+	full := performancePenalty(RoutePerformance{Calls: 100, LatencySeconds: 40, FailureRate: .1}, now)
+	shrunk := performancePenalty(RoutePerformance{Calls: 5, LatencySeconds: 40, FailureRate: .1}, now)
+	if full <= 0 || shrunk <= 0 {
+		t.Fatalf("full=%v shrunk=%v", full, shrunk)
+	}
+	weight := func(calls float64) float64 { return calls / (calls + performanceShrinkCalls) }
+	want := full * weight(5) / weight(100)
+	if math.Abs(shrunk-want) > 1e-9 {
+		t.Fatalf("shrunk=%v want %v (full=%v)", shrunk, want, full)
+	}
+	if shrunk >= full {
+		t.Fatalf("few calls must shrink penalty: shrunk=%v full=%v", shrunk, full)
+	}
+}
+
+func TestRecentSlowCallCoolsOffThenExpires(t *testing.T) {
+	slow, _ := model.Get("ramp/claude-sonnet-5-5")
+	fast, _ := model.Get("openai/gpt-5.6-terra")
+	catalog := []model.ModelSpec{slow, fast}
+	model.Install(catalog)
+	t.Cleanup(func() { model.Install(model.Catalog) })
+	ids := []string{slow.ID, fast.ID}
+	now := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)
+	p := &V1{cfg: config.RouterConfig{LambdaCost: .35}, ledger: &ledger{}, catalog: catalog, now: func() time.Time { return now }}
+	cool, _, err := p.Decide(context.Background(), RoutingState{
+		SessionID: "s", Point: TurnStart, Phase: Implement, InputTokens: 40_000, AvailableModels: ids,
+		Performance: map[string]RoutePerformance{
+			// No latency/reliability hit: only the cool-off should move the score.
+			slow.ID: {Calls: 50, LatencySeconds: 4, LastSlowCall: now.Add(-5 * time.Minute)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cool.Model.ID != fast.ID {
+		t.Fatalf("cool-off did not switch away from slow route: %s", cool.Model.ID)
+	}
+	cand, ok := candidateByModel(cool, slow.ID)
+	if !ok || cand.PerformancePenalty != slowCallCoolOffPenalty {
+		t.Fatalf("cool-off penalty=%v want %v", cand.PerformancePenalty, slowCallCoolOffPenalty)
+	}
+	later := now.Add(slowCallCoolOff + time.Minute)
+	p.now = func() time.Time { return later }
+	after, _, err := p.Decide(context.Background(), RoutingState{
+		SessionID: "s", Point: TurnStart, Phase: Implement, InputTokens: 40_000, AvailableModels: ids,
+		Performance: map[string]RoutePerformance{
+			slow.ID: {Calls: 50, LatencySeconds: 4, LastSlowCall: now.Add(-5 * time.Minute)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Model.ID != slow.ID {
+		t.Fatalf("after cool-off expected cheaper %s, got %s", slow.ID, after.Model.ID)
+	}
+	cand, ok = candidateByModel(after, slow.ID)
+	if !ok || cand.PerformancePenalty != 0 {
+		t.Fatalf("expired cool-off penalty=%v", cand.PerformancePenalty)
+	}
+}
+
+func TestNoStatsScoresAsBefore(t *testing.T) {
+	slow, _ := model.Get("ramp/claude-sonnet-5-5")
+	fast, _ := model.Get("openai/gpt-5.6-terra")
+	catalog := []model.ModelSpec{slow, fast}
+	without := decideWith(t, catalog, RoutingState{Point: TurnStart, Phase: Implement})
+	withEmpty := decideWith(t, catalog, RoutingState{Point: TurnStart, Phase: Implement, Performance: map[string]RoutePerformance{}})
+	if without.Model.ID != withEmpty.Model.ID {
+		t.Fatalf("empty performance map changed choice %s -> %s", without.Model.ID, withEmpty.Model.ID)
+	}
+	for _, c := range withEmpty.Candidates {
+		if c.Rejected == "" && c.PerformancePenalty != 0 {
+			t.Fatalf("unexpected penalty on %s: %v", c.Model, c.PerformancePenalty)
+		}
 	}
 }

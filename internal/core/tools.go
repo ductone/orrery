@@ -339,7 +339,7 @@ func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq ag
 		point = router.ReviewCreation
 	}
 	_, runtimeProviders, runtimePolicy, _, _ := e.runtimeSnapshot()
-	jobState := router.RoutingState{SessionID: sid, Turn: parentSession.Turn, Point: point, Phase: phase, InputTokens: estimate(spec), EstimatedOutput: 4000, AvailableModels: runtimeProviders.AvailableIDs(), ImplementerFamily: model.Family(child.Hints.ImplementerFamily)}
+	jobState := router.RoutingState{SessionID: sid, Turn: parentSession.Turn, Point: point, Phase: phase, InputTokens: estimate(spec), EstimatedOutput: 4000, AvailableModels: runtimeProviders.AvailableIDs(), ImplementerFamily: model.Family(child.Hints.ImplementerFamily), Performance: e.routePerformance(ctx)}
 	if opts.workerTurns > 0 {
 		child.Hints.WorkerTurns = opts.workerTurns
 	}

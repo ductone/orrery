@@ -80,6 +80,17 @@ type RoutingState struct {
 	AvailableModels   []string          `json:"available_models,omitempty"`
 	TierPin           model.Tier        `json:"tier_pin,omitempty"`
 	ImplementerFamily model.Family      `json:"implementer_family,omitempty"`
+	// Performance is recorded per-route latency and reliability, keyed by
+	// route id. Routes absent from the map are scored without a penalty.
+	Performance map[string]RoutePerformance `json:"performance,omitempty"`
+}
+
+// RoutePerformance summarizes a route's recorded calls for scoring.
+type RoutePerformance struct {
+	Calls          int       `json:"calls"`
+	LatencySeconds float64   `json:"latency_seconds"`
+	FailureRate    float64   `json:"failure_rate"`
+	LastSlowCall   time.Time `json:"last_slow_call,omitzero"`
 }
 
 // InstructionPhase is the phase chosen for a turn that starts with a new user
@@ -93,14 +104,16 @@ type InstructionPhase struct {
 }
 
 type Candidate struct {
-	Model         string        `json:"model"`
-	Effort        model.Effort  `json:"effort"`
-	Quality       float64       `json:"quality"`
-	CostUSD       float64       `json:"cost_usd"`
-	SwitchPenalty float64       `json:"switch_penalty"`
-	Score         float64       `json:"score"`
-	Cache         CacheEstimate `json:"cache"`
-	Rejected      string        `json:"rejected,omitempty"`
+	Model         string       `json:"model"`
+	Effort        model.Effort `json:"effort"`
+	Quality       float64      `json:"quality"`
+	CostUSD       float64      `json:"cost_usd"`
+	SwitchPenalty float64      `json:"switch_penalty"`
+	// PerformancePenalty is subtracted for recorded slowness and failures.
+	PerformancePenalty float64       `json:"performance_penalty"`
+	Score              float64       `json:"score"`
+	Cache              CacheEstimate `json:"cache"`
+	Rejected           string        `json:"rejected,omitempty"`
 }
 type Decision struct {
 	Model          model.ModelSpec   `json:"model"`
@@ -230,7 +243,10 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 		if s.CurrentModel != "" && m.ID != s.CurrentModel && warm {
 			c.SwitchPenalty += .08 + math.Min(.25, float64(s.InputTokens)/400000)
 		}
-		c.Score = c.Quality - p.cfg.LambdaCost*c.CostUSD - c.SwitchPenalty
+		if perf, ok := s.Performance[m.ID]; ok {
+			c.PerformancePenalty = performancePenalty(perf, p.now())
+		}
+		c.Score = c.Quality - p.cfg.LambdaCost*c.CostUSD - c.SwitchPenalty - c.PerformancePenalty
 		c.Effort = effortFor(m, s)
 		candidates = append(candidates, c)
 	}
@@ -297,6 +313,35 @@ func (p *V1) reviewHasAlternateFamily(s RoutingState) bool {
 		return true
 	}
 	return false
+}
+
+// Performance penalties keep slow or flaky routes from winning on price alone.
+// Latency and reliability penalties are shrunk toward zero for routes with few
+// calls (weight = calls/(calls+performanceShrinkCalls)); the cool-off is not.
+const (
+	performanceShrinkCalls  = 20
+	latencyBaselineSeconds  = 10.0
+	latencyPenaltyPerSecond = .01
+	maxLatencyPenalty       = .3
+	maxReliabilityPenalty   = .2
+	slowCallCoolOffPenalty  = .2
+	slowCallCoolOff         = 30 * time.Minute
+)
+
+// performancePenalty scores a route's recorded latency and reliability. Routes
+// with no stats get no penalty.
+func performancePenalty(perf RoutePerformance, now time.Time) float64 {
+	penalty := 0.0
+	if perf.Calls > 0 {
+		weight := float64(perf.Calls) / float64(perf.Calls+performanceShrinkCalls)
+		latency := math.Min(maxLatencyPenalty, math.Max(0, perf.LatencySeconds-latencyBaselineSeconds)*latencyPenaltyPerSecond)
+		reliability := maxReliabilityPenalty * math.Min(1, math.Max(0, perf.FailureRate))
+		penalty += weight * (latency + reliability)
+	}
+	if !perf.LastSlowCall.IsZero() && now.Sub(perf.LastSlowCall) < slowCallCoolOff {
+		penalty += slowCallCoolOffPenalty
+	}
+	return penalty
 }
 
 // discoveredQualityPenalty offsets the efficient-tier bonus for models known

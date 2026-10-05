@@ -78,6 +78,25 @@ func (e *Engine) markCompacted(sid string) {
 	defer e.mu.Unlock()
 	e.compactedLastTurn[sid] = true
 }
+
+// routePerformance loads recorded per-route latency and reliability for
+// scoring. Best effort: on error the router scores without penalties.
+func (e *Engine) routePerformance(ctx context.Context) map[string]router.RoutePerformance {
+	stats, err := e.store.ModelStats(ctx)
+	if err != nil || len(stats) == 0 {
+		return nil
+	}
+	out := make(map[string]router.RoutePerformance, len(stats))
+	for _, st := range stats {
+		fail := st.Truncated + st.Empty + st.Malformed + st.ProviderErrors
+		rate := 0.0
+		if st.Calls > 0 {
+			rate = float64(fail) / float64(st.Calls)
+		}
+		out[st.Route] = router.RoutePerformance{Calls: st.Calls, LatencySeconds: st.LatencySeconds, FailureRate: rate, LastSlowCall: st.LastSlowCall}
+	}
+	return out
+}
 func (e *Engine) Store() *store.Store { return e.store }
 func (e *Engine) Close() error {
 	e.waitShadows()
@@ -841,7 +860,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		}
 		newInstruction := endsWithUserInstruction(stored)
 		runtimeCfg, runtimeProviders, runtimePolicy, _, _ := e.runtimeSnapshot()
-		state := router.RoutingState{SessionID: sid, Turn: s.Turn + 1, Point: point, Phase: router.Phase(s.Phase), CurrentModel: currentModel, InputTokens: inputTokens, EstimatedOutput: 4000, HasImage: messagesHaveImages(stored), ToolContinuation: len(stored) > 0 && stored[len(stored)-1].Role == "tool", NewInstruction: newInstruction, Stall: stall, AvailableModels: runtimeProviders.AvailableIDs()}
+		state := router.RoutingState{SessionID: sid, Turn: s.Turn + 1, Point: point, Phase: router.Phase(s.Phase), CurrentModel: currentModel, InputTokens: inputTokens, EstimatedOutput: 4000, HasImage: messagesHaveImages(stored), ToolContinuation: len(stored) > 0 && stored[len(stored)-1].Role == "tool", NewInstruction: newInstruction, Stall: stall, AvailableModels: runtimeProviders.AvailableIDs(), Performance: e.routePerformance(ctx)}
 		if newInstruction {
 			state.InstructionPhase = e.instructionPhase(ctx, s, stored, emit)
 			state.Phase = state.InstructionPhase.Phase
