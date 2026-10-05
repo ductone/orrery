@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -9,42 +10,29 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-// The exec guard steers source changes to the edit tool, where they are
-// anchored, reviewable, and measured. It is not a security boundary: Orrery
-// runs inside an isolated workspace and is not an approval system. A missed
-// mutation costs little, while a false rejection costs the model a turn, so
-// the guard parses the command and rejects only writes it can see, to paths
-// inside the workspace. A command that does not parse is allowed.
-
-// harmlessTargets are write targets that never touch a file.
-var harmlessTargets = []string{"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"}
+// The exec guard rejects commands that destroy work the agent cannot recover:
+// discarded uncommitted changes, a force-push, or a recursive removal of the
+// workspace, its parents, or paths outside it. It is not a security boundary:
+// Orrery runs inside an isolated workspace and is not an approval system.
+// Writes inside the workspace (formatters, redirection, generators, sed -i)
+// are allowed; the final diff is reviewed independently whatever wrote it. A
+// command that does not parse is allowed.
 
 // wrappers run the command that follows their own flags.
 var wrappers = []string{"sudo", "doas", "env", "command", "builtin", "exec", "nice", "nohup", "time", "timeout", "xargs", "stdbuf", "ionice"}
-
-// interpreters run inline code whose file writes the guard looks for.
-var interpreters = []string{"python", "python2", "python3", "node", "deno", "bun", "ruby", "perl", "php"}
-
-// inlineWrites are file-writing calls recognised inside inline scripts.
-// Matched case-insensitively by method name, so os.WriteFile, ioutil.WriteFile,
-// and require("fs").writeFileSync are all caught.
-var inlineWrites = []string{".write_text(", ".write_bytes(", "writefilesync(", "writefile(", "os.create(", "file.write("}
 
 // shells run a script given with -c, which the guard parses in turn.
 var shells = []string{"sh", "bash", "zsh", "dash", "ksh"}
 
 type execGuard struct {
-	root string
-	cwd  string
-	// redirects maps each call to its statement's redirects; the parser hangs
-	// them on the statement, and Walk visits the statement first.
-	redirects map[*syntax.CallExpr][]*syntax.Redirect
-	depth     int
+	root  string
+	cwd   string
+	depth int
 }
 
-// sourceMutation reports why a command would modify files in the workspace,
-// or "" when it would not (or cannot be parsed).
-func sourceMutation(command, root string) string {
+// destructiveCommand reports why a command would discard work that cannot be
+// recovered, or "" when it would not (or cannot be parsed).
+func destructiveCommand(command, root string) string {
 	root = cleanRoot(root)
 	return (&execGuard{root: root, cwd: root}).script(command)
 }
@@ -54,26 +42,16 @@ func (g *execGuard) script(command string) string {
 	if err != nil {
 		return ""
 	}
-	if g.redirects == nil {
-		g.redirects = map[*syntax.CallExpr][]*syntax.Redirect{}
-	}
 	reason := ""
 	// Walk visits nodes in source order, so a cd applies to the commands after
 	// it. Subshell scoping is ignored; that only matters for commands that cd
-	// out of the workspace inside a subshell and write relative paths after it.
+	// inside a subshell and act on relative paths after it.
 	syntax.Walk(file, func(node syntax.Node) bool {
 		if reason != "" {
 			return false
 		}
-		switch n := node.(type) {
-		case *syntax.Stmt:
-			if call, ok := n.Cmd.(*syntax.CallExpr); ok {
-				g.redirects[call] = n.Redirs
-			}
-		case *syntax.Redirect:
-			reason = g.redirect(n)
-		case *syntax.CallExpr:
-			reason = g.call(n)
+		if c, ok := node.(*syntax.CallExpr); ok {
+			reason = g.call(c)
 		}
 		return reason == ""
 	})
@@ -93,23 +71,6 @@ func cleanRoot(root string) string {
 	return filepath.Clean(root)
 }
 
-func (g *execGuard) redirect(r *syntax.Redirect) string {
-	switch r.Op {
-	case syntax.RdrOut, syntax.AppOut, syntax.RdrClob, syntax.RdrAll, syntax.RdrAllClob, syntax.AppAll, syntax.AppAllClob, syntax.RdrInOut:
-	default:
-		// Input redirects, here-documents, and descriptor duplication (2>&1).
-		return ""
-	}
-	target, ok := literal(r.Word)
-	if !ok {
-		return "output redirect to a computed path " + quoteWord(r.Word)
-	}
-	if g.inWorkspace(target) {
-		return fmt.Sprintf("output redirect %s to %q", r.Op, target)
-	}
-	return ""
-}
-
 func (g *execGuard) call(c *syntax.CallExpr) string {
 	args := make([]string, 0, len(c.Args))
 	for _, w := range c.Args {
@@ -121,13 +82,12 @@ func (g *execGuard) call(c *syntax.CallExpr) string {
 		}
 		args = append(args, v)
 	}
-	return g.command(args, c)
+	return g.command(args)
 }
 
-// command checks one invocation. c is the enclosing call, used to reach its
-// here-document bodies for interpreters; it is nil for commands found inside
-// another command's arguments (xargs, find -exec).
-func (g *execGuard) command(args []string, c *syntax.CallExpr) string {
+// command checks one invocation. Commands found inside another command's
+// arguments (xargs, find -exec) arrive here with no enclosing call.
+func (g *execGuard) command(args []string) string {
 	if len(args) == 0 {
 		return ""
 	}
@@ -138,43 +98,15 @@ func (g *execGuard) command(args []string, c *syntax.CallExpr) string {
 		g.cd(rest)
 		return ""
 	case slices.Contains(wrappers, name):
-		return g.command(unwrap(name, rest), nil)
+		return g.command(unwrap(name, rest))
 	case name == "find":
 		return g.find(rest)
 	case slices.Contains(shells, name):
 		return g.shell(rest)
-	case name == "sed":
-		if sedInPlace(rest) && g.anyWorkspaceFile(sedFiles(rest)) {
-			return "sed -i edits files in place"
-		}
-		return ""
-	case name == "perl":
-		if perlInPlace(rest) && g.anyWorkspaceFile(perlFiles(rest)) {
-			return "perl -i edits files in place"
-		}
-	case name == "touch":
-		if target := g.firstWorkspaceOperand(rest); target != "" {
-			return fmt.Sprintf("touch creates or modifies %q", target)
-		}
-		return ""
-	case name == "tee":
-		if target := g.firstWorkspaceOperand(rest); target != "" {
-			return fmt.Sprintf("tee writes %q", target)
-		}
-		return ""
-	case name == "gofmt" || name == "goimports":
-		if slices.Contains(rest, "-w") && g.anyWorkspaceFile(operands(rest)) {
-			return name + " -w rewrites files"
-		}
-		return ""
-	case name == "go":
-		if len(rest) > 0 && rest[0] == "fmt" {
-			return "go fmt rewrites files"
-		}
-		return ""
-	}
-	if isInterpreter(name) {
-		return g.inlineScript(name, rest, c)
+	case name == "git":
+		return g.git(rest)
+	case name == "rm":
+		return g.rm(rest)
 	}
 	return ""
 }
@@ -229,10 +161,8 @@ func firstNonFlag(args []string) int {
 	return -1
 }
 
-// find mutates through -exec/-execdir/-ok running a mutating command.
-// -delete removes files but the guard only covers edits, as it always has.
-// The {} placeholder stands for files under find's starting points, so it is
-// replaced by them: find /tmp -exec gofmt -w {} + does not touch the workspace.
+// find runs commands through -exec/-execdir/-ok. The {} placeholder stands
+// for files under find's starting points, so it is replaced by them.
 func (g *execGuard) find(args []string) string {
 	var starts []string
 	for _, a := range args {
@@ -259,7 +189,7 @@ func (g *execGuard) find(args []string) string {
 					sub = append(sub, a)
 				}
 			}
-			if reason := g.command(sub, nil); reason != "" {
+			if reason := g.command(sub); reason != "" {
 				return reason
 			}
 			i = end
@@ -268,210 +198,210 @@ func (g *execGuard) find(args []string) string {
 	return ""
 }
 
-func sedInPlace(args []string) bool {
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--":
-			return false
-		case a == "--in-place" || strings.HasPrefix(a, "--in-place="):
-			return true
-		case strings.HasPrefix(a, "--"):
-		case a == "-e" || a == "-f" || a == "-l":
-			// The next argument is a script, script file, or line length.
-			i++
-		case strings.HasPrefix(a, "-") && len(a) > 1:
-			for _, ch := range a[1:] {
-				if ch == 'i' {
-					return true
-				}
-				// e and f take the rest of the cluster (or the next argument) as a value.
-				if ch == 'e' || ch == 'f' || ch == 'l' {
-					break
-				}
+// git rejects commands that discard work that cannot be recovered: a hard
+// reset, a forced clean, a checkout or restore that throws away working-tree
+// changes, dropping stashes, and a force-push. --force-with-lease is allowed.
+func (g *execGuard) git(args []string) string {
+	flags, pos := gitArgs(args)
+	if len(pos) == 0 {
+		return ""
+	}
+	switch pos[0] {
+	case "reset":
+		if slices.Contains(flags, "--hard") {
+			return "git reset --hard discards uncommitted changes"
+		}
+	case "clean":
+		for _, f := range flags {
+			if f == "--force" || f == "-f" || f == "-ff" || clusteredFlag(f, "f") {
+				return "git clean -f deletes untracked files"
+			}
+		}
+	case "checkout":
+		if gitCheckoutDiscards(flags, pos[1:]) {
+			return "git checkout -- discards working-tree changes"
+		}
+	case "restore":
+		if !gitRestoreStagedOnly(flags) {
+			return "git restore discards working-tree changes"
+		}
+	case "stash":
+		if len(pos) > 1 && (pos[1] == "drop" || pos[1] == "clear") {
+			return "git stash " + pos[1] + " discards stashed changes"
+		}
+	case "push":
+		for _, f := range flags {
+			if f == "--force" || f == "-f" || strings.HasPrefix(f, "--force=") || clusteredFlag(f, "f") {
+				return "git push --force overwrites remote history"
+			}
+		}
+		// A leading + on a refspec (git push origin +main) is a force-push.
+		// --force-with-lease is a flag, so it never reaches here.
+		for _, p := range pos[1:] {
+			if strings.HasPrefix(p, "+") {
+				return "git push --force overwrites remote history"
 			}
 		}
 	}
-	return false
+	return ""
 }
 
-// sedFiles returns sed's file operands: the positionals after the script,
-// which is the first positional unless -e or -f supplied it.
-func sedFiles(args []string) []string {
-	var positional []string
-	scripted := false
+// gitArgs splits git's global options from the subcommand and its arguments.
+func gitArgs(args []string) (flags, positional []string) {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case a == "--":
-			positional = append(positional, args[i+1:]...)
-			i = len(args)
-		case a == "-e" || a == "-f" || a == "--expression" || a == "--file":
-			scripted = true
-			i++
-		case strings.HasPrefix(a, "--expression=") || strings.HasPrefix(a, "--file="):
-			scripted = true
-		case a == "-l":
-			i++
-		case strings.HasPrefix(a, "-") && len(a) > 1:
-			// A bare -i may be followed by BSD sed's backup suffix argument.
-			if a == "-i" && i+1 < len(args) && args[i+1] == "" {
+			positional = append(positional, args[i:]...)
+			return flags, positional
+		case strings.HasPrefix(a, "-"):
+			flags = append(flags, a)
+			// Options that take a separate value, global and per-subcommand.
+			if a == "-C" || a == "-c" || a == "--git-dir" || a == "--work-tree" || a == "--namespace" || a == "-m" || a == "--message" || a == "-b" || a == "-B" {
 				i++
 			}
-			for _, ch := range a[1:] {
-				if ch == 'e' || ch == 'f' {
-					scripted = true
-					if strings.HasSuffix(a, string(ch)) {
-						i++
-					}
-					break
-				}
-			}
 		default:
 			positional = append(positional, a)
 		}
 	}
-	if !scripted && len(positional) > 0 {
-		positional = positional[1:]
-	}
-	return positional
+	return flags, positional
 }
 
-// perlFiles returns perl's file operands: the positionals after the program,
-// which is the first positional unless -e supplied it.
-func perlFiles(args []string) []string {
-	var positional []string
-	scripted := false
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--":
-			positional = append(positional, args[i+1:]...)
-			i = len(args)
-		case strings.HasPrefix(a, "-") && len(a) > 1 && len(positional) == 0:
-			for j, ch := range a[1:] {
-				if ch == 'e' || ch == 'E' {
-					scripted = true
-					if j == len(a)-2 {
-						i++
-					}
-					break
-				}
-				if strings.ContainsRune("MmIxCdDlF0", ch) {
-					break
-				}
-			}
-		default:
-			positional = append(positional, a)
-		}
+// gitCheckoutDiscards reports a checkout that throws away working-tree
+// changes: `checkout -- <paths>` or `checkout .`. Switching branches
+// (checkout <branch>, checkout -b) does not.
+func gitCheckoutDiscards(flags, rest []string) bool {
+	if slices.Contains(flags, "-b") || slices.Contains(flags, "-B") || slices.Contains(rest, "-b") || slices.Contains(rest, "-B") {
+		return false
 	}
-	if !scripted && len(positional) > 0 {
-		positional = positional[1:]
+	if i := slices.Index(rest, "--"); i >= 0 {
+		return i+1 < len(rest)
 	}
-	return positional
-}
-
-func operands(args []string) []string {
-	var out []string
-	for _, a := range args {
-		if !strings.HasPrefix(a, "-") || a == "-" {
-			out = append(out, a)
-		}
-	}
-	return out
-}
-
-// anyWorkspaceFile reports whether an in-place editor's files include one in
-// the workspace. No files at all means input from stdin or a guess the guard
-// cannot make, which is treated as a workspace edit.
-func (g *execGuard) anyWorkspaceFile(files []string) bool {
-	if len(files) == 0 {
-		return true
-	}
-	for _, f := range files {
-		if strings.HasPrefix(f, "\x00") || g.inWorkspace(f) {
+	for _, p := range rest {
+		if p == "." || p == "./" {
 			return true
 		}
 	}
 	return false
 }
 
-func perlInPlace(args []string) bool {
-	for _, a := range args {
+// gitRestoreStagedOnly reports a restore limited to the index. A restore
+// without --staged rewrites the working tree and discards its changes.
+func gitRestoreStagedOnly(flags []string) bool {
+	staged, worktree := false, false
+	for _, f := range flags {
+		switch f {
+		case "--staged", "--staged=true":
+			staged = true
+		case "--worktree", "--worktree=true":
+			worktree = true
+		}
+	}
+	return staged && !worktree
+}
+
+// clusteredFlag reports a short-option cluster carrying ch, such as -fd.
+func clusteredFlag(f, ch string) bool {
+	return strings.HasPrefix(f, "-") && !strings.HasPrefix(f, "--") && strings.Contains(f, ch)
+}
+
+// rm rejects a recursive removal whose operand is the workspace root, a
+// parent of it, /, ~, or a path outside the workspace. The OS temp dir and
+// /tmp are scratch space and allowed.
+func (g *execGuard) rm(args []string) string {
+	recursive := false
+	var operands []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		switch {
-		case a == "--" || !strings.HasPrefix(a, "-"):
-			// Perl stops at the program file or the first non-switch argument.
-			return false
+		case a == "--":
+			operands = append(operands, args[i+1:]...)
+			i = len(args)
+		case a == "--recursive":
+			recursive = true
 		case strings.HasPrefix(a, "--"):
+		case strings.HasPrefix(a, "-") && a != "-":
+			if strings.ContainsAny(a, "rR") {
+				recursive = true
+			}
+		default:
+			operands = append(operands, a)
+		}
+	}
+	if !recursive {
+		return ""
+	}
+	for _, op := range operands {
+		if g.rmDestroys(op) {
+			return fmt.Sprintf("rm -r %s removes files that cannot be recovered", op)
+		}
+	}
+	return ""
+}
+
+// rmDestroys reports whether a recursive rm operand would discard
+// irrecoverable work: the workspace root, a parent of it, /, ~, or anything
+// outside the workspace except the OS temp dir and /tmp.
+func (g *execGuard) rmDestroys(op string) bool {
+	if strings.HasPrefix(op, "\x00") {
+		// A computed operand could be anything, including the workspace.
+		return true
+	}
+	if op == "/" || op == "~" || strings.HasPrefix(op, "~/") {
+		return true
+	}
+	if g.root == "" {
+		return !rmScratch(op)
+	}
+	abs := g.resolve(op)
+	if abs == "" {
+		return true
+	}
+	// Scratch paths are checked before resolution: the OS temp dir is often a
+	// symlink, and resolving it would hide that the operand is disposable.
+	if rmScratch(op) || rmScratch(abs) {
+		return false
+	}
+	rel, err := filepath.Rel(g.root, abs)
+	if err != nil {
+		return true
+	}
+	// The workspace root itself, or a parent of it. A path inside the
+	// workspace is the agent's own work and is allowed.
+	return rel == "." || rel == ".." || strings.HasPrefix(rel, "../")
+}
+
+// rmScratch reports paths that hold nothing but disposable files: /tmp and
+// the OS temp dir, plus anything nested under them.
+func rmScratch(p string) bool {
+	clean := filepath.Clean(p)
+	for _, tmp := range []string{"/tmp", filepath.Clean(os.TempDir())} {
+		if tmp == "" || tmp == "." {
 			continue
 		}
-		for _, ch := range a[1:] {
-			if ch == 'i' {
-				return true
-			}
-			// Switches that take the rest of the cluster as a value.
-			if strings.ContainsRune("eEMmIxCdDlF0", ch) {
-				break
-			}
+		if clean == tmp || strings.HasPrefix(clean, tmp+"/") || strings.HasPrefix(clean, tmp+string(filepath.Separator)) {
+			return true
 		}
 	}
 	return false
-}
-
-func (g *execGuard) firstWorkspaceOperand(args []string) string {
-	for _, a := range args {
-		if strings.HasPrefix(a, "-") && a != "-" {
-			continue
-		}
-		if strings.HasPrefix(a, "\x00") {
-			return strings.TrimPrefix(a, "\x00")
-		}
-		if g.inWorkspace(a) {
-			return a
-		}
-	}
-	return ""
-}
-
-func isInterpreter(name string) bool {
-	if slices.Contains(interpreters, name) {
-		return true
-	}
-	// python3.12 and the like.
-	return strings.HasPrefix(name, "python") && strings.Trim(strings.TrimPrefix(name, "python"), "0123456789.") == ""
-}
-
-// inlineScript looks for file-writing calls in code passed on the command line
-// or in a here-document. A script file argument is not read: its writes are
-// out of the guard's sight, as they always have been.
-func (g *execGuard) inlineScript(name string, args []string, c *syntax.CallExpr) string {
-	var code []string
-	for _, a := range args {
-		code = append(code, strings.TrimPrefix(a, "\x00"))
-	}
-	if c != nil {
-		for _, r := range g.redirects[c] {
-			if r.Hdoc != nil {
-				code = append(code, wordText(r.Hdoc))
-			}
-		}
-	}
-	text := strings.ToLower(strings.Join(code, "\n"))
-	for _, call := range inlineWrites {
-		if strings.Contains(text, call) {
-			return fmt.Sprintf("inline %s script calls %s", name, strings.TrimSuffix(call, "("))
-		}
-	}
-	return ""
 }
 
 // shell checks the script passed to sh -c. Nesting is bounded so a
 // pathological command cannot recurse without limit.
 func (g *execGuard) shell(args []string) string {
-	for i, a := range args {
-		if a == "-c" && i+1 < len(args) && g.depth < 4 {
+	// A shell's own flags precede -c, and -c takes the script as its value.
+	for i := 0; i < len(args) && g.depth < 4; i++ {
+		a := args[i]
+		switch {
+		case a == "-c" && i+1 < len(args):
 			nested := &execGuard{root: g.root, cwd: g.cwd, depth: g.depth + 1}
 			return nested.script(strings.TrimPrefix(args[i+1], "\x00"))
+		case strings.HasPrefix(a, "-"):
+		case strings.Contains(a, "="):
+			// An assignment (sh VAR=x -c ...) is not the script.
+		default:
+			// The command name: this shell runs a file, not inline code.
+			return ""
 		}
 	}
 	return ""
@@ -490,27 +420,6 @@ func (g *execGuard) resolve(p string) string {
 		p = filepath.Join(resolved, filepath.Base(p))
 	}
 	return p
-}
-
-// inWorkspace reports whether a write target is a workspace file the guard
-// protects. Unknown locations count as inside, except harmless devices.
-// Orrery's own .orrery directory is scratch space, not source.
-func (g *execGuard) inWorkspace(target string) bool {
-	if slices.Contains(harmlessTargets, target) || strings.HasPrefix(target, "/dev/fd/") {
-		return false
-	}
-	if g.root == "" {
-		return true
-	}
-	abs := g.resolve(target)
-	if abs == "" {
-		return true
-	}
-	rel, err := filepath.Rel(g.root, abs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
-		return false
-	}
-	return rel != ".orrery" && !strings.HasPrefix(rel, ".orrery/")
 }
 
 // literal returns a word's value when it contains no expansions.

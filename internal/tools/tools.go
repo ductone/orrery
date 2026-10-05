@@ -559,8 +559,8 @@ func (r *Registry) run(ctx context.Context, a map[string]any) (any, error) {
 	if cmdText == "" {
 		return nil, errors.New("command required")
 	}
-	if reason := sourceMutation(cmdText, r.root); reason != "" {
-		return nil, fmt.Errorf("exec rejected: %s would modify workspace files. Use the edit tool for source changes so they are anchored, reviewable, and measured. Read-only commands, and writes to /dev/null, .orrery/, or paths outside the workspace, are allowed", reason)
+	if reason := destructiveCommand(cmdText, r.root); reason != "" {
+		return nil, fmt.Errorf("exec rejected: %s would discard work that cannot be recovered. Uncommitted changes may belong to the person; leave them alone, or ask.", reason)
 	}
 	cmd := exec.CommandContext(ctx, "sh", "-lc", cmdText)
 	cmd.Dir = r.root

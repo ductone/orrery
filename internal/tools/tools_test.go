@@ -20,20 +20,22 @@ func TestExecFailureIsAnError(t *testing.T) {
 		t.Fatalf("value=%v error=%v", v, err)
 	}
 }
-func TestExecRejectsSourceMutationFallbacks(t *testing.T) {
+func TestExecAllowsWorkspaceWrites(t *testing.T) {
 	r := New(t.TempDir())
 	for _, command := range []string{
-		`touch pkg/new.go`,
-		`python3 -c 'from pathlib import Path; Path("pkg/new.go").write_text("package x")'`,
-		`gofmt -w pkg/file.go`,
-		`printf 'package x' > pkg/new.go`,
+		`touch new.go`,
+		`gofmt -w new.go`,
+		`printf 'package x\n' > new.go`,
 	} {
-		if _, err := r.Call(context.Background(), "exec", map[string]any{"command": command}); err == nil || !strings.Contains(err.Error(), "edit tool") {
-			t.Fatalf("command %q error=%v", command, err)
+		if _, err := r.Call(context.Background(), "exec", map[string]any{"command": command}); err != nil && strings.Contains(err.Error(), "exec rejected") {
+			t.Fatalf("command %q rejected: %v", command, err)
 		}
 	}
 	if _, err := r.Call(context.Background(), "exec", map[string]any{"command": `true 2>/dev/null`}); err != nil {
 		t.Fatalf("read-only command rejected: %v", err)
+	}
+	if _, err := r.Call(context.Background(), "exec", map[string]any{"command": `git reset --hard`}); err == nil || !strings.Contains(err.Error(), "would discard work") {
+		t.Fatalf("destructive command not rejected: %v", err)
 	}
 }
 func TestReadOnlyRegistryOmitsMutationAndShellTools(t *testing.T) {

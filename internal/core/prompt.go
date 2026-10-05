@@ -72,7 +72,8 @@ func systemPrompt(p promptContext) string {
 		"Use read and search to read and search the workspace. Use exec for builds, tests, and commands no dedicated tool covers, not for cat, grep, find, ls, or sed -n.",
 		lsp,
 		"Do not open guessed paths: locate files with search, then read the range you need.",
-		"Use edit for every source-file change. Never create or modify source files through exec (redirection, sed -i, tee, or formatters with write flags); that bypasses edit safety and metrics.",
+		"Prefer edit for hand-written source changes. Formatters, code generators, and other tools may write files through exec.",
+		"Never discard uncommitted changes (git reset --hard, checkout --, clean -f, restore) or force-push; uncommitted changes may belong to the person.",
 		anchor+" Re-read after a stale-anchor error or a phase-boundary compaction.",
 		"Call each tool with a given set of arguments at most once per response, and do not repeat unchanged reads or searches.",
 	)

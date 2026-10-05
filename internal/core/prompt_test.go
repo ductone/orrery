@@ -25,7 +25,7 @@ func TestSystemPromptSections(t *testing.T) {
 	for _, want := range []string{
 		`workspace at "/work/repo"`,
 		"\n\nSCOPE\n", "nothing more, nothing less", "Do not write files for it", "Uncommitted changes you did not make",
-		"\n\nTOOLS\n", "not for cat, grep, find, ls, or sed -n", "Do not open guessed paths", "Hashline editing is strict", "pass the line number",
+		"\n\nTOOLS\n", "not for cat, grep, find, ls, or sed -n", "Do not open guessed paths", "Prefer edit for hand-written source changes", "may write files through exec", "Never discard uncommitted changes", "or force-push", "Hashline editing is strict", "pass the line number",
 		"\n\nWORKFLOW\n", "Never spend a turn only on the todo list", "Do not re-read your own diff", "only to satisfy a harness check", "make at most two broad discovery calls yourself", "then use targeted reads and searches",
 		"\n\nDELIVERY\n", "Never present stubs", "Mark claims you did not verify as inference", "Orrery independently reviews every completed change", "do not spawn a worker to review your own diff",
 		"\n\nWORKERS\n", "A worker sees only its spec", "No lower-cost worker model is configured", "Spawn workers only for independent slices that run in parallel with work you continue yourself", "Never delegate the core of the task and then wait on it",

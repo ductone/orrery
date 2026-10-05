@@ -11,225 +11,154 @@ import (
 // guardRoot is a stand-in workspace path for commands that name absolute paths.
 const guardRoot = "/work/repo"
 
-// realFalsePositives have the shapes of commands the regex guard rejected in
-// practice. None of them writes a file.
-var realFalsePositives = []string{
-	`cd /home/dev/code && ls -la && echo --- && find . -maxdepth 4 -name ".git" 2>/dev/null`,
-	`cd /home/dev/code/github.com && ls && echo "--- orrery candidates ---" && find . -maxdepth 3 -iname "*orrery*" -maxdepth 3 2>/dev/null | head -50`,
-	`ls -d /home/dev/code/github.com/*/*orrery* 2>/dev/null; echo "---"; ls -d /home/dev/code/github.com/*/*Orrery* 2>/dev/null`,
-	`cd /work/repo && cat .orrery/logs/../../.git/HEAD >/dev/null; git status --porcelain && echo "=== STAT ===" && git diff --stat`,
-	`cd github.com/ductone/orrery && git status --porcelain && echo --- && find . -iname '*index*' -path '*test*' 2>/dev/null && echo --- && grep -rl "struct" . | head`,
-	`cd /work/other && ls -R --  . 2>/dev/null | head -5; find . -path ./.git -prune -o -type f -print | grep -v '^./vendor' | head -40`,
-	`cd /work/repo && ls protos/ && echo === && ls protos/c1* 2>/dev/null | head -40`,
-	`cd /work/repo && git ls-files | grep -i 'gateway' | grep -E '\.proto$|\.md$' | head -20; echo ===; sed -n '1,160p' protos/gateway.proto`,
-	`cd /work/repo && ls docs/rfcs 2>/dev/null | head -20; echo ---; ls docs/rfcs/*.md 2>/dev/null | head -3 | xargs -I{} sh -c 'echo "== {}"; head -40 {}'`,
+// workspaceWrites are commands that write files inside the workspace. The
+// guard used to reject them; the final diff is reviewed independently
+// whatever wrote it, so they are allowed.
+var workspaceWrites = []string{
+	`gofmt -w .`,
+	`gofmt -w main.go`,
+	`goimports -w .`,
+	`go fmt ./...`,
+	`echo x > config.go`,
+	`echo x >> CHANGELOG.md`,
+	`printf 'a\n' > notes.txt`,
+	`sed -i 's/a/b/' main.go`,
+	`sed -i.bak 's/a/b/' main.go`,
+	`perl -pi -e 's/a/b/' main.go`,
+	`echo x | tee out.txt`,
+	`touch new.go`,
+	`python3 -c 'import pathlib; pathlib.Path("x.go").write_text("")'`,
+	`find . -name '*.go' -exec gofmt -w {} +`,
+	`sh -c 'echo x > inner.go'`,
 }
 
-func TestGuardAllowsRealFalsePositives(t *testing.T) {
-	for _, cmd := range realFalsePositives {
-		if reason := sourceMutation(cmd, guardRoot); reason != "" {
+func TestGuardAllowsWorkspaceWrites(t *testing.T) {
+	for _, cmd := range workspaceWrites {
+		if reason := destructiveCommand(cmd, guardRoot); reason != "" {
 			t.Errorf("rejected %q: %s", cmd, reason)
 		}
 	}
+	// Without a root, a relative write is still just a write.
+	if reason := destructiveCommand(`echo x > a.go`, ""); reason != "" {
+		t.Fatalf("a relative write must be allowed: %s", reason)
+	}
+	if reason := destructiveCommand(`echo x > /dev/null`, ""); reason != "" {
+		t.Fatalf("/dev/null must be allowed: %s", reason)
+	}
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skip(err)
+	}
+	if reason := destructiveCommand(`echo x > `+filepath.Join(real, "a.go"), link); reason != "" {
+		t.Fatalf("a write through a symlinked root must be allowed: %s", reason)
+	}
+	if reason := destructiveCommand(`echo x > `+filepath.Join(link, ".orrery", "x"), link); reason != "" {
+		t.Fatalf("a scratch write must be allowed: %s", reason)
+	}
 }
 
-func TestGuardAllowsReadOnlyCommands(t *testing.T) {
+func TestGuardAllowsOrdinaryGit(t *testing.T) {
 	for _, cmd := range []string{
-		// Plain reads and listings.
-		`ls -la`,
-		`cat go.mod`,
-		`head -50 main.go && tail -20 main.go`,
-		`wc -l **/*.go`,
 		`git status`,
+		`git status --porcelain`,
+		`git diff`,
 		`git diff --stat HEAD~3`,
-		`git log --oneline -20 | head`,
-		`git show HEAD:README.md`,
-		`find . -name '*.go' -newer go.mod`,
-		`tree -L 2`,
-		// Separators and harmless redirects in every position.
-		`echo --- && ls`,
-		`echo ---; ls 2>/dev/null`,
-		`echo "=== a ===" ; cat a.go 2> /dev/null ; echo "=== b ==="`,
-		`echo hi >/dev/null`,
-		`echo hi > /dev/null`,
-		`echo err >&2`,
-		`echo out 1>&2`,
-		`go test ./... 2>&1 | tail -30`,
-		`go build ./... &>/dev/null && echo ok`,
-		`make test &> /dev/null || echo failed`,
-		`printf '%s\n' a b >/dev/stdout`,
-		`echo warn >/dev/stderr`,
-		`echo x > /dev/fd/3`,
-		`echo x >/dev/tty`,
-		`command -v gofmt >/dev/null 2>&1 && echo present`,
-		// Input redirects and here-strings are not writes.
-		`wc -l < main.go`,
-		`grep -c foo <<< "foo bar"`,
-		`cat <<EOF
-just text
-EOF`,
-		`while read -r line; do echo "$line"; done < files.txt`,
-		// sed, perl, and formatters without in-place flags.
-		`sed -n '1,160p' main.go`,
-		`sed -n -e '/func main/,/^}/p' main.go`,
-		`sed -e 's/-i/x/' main.go`,
-		`sed -E 's/(a)(b)/\2\1/' main.go`,
-		`sed --quiet 10p main.go`,
-		`perl -ne 'print if /TODO/' main.go`,
-		`perl -e 'print "hi\n"'`,
-		`perl -Mstrict -e 'print 1'`,
-		`gofmt -l .`,
-		`gofmt -d main.go`,
-		`goimports -l .`,
-		`go vet ./...`,
-		`go test -run TestFoo ./internal/...`,
-		// Searches for the strings the guard looks for in scripts.
-		`grep -rn "os.WriteFile(" .`,
-		`rg 'write_text\(' --type py`,
-		`git grep -n "sed -i"`,
-		`grep -rn "touch " scripts/`,
-		`echo "use sed -i to edit"`,
-		// Wrappers around read-only commands.
-		`timeout 30 go test ./...`,
-		`env GOFLAGS=-mod=mod go list ./...`,
-		`xargs -n1 echo < list.txt`,
-		`find . -name '*.go' -exec grep -l TODO {} +`,
-		`find . -type f -exec wc -l {} \;`,
-		`sh -c 'ls; echo done'`,
-		`bash -c "go test ./... 2>&1 | tail"`,
-		// Writes outside the workspace, or to Orrery's scratch directory.
-		`go test ./... > /tmp/test.log 2>&1`,
-		`echo data > /tmp/scratch.txt`,
-		`cd /tmp && echo x > notes.txt`,
-		`cat > /tmp/check.py <<'EOF'
-print("hello")
-EOF`,
-		`tee /tmp/out.log < input.txt`,
-		`touch /tmp/marker`,
-		`go test ./... | tee /dev/null`,
-		`echo x > .orrery/notes.md`,
-		`echo x >> .orrery/logs/run.log`,
-		`echo x > /work/repo/.orrery/scratch`,
-		`sed -i 's/a/b/' /tmp/copy.go`,
-		`sed -i -e 's/a/b/' -e 's/c/d/' /tmp/a /tmp/b`,
-		`perl -pi -e 's/a/b/' /tmp/copy.pl`,
-		`gofmt -w /tmp/gen.go`,
-		`find /tmp/gen -name '*.go' -exec gofmt -w {} +`,
-		// Interpreters that read or print.
-		`python3 -c 'import json,sys; print(json.load(sys.stdin)["a"])' < data.json`,
-		`python -c "print(open('go.mod').read())"`,
-		`node -e 'console.log(require("./package.json").version)'`,
-		`python3 - <<'EOF'
-import pathlib
-print(pathlib.Path("go.mod").read_text())
-EOF`,
-		`python3 scripts/report.py`,
-		// Command substitution and subshells that only read.
-		`echo "branch: $(git rev-parse --abbrev-ref HEAD)"`,
-		`(cd internal && ls)`,
-		`for f in *.go; do echo "== $f"; head -5 "$f"; done`,
-		`if [ -f go.mod ]; then echo module; fi`,
-		// Not valid shell: allowed, since the guard only rejects what it can see.
-		`echo "unterminated`,
-		``,
+		`git add .`,
+		`git add -A internal/tools`,
+		`git commit -m "msg"`,
+		`git log --oneline -20`,
+		`git show HEAD`,
+		`git checkout -b feature`,
+		`git checkout -B feature`,
+		`git checkout main`,
+		`git checkout --theirs main.go`,
+		`git switch -c feature`,
+		`git reset HEAD`,
+		`git reset --soft HEAD~1`,
+		`git reset --mixed HEAD`,
+		`git clean -n`,
+		`git clean --dry-run -d`,
+		`git restore --staged main.go`,
+		`git stash`,
+		`git stash push -m wip`,
+		`git stash pop`,
+		`git push`,
+		`git push origin main`,
+		`git push --force-with-lease`,
+		`git push --force-with-lease=main`,
+		`git -C /work/other status`,
+		`rm file.go`,
+		`rm -r internal/tools`,
+		`rm -rf ./build`,
+		`rm -rf /tmp/scratch`,
+		`rm -rf /tmp`,
+		`rm -rf ` + os.TempDir(),
 	} {
-		if reason := sourceMutation(cmd, guardRoot); reason != "" {
+		if reason := destructiveCommand(cmd, guardRoot); reason != "" {
 			t.Errorf("rejected %q: %s", cmd, reason)
 		}
 	}
 }
 
-func TestGuardRejectsWorkspaceMutations(t *testing.T) {
+func TestGuardRejectsDestructiveCommands(t *testing.T) {
 	for _, tc := range []struct{ cmd, reason string }{
-		// Output redirects to workspace files, in every form.
-		{`echo x > config.go`, `output redirect > to "config.go"`},
-		{`echo x >config.go`, `"config.go"`},
-		{`echo x >> CHANGELOG.md`, `output redirect >> to "CHANGELOG.md"`},
-		{`printf 'a\n' > notes.txt`, `"notes.txt"`},
-		{`cat > main.go <<'EOF'
-package main
-EOF`, `"main.go"`},
-		{`cat <<EOF > internal/x.go
-package x
-EOF`, `"internal/x.go"`},
-		{`echo x >| forced.txt`, `>| to "forced.txt"`},
-		{`go test ./... &> test.log`, `"test.log"`},
-		{`go test ./... &>> test.log`, `"test.log"`},
-		{`go test ./... > out.txt 2>&1`, `"out.txt"`},
-		{`ls 2> errors.txt`, `"errors.txt"`},
-		{`echo x > "quoted name.go"`, `"quoted name.go"`},
-		{`echo x > 'single.go'`, `"single.go"`},
-		{`echo x > /work/repo/abs.go`, `"/work/repo/abs.go"`},
-		{`echo x > ./rel/../file.go`, `"./rel/../file.go"`},
-		{`echo x > "$OUT"`, `computed path`},
-		{`echo x > $(mktemp -p .)`, `computed path`},
-		{`ls; echo --- > sep.txt`, `"sep.txt"`},
-		{`echo a && echo b > b.txt`, `"b.txt"`},
-		{`cat a.go | sort > sorted.go`, `"sorted.go"`},
-		{`(echo x > sub.go)`, `"sub.go"`},
-		{`{ echo a; echo b; } > group.txt`, `"group.txt"`},
-		{`for f in a b; do echo $f >> list.txt; done`, `"list.txt"`},
-		{`if true; then echo x > cond.go; fi`, `"cond.go"`},
-		{`echo "$(echo inner > inner.go)"`, `"inner.go"`},
-		{`exec 3> fd.txt`, `"fd.txt"`},
-		{`cd /tmp && cd /work/repo && echo x > back.go`, `"back.go"`},
-		{`cd internal && echo x > moved.go`, `"moved.go"`},
-		{`cd "$DIR" && echo x > unknown.go`, `"unknown.go"`},
-		// sed and perl in place.
-		{`sed -i 's/a/b/' main.go`, `sed -i`},
-		{`sed -i '' 's/a/b/' main.go`, `sed -i`},
-		{`sed -i.bak 's/a/b/' main.go`, `sed -i`},
-		{`sed -Ei 's/a/b/' main.go`, `sed -i`},
-		{`sed -ni 's/a/b/p' main.go`, `sed -i`},
-		{`sed --in-place 's/a/b/' main.go`, `sed -i`},
-		{`sed --in-place=.orig 's/a/b/' main.go`, `sed -i`},
-		{`sed -e 's/a/b/' -i main.go`, `sed -i`},
-		{`/usr/bin/sed -i 's/a/b/' main.go`, `sed -i`},
-		{`perl -pi -e 's/a/b/' main.go`, `perl -i`},
-		{`perl -i.bak -pe 's/a/b/' main.go`, `perl -i`},
-		{`perl -pie 's/a/b/' main.go`, `perl -i`},
-		{`sed -i 's/a/b/' /tmp/ok.go main.go`, `sed -i`},
-		{`sed -i -e 's/a/b/' /work/repo/main.go`, `sed -i`},
-		{`sed -i 's/a/b/' "$FILE"`, `sed -i`},
-		{`sed -i 's/a/b/'`, `sed -i`},
-		{`perl -pi -e 's/a/b/' /tmp/ok main.go`, `perl -i`},
-		{`gofmt -w /tmp/ok.go main.go`, `gofmt -w`},
-		// Creating and rewriting files.
-		{`touch new.go`, `touch creates or modifies "new.go"`},
-		{`touch -a -m existing.go`, `"existing.go"`},
-		{`touch /tmp/ok internal/new.go`, `"internal/new.go"`},
-		{`echo x | tee out.txt`, `tee writes "out.txt"`},
-		{`echo x | tee -a log.txt`, `"log.txt"`},
-		{`go test ./... | tee /tmp/ok.log report.txt`, `"report.txt"`},
-		{`gofmt -w main.go`, `gofmt -w`},
-		{`gofmt -l -w .`, `gofmt -w`},
-		{`goimports -w .`, `goimports -w`},
-		{`go fmt ./...`, `go fmt`},
-		// Wrappers and indirection.
-		{`sudo sed -i 's/a/b/' main.go`, `sed -i`},
-		{`env LC_ALL=C sed -i 's/a/b/' main.go`, `sed -i`},
-		{`timeout 10 gofmt -w .`, `gofmt -w`},
-		{`nice -n 5 touch x.go`, `"x.go"`},
-		{`find . -name '*.go' | xargs sed -i 's/a/b/'`, `sed -i`},
-		{`find . -name '*.go' | xargs -I{} sed -i 's/a/b/' {}`, `sed -i`},
-		{`find . -name '*.go' -exec sed -i 's/a/b/' {} +`, `sed -i`},
-		{`find . -name '*.go' -exec gofmt -w {} \;`, `gofmt -w`},
-		{`find . -type f -execdir touch {} \;`, `touch`},
-		{`sh -c 'echo x > inner.go'`, `"inner.go"`},
-		{`bash -c "sed -i s/a/b/ main.go"`, `sed -i`},
-		{`ls | xargs -I{} sh -c 'echo {} >> index.txt'`, `"index.txt"`},
-		// Inline scripts that write files.
-		{`python3 -c 'import pathlib; pathlib.Path("x.go").write_text("")'`, `inline python3 script calls .write_text`},
-		{`python -c "from pathlib import Path; Path('a').write_bytes(b'')"`, `.write_bytes`},
-		{`python3 - <<'EOF'
-from pathlib import Path
-Path("main.go").write_text("package main\n")
-EOF`, `inline python3 script calls .write_text`},
-		{`python3.12 -c 'open("x","w"); import pathlib; pathlib.Path("y").write_text("")'`, `inline python3.12`},
-		{`node -e 'require("fs").writeFileSync("a.js", "")'`, `writefilesync`},
-		{`ruby -e 'File.write("a.rb", "")'`, `file.write`},
+		// git forms that discard work.
+		{`git reset --hard`, `git reset --hard`},
+		{`git reset --hard HEAD~1`, `git reset --hard`},
+		{`git -C /work/repo reset --hard`, `git reset --hard`},
+		{`git clean -f`, `git clean -f`},
+		{`git clean --force`, `git clean -f`},
+		{`git clean -fd`, `git clean -f`},
+		{`git clean -fdx`, `git clean -f`},
+		{`git clean -xffd`, `git clean -f`},
+		{`git checkout -- main.go`, `git checkout --`},
+		{`git checkout -- .`, `git checkout --`},
+		{`git checkout -- internal/a.go internal/b.go`, `git checkout --`},
+		{`git checkout .`, `git checkout --`},
+		{`git checkout ./`, `git checkout --`},
+		{`git restore main.go`, `git restore`},
+		{`git restore .`, `git restore`},
+		{`git restore --worktree main.go`, `git restore`},
+		{`git restore --source=HEAD main.go`, `git restore`},
+		{`git restore --staged --worktree main.go`, `git restore`},
+		{`git stash drop`, `git stash drop`},
+		{`git stash drop stash@{1}`, `git stash drop`},
+		{`git stash clear`, `git stash clear`},
+		{`git push --force`, `git push --force`},
+		{`git push -f`, `git push --force`},
+		{`git push --force origin main`, `git push --force`},
+		{`git push -uf origin main`, `git push --force`},
+		{`git push origin +main`, `git push --force`},
+		// recursive removal of the workspace, its parents, or paths outside it.
+		{`rm -rf /work/repo`, `rm -r`},
+		{`rm -rf /work/repo/`, `rm -r`},
+		{`rm -rf .`, `rm -r`},
+		{`rm -rf ./`, `rm -r`},
+		{`rm -r /work`, `rm -r`},
+		{`rm -rf /`, `rm -r`},
+		{`rm -rf ~`, `rm -r`},
+		{`rm -rf ~/code`, `rm -r`},
+		{`rm -rf /home/dev/other`, `rm -r`},
+		{`rm -rf ../sibling`, `rm -r`},
+		{`rm -rf ..`, `rm -r`},
+		{`rm --recursive /work/repo`, `rm -r`},
+		{`rm -rf "$DIR"`, `rm -r`},
+		// indirection: shells, wrappers, cd, and find -exec.
+		{`sh -c 'git reset --hard'`, `git reset --hard`},
+		{`bash -c "git clean -fd"`, `git clean -f`},
+		{`env LC_ALL=C git checkout -- main.go`, `git checkout --`},
+		{`timeout 10 git push --force`, `git push --force`},
+		{`cd /work/repo && git reset --hard`, `git reset --hard`},
+		{`cd internal && git checkout -- moved.go`, `git checkout --`},
+		{`cd /tmp && rm -rf /work/repo`, `rm -r`},
+		{`cd / && rm -rf work/repo`, `rm -r`},
+		{`find . -exec rm -rf {} +`, `rm -r`},
+		{`find /work/repo -name '*.go' -exec rm -rf {} \;`, `rm -r`},
+		{`sudo git reset --hard`, `git reset --hard`},
+		{`/usr/bin/git clean -f`, `git clean -f`},
 	} {
-		reason := sourceMutation(tc.cmd, guardRoot)
+		reason := destructiveCommand(tc.cmd, guardRoot)
 		if reason == "" {
 			t.Errorf("allowed %q", tc.cmd)
 			continue
@@ -240,59 +169,31 @@ EOF`, `inline python3 script calls .write_text`},
 	}
 }
 
-func TestGuardWithoutRootTreatsRelativeWritesAsWorkspace(t *testing.T) {
-	if sourceMutation(`echo x > a.go`, "") == "" {
-		t.Fatal("without a root, a relative write must count as a workspace write")
-	}
-	if sourceMutation(`echo x > /dev/null`, "") != "" {
-		t.Fatal("/dev/null is never a workspace write")
-	}
-}
-
-func TestGuardResolvesSymlinkedRoots(t *testing.T) {
-	real := t.TempDir()
-	link := filepath.Join(t.TempDir(), "link")
-	if err := os.Symlink(real, link); err != nil {
-		t.Skip(err)
-	}
-	if sourceMutation(`echo x > `+filepath.Join(real, "a.go"), link) == "" {
-		t.Fatal("a write through the real path of a symlinked root is still inside it")
-	}
-	if sourceMutation(`echo x > `+filepath.Join(link, ".orrery", "x"), link) != "" {
-		t.Fatal(".orrery under a symlinked root is scratch space")
-	}
-}
-
 func TestGuardNestedShellDepthIsBounded(t *testing.T) {
-	cmd := `echo x > deep.go`
+	cmd := `git reset --hard`
 	for range 8 {
-		cmd = `sh -c ` + shellQuote(cmd)
+		cmd = `sh -c "` + strings.ReplaceAll(cmd, `"`, `\"`) + `"`
 	}
 	// Beyond the nesting bound the inner script is not inspected; the guard
 	// must terminate rather than recurse without limit.
-	_ = sourceMutation(cmd, guardRoot)
-	shallow := `sh -c ` + shellQuote(`sh -c `+shellQuote(`echo x > deep.go`))
-	if sourceMutation(shallow, guardRoot) == "" {
+	_ = destructiveCommand(cmd, guardRoot)
+	shallow := `sh -c "sh -c 'git reset --hard'"`
+	if destructiveCommand(shallow, guardRoot) == "" {
 		t.Fatal("two levels of sh -c must still be inspected")
 	}
 }
 
-func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
-
 func TestExecRejectionNamesTheCause(t *testing.T) {
 	root := t.TempDir()
 	r := New(root)
-	_, err := r.Call(context.Background(), "exec", map[string]any{"command": "echo x > config.go"})
+	_, err := r.Call(context.Background(), "exec", map[string]any{"command": "git reset --hard"})
 	if err == nil {
-		t.Fatal("a workspace write must be rejected")
+		t.Fatal("a destructive command must be rejected")
 	}
-	for _, want := range []string{`output redirect > to "config.go"`, "edit tool", "/dev/null"} {
+	for _, want := range []string{"git reset --hard", "would discard work that cannot be recovered", "leave them alone, or ask"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q must mention %q", err, want)
 		}
-	}
-	if _, statErr := os.Stat(filepath.Join(root, "config.go")); !os.IsNotExist(statErr) {
-		t.Fatal("a rejected command must not run")
 	}
 }
 
@@ -311,5 +212,12 @@ func TestExecRunsCommandsTheGuardAllows(t *testing.T) {
 	}
 	if b, err := os.ReadFile(filepath.Join(root, ".orrery", "note")); err != nil || strings.TrimSpace(string(b)) != "done" {
 		t.Fatalf("scratch write: %q %v", b, err)
+	}
+	// A formatter-style workspace write runs instead of being rejected.
+	if _, err := r.Call(context.Background(), "exec", map[string]any{"command": `echo formatted > a.txt`}); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(root, "a.txt")); err != nil || strings.TrimSpace(string(b)) != "formatted" {
+		t.Fatalf("workspace write: %q %v", b, err)
 	}
 }
