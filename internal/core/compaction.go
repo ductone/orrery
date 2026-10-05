@@ -217,13 +217,49 @@ func (e *Engine) compact(ctx context.Context, sid string, emit EmitFunc) {
 	}
 }
 
+func (e *Engine) foldSummaries(ctx context.Context, s store.Session, todos []store.Todo, cont store.Continuation, workItems []store.WorkItem, chunks []string) (DurableState, map[string]any, error) {
+	var state DurableState
+	meta := map[string]any{}
+	prior := s.DurableSummary
+	for _, chunk := range chunks {
+		s.DurableSummary = prior
+		next, nextMeta, err := e.summarizeTranscript(ctx, s, todos, cont, workItems, chunk)
+		if err != nil {
+			return DurableState{}, nil, err
+		}
+		encoded, err := json.Marshal(next)
+		if err != nil {
+			return DurableState{}, nil, err
+		}
+		state, meta, prior = next, nextMeta, string(encoded)
+	}
+	return state, meta, nil
+}
+
 func (e *Engine) semanticSummary(ctx context.Context, s store.Session, todos []store.Todo, cont store.Continuation, workItems []store.WorkItem, old []store.Message) (DurableState, map[string]any, error) {
 	spec, ok := model.Get(s.Model)
 	_, providers, _, _, _ := e.runtimeSnapshot()
 	if !ok || providers == nil || !providers.Available(spec) {
 		return DurableState{}, nil, errors.New("current model unavailable for semantic summary")
 	}
-	transcript := compactTranscript(old, 96_000)
+	budget := summaryTranscriptBudget(spec)
+	chunks := transcriptChunks(old, budget)
+	if len(chunks) > 1 {
+		return e.foldSummaries(ctx, s, todos, cont, workItems, chunks)
+	}
+	transcript := ""
+	if len(chunks) == 1 {
+		transcript = chunks[0]
+	}
+	return e.summarizeTranscript(ctx, s, todos, cont, workItems, transcript)
+}
+
+func (e *Engine) summarizeTranscript(ctx context.Context, s store.Session, todos []store.Todo, cont store.Continuation, workItems []store.WorkItem, transcript string) (DurableState, map[string]any, error) {
+	spec, ok := model.Get(s.Model)
+	_, providers, _, _, _ := e.runtimeSnapshot()
+	if !ok || providers == nil || !providers.Available(spec) {
+		return DurableState{}, nil, errors.New("current model unavailable for semantic summary")
+	}
 	system := `Summarize an autonomous coding session for lossless continuation. Return one JSON object only with these exact keys: objective, current_objective, pending_report, resolved_requests, requirements, decisions, completed, files, verification, open_work, blockers, instructions, worker_results. objective, current_objective, and pending_report are strings; every other field is an array of concise strings. current_objective and pending_report must preserve the supplied LIVE TODO ANCHOR rather than an older request. resolved_requests lists requests already answered or superseded; never make them active again. Preserve concrete paths, symbols, commands, test outcomes, constraints, unresolved hypotheses, loaded instruction/skill names, and worker findings. Do not invent completion or evidence.`
 	active := ""
 	if latest, _ := e.store.LatestRequest(ctx, s.ID); latest != "" && strings.TrimSpace(latest) != strings.TrimSpace(s.Spec) {
@@ -619,20 +655,136 @@ func appendBounded(items []string, value string, limit int) []string {
 	return append(items, value)
 }
 
+const (
+	transcriptArgChars  = 500
+	defaultToolHead     = 1_500
+	editToolHead        = 4_000
+	testToolHead        = 4_000
+	readToolHead        = 400
+	minTranscriptBudget = 8_000
+)
+
+func summaryTranscriptBudget(spec model.ModelSpec) int {
+	if spec.ContextWindow <= 0 {
+		return 96_000
+	}
+	return max(spec.ContextWindow/2, minTranscriptBudget)
+}
+
 func compactTranscript(msgs []store.Message, limit int) string {
+	chunks := transcriptChunks(msgs, limit)
+	if len(chunks) == 0 {
+		return ""
+	}
+	return chunks[0]
+}
+
+func transcriptChunks(msgs []store.Message, limit int) []string {
+	if limit < 1 {
+		limit = minTranscriptBudget
+	}
+	lines := projectTranscript(msgs)
+	var chunks []string
 	var b strings.Builder
-	for _, m := range msgs {
-		line := m.Role + ": " + m.ContentJSON + "\n"
-		if b.Len()+len(line) > limit {
-			remaining := limit - b.Len()
-			if remaining > 0 {
-				b.WriteString(line[:min(remaining, len(line))])
-			}
-			break
+	flush := func() {
+		if b.Len() == 0 {
+			return
+		}
+		chunks = append(chunks, b.String())
+		b.Reset()
+	}
+	for _, line := range lines {
+		for len(line) > limit {
+			flush()
+			chunks = append(chunks, line[:limit])
+			line = line[limit:]
+		}
+		if line == "" {
+			continue
+		}
+		extra := len(line)
+		if b.Len() > 0 {
+			extra++
+		}
+		if b.Len() > 0 && b.Len()+extra > limit {
+			flush()
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
 		}
 		b.WriteString(line)
 	}
-	return b.String()
+	flush()
+	return chunks
+}
+
+func projectTranscript(msgs []store.Message) []string {
+	lines := make([]string, 0, len(msgs))
+	for i, m := range msgs {
+		var parsed provider.Message
+		if json.Unmarshal([]byte(m.ContentJSON), &parsed) != nil {
+			parsed = provider.Message{Role: m.Role, Content: m.ContentJSON}
+		}
+		switch m.Role {
+		case "user":
+			lines = append(lines, "user: "+parsed.Content)
+		case "assistant":
+			lines = append(lines, projectAssistant(parsed))
+		default:
+			name, args := matchingCall(msgs, i, parsed.ToolCallID)
+			lines = append(lines, projectTool(name, args, parsed.Content))
+		}
+	}
+	return lines
+}
+
+func projectAssistant(msg provider.Message) string {
+	parts := []string{"assistant: " + truncate(strings.Join(strings.Fields(msg.Content), " "), transcriptArgChars)}
+	for _, call := range msg.ToolCalls {
+		args, _ := json.Marshal(call.Arguments)
+		parts = append(parts, "call "+call.Name+" "+truncate(string(args), transcriptArgChars))
+	}
+	return strings.Join(parts, " | ")
+}
+
+func projectTool(name, args, content string) string {
+	head := defaultToolHead
+	switch {
+	case name == "edit":
+		head = editToolHead
+	case name == "read" || name == "fetch" || name == "search":
+		head = readToolHead
+	case name == "exec" && (strings.Contains(args, "test") || strings.Contains(args, "build") || strings.Contains(args, "vet")):
+		head = testToolHead
+	}
+	return "tool " + name + " args=" + truncate(args, transcriptArgChars) + " outcome=" + toolOutcome(content) + " head=" + truncate(content, head)
+}
+
+func toolOutcome(content string) string {
+	lower := strings.ToLower(content)
+	if strings.Contains(lower, "error") || strings.Contains(lower, "fail") || strings.Contains(lower, "panic") {
+		return "error"
+	}
+	return "ok"
+}
+
+func matchingCall(msgs []store.Message, idx int, id string) (string, string) {
+	for i := idx - 1; i >= 0; i-- {
+		if msgs[i].Role != "assistant" {
+			continue
+		}
+		var parsed provider.Message
+		if json.Unmarshal([]byte(msgs[i].ContentJSON), &parsed) != nil {
+			continue
+		}
+		for _, call := range parsed.ToolCalls {
+			if id == "" || call.ID == id {
+				args, _ := json.Marshal(call.Arguments)
+				return call.Name, string(args)
+			}
+		}
+	}
+	return "tool", ""
 }
 
 // withoutRequest drops resolved entries that are the given request, matched
