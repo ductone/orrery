@@ -1225,7 +1225,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 						continue
 					}
 				} else {
-					passed, reviewText, reviewErr = e.reviewWorkspace(ctx, sid, parentJob, req, emit)
+					passed, reviewText, reviewErr = e.reviewWorkspace(ctx, sid, parentJob, req, progress.checksSinceEdit, emit)
 				}
 				if reviewErr != nil && errors.Is(reviewErr, ErrReviewInconclusive) {
 					e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "review_inconclusive", "error": reviewErr.Error()}, emit)

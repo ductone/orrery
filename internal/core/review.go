@@ -34,7 +34,7 @@ var reviewResultSchema = map[string]any{"type": "object", "properties": map[stri
 // model family. Findings the classifier is fairly sure are not correctness
 // bugs become notes. It returns ErrReviewInconclusive when some part still has
 // no verdict.
-func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req agentproto.TaskRequest, emit EmitFunc) (bool, string, error) {
+func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req agentproto.TaskRequest, checks []commandRecord, emit EmitFunc) (bool, string, error) {
 	diff, changed, err := e.reviewDiff(ctx, sid, req.Workspace.Path)
 	if err != nil {
 		return false, "", fmt.Errorf("collect diff: %w", err)
@@ -45,7 +45,7 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 	if changed != nil {
 		e.emit(ctx, sid, "review.scope", map[string]any{"changed": changed}, emit)
 	}
-	classifier := e.reviewClassifier()
+	classifier := e.reviewClassifier(checks)
 	task := e.reviewTask(ctx, sid)
 	planCtx, cancel := context.WithTimeout(ctx, reviewPlanTimeout)
 	plan := review.Build(planCtx, review.ParseDiff(diff), task, classifier, review.Options{})
@@ -138,13 +138,21 @@ func (e *Engine) reviewTask(ctx context.Context, sid string) string {
 	return request + "\n\nCURRENT TODO PLAN\n" + strings.Join(plan, "\n")
 }
 
-func (e *Engine) reviewClassifier() review.Classifier {
+func (e *Engine) reviewClassifier(checks []commandRecord) review.Classifier {
 	cfg, _, _, _, _ := e.runtimeSnapshot()
 	cfg.Jev = cfg.EffectiveJev()
 	if !cfg.Jev.Review || cfg.Jev.APIKey == "" {
 		return nil
 	}
-	return review.JevClassifier{Client: jev.New(cfg.Jev.APIKey, cfg.Jev.BaseURL, cfg.Jev.Model, cfg.Jev.Timeout())}
+	classifier := review.JevClassifier{Client: jev.New(cfg.Jev.APIKey, cfg.Jev.BaseURL, cfg.Jev.Model, cfg.Jev.Timeout())}
+	for i := len(checks) - 1; i >= 0; i-- {
+		check := checks[i]
+		if verificationKind(check.Command) == fullCheck || check.Accepted {
+			classifier.Verification = &review.Verification{Command: check.Command, Output: check.Output}
+			break
+		}
+	}
+	return classifier
 }
 
 // runReviewShards starts one reviewer per shard and waits for all of them. It

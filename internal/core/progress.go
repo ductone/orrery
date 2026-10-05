@@ -28,9 +28,8 @@ type progressTracker struct {
 	turnEdited, turnVerified      bool
 	// editedPaths are files changed by this run.
 	editedPaths map[string]bool
-	// checksSinceEdit are successful commands run since the last edit that
-	// were not recognised as verification; a classifier may still judge one a
-	// meaningful check of the change.
+	// checksSinceEdit holds successful commands since the last edit, including
+	// recognized verification. Classifiers use their output as check evidence.
 	checksSinceEdit []commandRecord
 	// verificationRejections bounds how often completion is refused for
 	// missing verification, so an unverifiable change cannot loop.
@@ -62,8 +61,9 @@ type progressTracker struct {
 
 // commandRecord is a command and the tail of its output.
 type commandRecord struct {
-	Command string `json:"command"`
-	Output  string `json:"output"`
+	Command  string `json:"command"`
+	Output   string `json:"output"`
+	Accepted bool   `json:"accepted,omitempty"`
 }
 
 const maxChecksSinceEdit = 8
@@ -147,10 +147,8 @@ func (p *progressTracker) observe(call provider.ToolCall, value any, callErr err
 				// verificationSatisfied.
 				p.turnProgress = true
 				p.formatVerified = true
-			default:
-				if !p.edited {
-					break
-				}
+			}
+			if p.edited && verificationKind(command) != formatCheck {
 				p.checksSinceEdit = append(p.checksSinceEdit, commandRecord{Command: command, Output: outputTail(value)})
 				if len(p.checksSinceEdit) > maxChecksSinceEdit {
 					p.checksSinceEdit = p.checksSinceEdit[1:]

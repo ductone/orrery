@@ -127,7 +127,7 @@ func (h *reviewHarness) write(rel, body string) {
 	}
 }
 
-func (h *reviewHarness) run() (bool, string, error) {
+func (h *reviewHarness) run(checks ...commandRecord) (bool, string, error) {
 	h.t.Helper()
 	req := agentproto.TaskRequest{
 		Spec:      "Add the feature",
@@ -137,7 +137,7 @@ func (h *reviewHarness) run() (bool, string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	return h.e.reviewWorkspace(ctx, h.sid, "", req, nil)
+	return h.e.reviewWorkspace(ctx, h.sid, "", req, checks, nil)
 }
 
 func (h *reviewHarness) events(typ string) []map[string]any {

@@ -379,7 +379,8 @@ func (e *Engine) verificationSatisfied(ctx context.Context, sid, root string, pr
 		}
 		if a := resp.Answers["meaningful_check"]; a.Noul != nil {
 			scores[i] = *a.Noul
-			if scores[i] >= meaningfulCheck && accepted < 0 {
+			progress.checksSinceEdit[i].Accepted = scores[i] >= meaningfulCheck
+			if progress.checksSinceEdit[i].Accepted {
 				accepted = i
 			}
 		}

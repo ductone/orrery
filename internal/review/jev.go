@@ -10,7 +10,7 @@ import (
 
 // QuestionVersion identifies the review questions below. Bump it when their
 // wording or criteria change, so recorded plans stay interpretable.
-const QuestionVersion = "review/v2"
+const QuestionVersion = "review/v3"
 
 // Per-question patch budgets. Jev is billed per input token and scores one
 // file or finding per call, so each call carries only what it is asked about.
@@ -24,7 +24,14 @@ const (
 // JevClassifier answers review questions with Jev, one noul per item, which is
 // the pattern TypeSafe documents for comparable independent scores.
 type JevClassifier struct {
-	Client *jev.Client
+	Client       *jev.Client
+	Verification *Verification
+}
+
+// Verification is the latest successful check of the current change.
+type Verification struct {
+	Command string `json:"command"`
+	Output  string `json:"output"`
 }
 
 var needsReviewQuestion = map[string]jev.Question{"needs_review": jev.Noul(
@@ -72,7 +79,11 @@ func (j JevClassifier) FileBugs(ctx context.Context, task string, files []File) 
 
 func (j JevClassifier) Findings(ctx context.Context, task string, findings []Finding) ([]float64, error) {
 	return j.each(ctx, len(findings), findingQuestion, "real_bug", func(i int) any {
-		return map[string]any{"task": clip(task, 4_000), "finding": findings[i].Text, "patch": clip(findings[i].Patch, fileBugChars)}
+		state := map[string]any{"task": clip(task, 4_000), "finding": findings[i].Text, "patch": clip(findings[i].Patch, fileBugChars)}
+		if j.Verification != nil {
+			state["verification"] = j.Verification
+		}
+		return state
 	})
 }
 
