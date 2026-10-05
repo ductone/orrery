@@ -960,16 +960,32 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			// A provider refusing this model for the account (no access, a
 			// provider key the account lacks, an unknown model) says nothing
 			// about the task: route to another model. The registry has
-			// already taken the model out of routing.
-			if refused, persistent := provider.ModelRefusal(err); refused {
-				e.emit(ctx, sid, "routing.model_refused", map[string]any{"model": decision.Model.ID, "remembered": persistent, "error": err.Error()}, emit)
+			// already taken the model out of routing. A provider rejecting
+			// this request for this model alone (a 400 over the history it
+			// was sent) is routed around too, for this turn only: another
+			// model usually serves the same history.
+			refused, persistent := provider.ModelRefusal(err)
+			rejected := !refused && modelRejected(err)
+			if refused || rejected {
+				failure := error(nil)
+				if refused {
+					e.emit(ctx, sid, "routing.model_refused", map[string]any{"model": decision.Model.ID, "remembered": persistent, "error": err.Error()}, emit)
+				} else {
+					e.emit(ctx, sid, "routing.model_rejected", map[string]any{"model": decision.Model.ID, "error": err.Error()}, emit)
+					// With nothing left, say why the model was set aside
+					// rather than that nothing is compatible.
+					failure = err
+				}
 				failed = append(failed, decision.Model.ID)
 				state.ExcludeModels = failed
 				state.AvailableModels = runtimeProviders.AvailableIDs()
 				state.CurrentModel = decision.Model.ID
 				decision, why, err = runtimePolicy.Decide(ctx, state)
 				if err != nil {
-					return e.routeFailureAfter(sid, parentJob, err, progress, outcome, emit)
+					if failure == nil {
+						failure = err
+					}
+					return e.routeFailureAfter(sid, parentJob, failure, progress, outcome, emit)
 				}
 				modelAttempts = 0
 				e.emit(ctx, sid, "routing.fallback", map[string]any{"decision": decision, "explanation": why}, emit)

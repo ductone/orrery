@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -100,6 +101,15 @@ func (e *Engine) routeFailure(sid, parentJob string, err error, outcome agentpro
 		return e.askAboutLimit(sid, "I couldn't reach a model to continue: "+err.Error()+". Keep going to retry, or stop here.", outcome, emit)
 	}
 	return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: err.Error()}, emit)
+}
+
+// modelRejected reports a provider rejecting this request for this model
+// alone: a 4xx other than 401 (a bad key for the whole provider) and 429
+// (a rate limit, retried). Another model usually serves the same request,
+// so the turn sets the model aside and reroutes rather than stopping.
+func modelRejected(err error) bool {
+	var h *provider.HTTPError
+	return errors.As(err, &h) && h.Status >= 400 && h.Status < 500 && h.Status != 401 && h.Status != 429
 }
 
 // routeFailureAfter is routeFailure that also says which models this run set

@@ -384,3 +384,87 @@ func TestRefusedModelIsRoutedAround(t *testing.T) {
 		}
 	}
 }
+
+// A model that rejects the request with a 400 is set aside for the turn and
+// another model serves it, rather than the run pausing to ask the person.
+func TestRejectedRequestIsRoutedAround(t *testing.T) {
+	e, _ := testEngine(t)
+	workspace := t.TempDir()
+	var rejectedModel string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if instructions, _ := body["instructions"].(string); !strings.Contains(instructions, systemPromptLead) {
+			_ = json.NewEncoder(w).Encode(responsesText("Title"))
+			return
+		}
+		m := body["model"].(string)
+		if rejectedModel == "" || m == rejectedModel {
+			rejectedModel = m
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"jinja template rendering failed. No user query found in messages."}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(responsesText("done"))
+	}))
+	t.Cleanup(srv.Close)
+	cfg := config.Config{
+		WorkspaceRoot: workspace,
+		Providers:     map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: srv.URL}},
+		Router:        config.RouterConfig{LambdaCost: .35},
+	}
+	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
+	req := agentproto.TaskRequest{Spec: "answer", Budget: agentproto.Budget{MaxUSD: 5, MaxTokens: 1_000_000, MaxWallClock: time.Minute}, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"}}
+	sid, results, err := e.Start(context.Background(), req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := <-results; r.Status != agentproto.Pass {
+		t.Fatalf("result = %+v", r)
+	}
+	var rejectedEvent bool
+	es, _ := e.store.EventsAfter(context.Background(), sid, 0)
+	for _, ev := range es {
+		rejectedEvent = rejectedEvent || ev.Type == "routing.model_rejected"
+		if ev.Type == "limit.reached" {
+			t.Fatalf("a model rejecting the request must not ask the person: %s", ev.Data)
+		}
+	}
+	if !rejectedEvent {
+		t.Fatal("the rejection must be recorded")
+	}
+}
+
+// With the only model rejecting the request, the run asks the person and
+// says what the provider said, not that no model is compatible.
+func TestRejectedRequestOnTheOnlyModelAsks(t *testing.T) {
+	e, _ := testEngine(t)
+	workspace := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if instructions, _ := body["instructions"].(string); !strings.Contains(instructions, systemPromptLead) {
+			_ = json.NewEncoder(w).Encode(responsesText("Title"))
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"jinja template rendering failed. No user query found in messages."}`))
+	}))
+	t.Cleanup(srv.Close)
+	cfg := config.Config{
+		WorkspaceRoot: workspace,
+		Providers:     map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: srv.URL}},
+		Router:        config.RouterConfig{DisableSwitch: true, DefaultModel: "openai/gpt-5.6-terra"},
+	}
+	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
+	req := agentproto.TaskRequest{Spec: "answer", Budget: agentproto.Budget{MaxUSD: 5, MaxTokens: 1_000_000, MaxWallClock: time.Minute}, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"}}
+	_, results, err := e.Start(context.Background(), req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := <-results
+	input, _ := r.Result["input"].(agentproto.InputRequest)
+	if r.Status != agentproto.InputRequired || !strings.Contains(input.Question, "provider HTTP 400") || !strings.Contains(input.Question, "No user query found in messages") {
+		t.Fatalf("result = %+v", r)
+	}
+}
