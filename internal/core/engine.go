@@ -1173,6 +1173,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 					continue
 				}
 			}
+			e.syncWorkspaceChanges(ctx, sid, req.Workspace.Path, progress)
 			if progress.edited && !progress.verified && !progress.verificationWaived {
 				switch {
 				case e.verificationSatisfied(ctx, sid, req.Workspace.Path, progress, emit):
@@ -1325,6 +1326,9 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			}
 			shaped, images := extractImages(value)
 			if !instructionBlocked {
+				if call.Name == "exec" || call.Name == "edit" || call.Name == "job" || call.Name == "spawn" {
+					e.syncWorkspaceChanges(ctx, sid, req.Workspace.Path, progress)
+				}
 				shaped = progress.observe(call, shaped, callErr)
 			}
 			if callErr == nil && !instructionBlocked && call.Name == "search" {

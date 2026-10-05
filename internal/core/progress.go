@@ -26,7 +26,7 @@ type progressTracker struct {
 	lastTodo                      string
 	turnProgress                  bool
 	turnEdited, turnVerified      bool
-	// editedPaths are files changed through the edit tool this run.
+	// editedPaths are files changed by this run.
 	editedPaths map[string]bool
 	// checksSinceEdit are successful commands run since the last edit that
 	// were not recognised as verification; a classifier may still judge one a
@@ -38,6 +38,8 @@ type progressTracker struct {
 	verificationWaived     bool
 	// fixPending is set by a review rejection and cleared by the next edit.
 	fixPending bool
+	// workspaceHash tracks the last observed run changes, including exec writes.
+	workspaceHash string
 	// reviewRejections counts reviews that rejected this run's change.
 	reviewRejections int
 	// excluded are models taken out of this run for misbehaving.

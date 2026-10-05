@@ -279,6 +279,42 @@ func (e *Engine) changedPaths(ctx context.Context, sid, root string, progress *p
 	return out
 }
 
+// syncWorkspaceChanges makes verification and review follow the workspace,
+// including changes made through exec rather than the edit tool.
+func (e *Engine) syncWorkspaceChanges(ctx context.Context, sid, root string, progress *progressTracker) {
+	paths, current, ok := e.runChanges(ctx, sid, root)
+	if !ok {
+		return
+	}
+	changed := make(map[string]string, len(paths))
+	for _, path := range paths {
+		changed[path] = current[path].hash
+	}
+	hash := fingerprint("workspace", changed)
+	if hash == progress.workspaceHash {
+		return
+	}
+	previous := progress.workspaceHash
+	progress.workspaceHash = hash
+	if len(paths) == 0 && previous == "" {
+		return
+	}
+	progress.edited = true
+	progress.turnEdited = true
+	progress.turnProgress = true
+	progress.verified = false
+	progress.reviewed = false
+	progress.checksSinceEdit = nil
+	progress.formatVerified = false
+	progress.fixPending = false
+	if progress.editedPaths == nil {
+		progress.editedPaths = map[string]bool{}
+	}
+	for _, path := range paths {
+		progress.editedPaths[path] = true
+	}
+}
+
 // needsVerification reports whether any changed file is one a command could
 // verify: anything but prose documents and assets.
 func needsVerification(paths []string) bool {
