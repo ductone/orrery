@@ -1504,11 +1504,21 @@ func (e *Engine) providerMessages(ctx context.Context, sid string) ([]provider.M
 		}
 		out = append(out, p)
 	}
-	out = sanitizeProviderMessages(out)
-	if len(out) == 0 {
-		out = append(out, provider.Message{Role: "user", Content: "Begin the task. Establish a todo plan, then execute it to completion."})
+	return withOpeningUserTurn(sanitizeProviderMessages(out)), nil
+}
+
+// beginTask opens every history. The request itself is in the system
+// prompt's durable spec and is not stored as a message, so without an opener
+// a history begins with the assistant's first reply, and some chat templates
+// refuse a conversation with no user turn ("No user query found in
+// messages"). The opener is fixed text, so every turn's prefix matches.
+const beginTask = "Begin the task. Establish a todo plan, then execute it to completion."
+
+func withOpeningUserTurn(history []provider.Message) []provider.Message {
+	if len(history) > 0 && history[0].Role == "user" {
+		return history
 	}
-	return out, nil
+	return append([]provider.Message{{Role: "user", Content: beginTask}}, history...)
 }
 
 func sanitizeProviderMessages(messages []provider.Message) []provider.Message {

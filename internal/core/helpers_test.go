@@ -185,3 +185,21 @@ func TestInferPhaseTransitions(t *testing.T) {
 		}
 	})
 }
+
+func TestHistoryAlwaysOpensWithAUserTurn(t *testing.T) {
+	assistantFirst := []provider.Message{
+		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "a", Name: "read"}}},
+		{Role: "tool", ToolCallID: "a", Content: "x"},
+	}
+	got := withOpeningUserTurn(assistantFirst)
+	if len(got) != 3 || got[0].Role != "user" || got[0].Content != beginTask || got[1].Role != "assistant" {
+		t.Fatalf("history = %+v", got)
+	}
+	if empty := withOpeningUserTurn(nil); len(empty) != 1 || empty[0].Content != beginTask {
+		t.Fatalf("empty history = %+v", empty)
+	}
+	userFirst := []provider.Message{{Role: "user", Content: "follow-up"}, {Role: "assistant", Content: "ok"}}
+	if got := withOpeningUserTurn(userFirst); len(got) != 2 || got[0].Content != "follow-up" {
+		t.Fatalf("a history that opens with the person must be left alone: %+v", got)
+	}
+}
