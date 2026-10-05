@@ -112,6 +112,13 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		}
 		r.AddFileScheme("attachment", attachments)
 	}
+	r.Add("recall_history", "Search checkpointed messages from this session and return matching snippets.", obj(map[string]any{"query": str()}, "query"), func(ctx context.Context, a map[string]any) (any, error) {
+		checkpoints, err := e.store.Checkpoints(ctx, sid)
+		if err != nil {
+			return nil, err
+		}
+		return recallHistory(checkpoints, fmt.Sprint(a["query"])), nil
+	})
 	r.Add("todo", "Replace the ordered todo plan. Phase is explore, plan, implement, diagnose, review, or wrap-up.", obj(map[string]any{"items": map[string]any{"type": "array", "items": obj(map[string]any{"text": str(), "phase": str(), "status": map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "completed"}}}, "text", "phase", "status")}}, "items"), func(ctx context.Context, a map[string]any) (any, error) {
 		b, _ := json.Marshal(a["items"])
 		var ts []store.Todo

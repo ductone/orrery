@@ -153,6 +153,7 @@ func (e *Engine) compactState(ctx context.Context, sid, reason string, emit Emit
 	// to continue and the report still owed deterministic so compaction cannot
 	// resurrect an older answered prompt.
 	state, anchor, resolvedCounts := anchorDurableState(state, s, todos, cont, workItems, msgs[:keepAt])
+	state = auditDurableState(state, msgs[:keepAt])
 	// The person's latest request is the work in progress. A summary that
 	// files it as resolved (as one did: "User explicitly requested: Build
 	// it.") leaves the oldest question as the only open request in view.
@@ -766,6 +767,41 @@ func toolOutcome(content string) string {
 		return "error"
 	}
 	return "ok"
+}
+
+func auditDurableState(state DurableState, msgs []store.Message) DurableState {
+	joined := strings.ToLower(strings.Join(append(append(append([]string{}, state.Files...), state.Verification...), state.Instructions...), "\n"))
+	for i, m := range msgs {
+		var parsed provider.Message
+		_ = json.Unmarshal([]byte(m.ContentJSON), &parsed)
+		if m.Role == "user" && !parsed.Harness && !strings.Contains(joined, strings.ToLower(truncate(parsed.Content, 80))) {
+			state.Instructions = appendBounded(state.Instructions, parsed.Content, 12)
+		}
+		name, args := matchingCall(msgs, i, parsed.ToolCallID)
+		if name == "edit" && !strings.Contains(joined, strings.ToLower(args)) {
+			state.Files = appendBounded(state.Files, args, 12)
+		}
+		if name == "exec" && (strings.Contains(args, "test") || strings.Contains(args, "build")) && !strings.Contains(joined, strings.ToLower(args)) {
+			state.Verification = appendBounded(state.Verification, args+" "+toolOutcome(parsed.Content), 12)
+		}
+	}
+	return state
+}
+
+func recallHistory(checkpoints []store.Checkpoint, query string) []string {
+	var out []string
+	for _, cp := range checkpoints {
+		var msgs []store.Message
+		if json.Unmarshal([]byte(cp.MessagesJSON), &msgs) != nil {
+			continue
+		}
+		for i, m := range msgs {
+			if strings.Contains(strings.ToLower(m.ContentJSON), strings.ToLower(query)) {
+				out = appendBounded(out, fmt.Sprintf("%s#%d: %s", cp.ID, i, truncate(m.ContentJSON, 240)), 12)
+			}
+		}
+	}
+	return out
 }
 
 func maskOldToolResults(msgs []store.Message) bool {

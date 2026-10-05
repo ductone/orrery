@@ -48,3 +48,21 @@ func TestMaskingAndRecentContextRetention(t *testing.T) {
 		t.Fatalf("keep index = %d", got)
 	}
 }
+
+func TestAuditAndRecallHistory(t *testing.T) {
+	msgs := []store.Message{
+		{Role: "user", ContentJSON: store.JSON(provider.Message{Content: "Preserve the blue constraint"})},
+		{Role: "assistant", ContentJSON: store.JSON(provider.Message{ToolCalls: []provider.ToolCall{{ID: "e", Name: "edit", Arguments: map[string]any{"path": "internal/core/audit.go"}}}})},
+		{Role: "tool", ContentJSON: store.JSON(provider.Message{ToolCallID: "e", Content: "edited"})},
+		{Role: "assistant", ContentJSON: store.JSON(provider.Message{ToolCalls: []provider.ToolCall{{ID: "x", Name: "exec", Arguments: map[string]any{"command": "go test ./internal/core"}}}})},
+		{Role: "tool", ContentJSON: store.JSON(provider.Message{ToolCallID: "x", Content: "ok"})},
+	}
+	state := auditDurableState(DurableState{}, msgs)
+	if len(state.Instructions) == 0 || len(state.Files) == 0 || len(state.Verification) == 0 {
+		t.Fatalf("audit dropped facts: %+v", state)
+	}
+	cp := store.Checkpoint{ID: "cp", MessagesJSON: store.JSON(msgs)}
+	if got := recallHistory([]store.Checkpoint{cp}, "blue constraint"); len(got) != 1 || !strings.Contains(got[0], "cp#0") {
+		t.Fatalf("recall = %v", got)
+	}
+}
