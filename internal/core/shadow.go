@@ -182,6 +182,22 @@ func lastUserText(stored []store.Message) string {
 	return ""
 }
 
+// lastAssistantText returns the agent's latest final answer, skipping tool
+// calls and harness messages.
+func lastAssistantText(stored []store.Message) string {
+	for i := len(stored) - 1; i >= 0; i-- {
+		if stored[i].Role != "assistant" {
+			continue
+		}
+		var msg provider.Message
+		if json.Unmarshal([]byte(stored[i].ContentJSON), &msg) != nil || msg.Harness || len(msg.ToolCalls) > 0 || strings.TrimSpace(msg.Content) == "" {
+			continue
+		}
+		return msg.Content
+	}
+	return ""
+}
+
 // phaseSource says where the routed phase came from, so the shadow report can
 // leave out turns whose phase Jev itself chose.
 func phaseSource(state router.RoutingState) string {

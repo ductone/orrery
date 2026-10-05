@@ -18,6 +18,8 @@ import (
 // turn is planned, as before. The choice is stored as the session phase; from
 // the next turn the agent's own todo plan decides again.
 const (
+	instructionPhaseVersion    = "instruction-phase/v2"
+	previousAnswerChars        = 3_000
 	instructionPhaseConfidence = 0.8
 	instructionPhaseTimeout    = 3 * time.Second
 )
@@ -26,7 +28,7 @@ var instructionPhaseQuestion = map[string]jev.Question{"phase": jev.Choice(
 	"A person just sent this message to a coding agent partway through a session. Which phase of work should the agent's next turn be in?",
 	map[string]string{
 		"plan":      "The message asks for new or substantially different work, or changes the goal, so an approach is needed before changing anything.",
-		"explore":   "The message asks a question about the code or asks the agent to find or investigate something before acting.",
+		"explore":   "The message asks a question, asks for a recommendation or explanation, or asks the agent to find or investigate something before acting.",
 		"implement": "The message asks for a specific, well-defined change, or tells the agent to continue the implementation already planned.",
 		"diagnose":  "The message reports a failure, error, or unexpected behaviour to investigate.",
 		"review":    "The message asks the agent to check, test, or verify work already done.",
@@ -50,7 +52,7 @@ func endsWithUserInstruction(stored []store.Message) bool {
 // instructionPhase chooses the phase for a turn that starts with a new user
 // message.
 func (e *Engine) instructionPhase(ctx context.Context, s store.Session, stored []store.Message, emit EmitFunc) *router.InstructionPhase {
-	choice := &router.InstructionPhase{Phase: router.Plan, Source: "default"}
+	choice := &router.InstructionPhase{Phase: router.Plan, Source: "default", QuestionVersion: instructionPhaseVersion}
 	cfg, _, _, _, _ := e.runtimeSnapshot()
 	cfg.Jev = cfg.EffectiveJev()
 	if !cfg.Jev.Routing || cfg.Jev.APIKey == "" {
@@ -63,9 +65,10 @@ func (e *Engine) instructionPhase(ctx context.Context, s store.Session, stored [
 	}
 	state := map[string]any{
 		"message":       truncate(lastUserText(stored), shadowSpecChars),
-		"task":          truncate(s.Spec, shadowSpecChars),
+		"first_request": truncate(s.Spec, shadowSpecChars),
 		"current_phase": s.Phase,
-		"plan":          plan,
+		"previous_plan": plan,
+		"previous_answer": truncate(lastAssistantText(stored), previousAnswerChars),
 	}
 	askCtx, cancel := context.WithTimeout(ctx, instructionPhaseTimeout)
 	defer cancel()

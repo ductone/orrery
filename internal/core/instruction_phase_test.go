@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -202,5 +203,59 @@ func TestFollowUpResetsStoredPhase(t *testing.T) {
 		if state.Phase == router.Review || state.Phase == router.Diagnose {
 			t.Fatalf("follow-up inherited review resolution: %+v", state)
 		}
+	}
+
+}
+func TestInstructionPhaseStateCarriesFollowUpContext(t *testing.T) {
+	ctx := context.Background()
+	s := store.Session{ID: uuid.NewString(), Spec: "build the feature", Phase: "wrap-up"}
+	type capture struct {
+		state map[string]any
+		req   map[string]any
+	}
+	seen := make(chan capture, 1)
+	e, st := testEngine(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			State     map[string]any `json:"state"`
+			Questions map[string]any `json:"questions"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		seen <- capture{state: req.State, req: map[string]any{"questions": req.Questions}}
+		_ = json.NewEncoder(w).Encode(map[string]any{"answers": map[string]any{"phase": map[string]any{"type": "choice", "choice": "implement", "confidence": 0.95}}})
+	}))
+	t.Cleanup(srv.Close)
+	e.ReplaceRuntime(config.Config{Jev: config.JevConfig{APIKey: "k", BaseURL: srv.URL, Routing: true}}, nil, nil)
+	if err := st.CreateSession(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetTodos(ctx, s.ID, []store.Todo{{Text: "audit summaries", Phase: "review", Status: "completed"}}); err != nil {
+		t.Fatal(err)
+	}
+	stored := storedMessages(
+		provider.Message{Role: "user", Content: "build the feature"},
+		provider.Message{Role: "assistant", Content: "Done: the feature is built and tested."},
+		provider.Message{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "c1", Name: "read"}}, Content: "calling read"},
+		provider.Message{Role: "user", Content: "also update the docs"},
+	)
+	choice := e.instructionPhase(ctx, s, stored, nil)
+	if choice.QuestionVersion != instructionPhaseVersion {
+		t.Fatalf("question version = %q, want %q", choice.QuestionVersion, instructionPhaseVersion)
+	}
+	cap := <-seen
+	if got := cap.state["previous_answer"]; got != "Done: the feature is built and tested." {
+		t.Errorf("previous_answer = %v", got)
+	}
+	if got := cap.state["first_request"]; got != "build the feature" {
+		t.Errorf("first_request = %v", got)
+	}
+	raw, ok := cap.state["previous_plan"].([]any)
+	item, _ := raw[0].(map[string]any)
+	if !ok || len(raw) != 1 || item["text"] != "audit summaries" || item["status"] != "completed" {
+		t.Errorf("previous_plan = %#v", cap.state["previous_plan"])
+	}
+	q, _ := json.Marshal(cap.req["questions"])
+	if !strings.Contains(string(q), "recommendation or explanation") {
+		t.Error("the explore criterion must cover questions, recommendations, and explanations")
 	}
 }

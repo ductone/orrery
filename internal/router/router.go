@@ -96,6 +96,7 @@ type RoutePerformance struct {
 // InstructionPhase is the phase chosen for a turn that starts with a new user
 // message, and where the choice came from.
 type InstructionPhase struct {
+	QuestionVersion string `json:"question_version,omitempty"`
 	Phase      Phase   `json:"phase"`
 	Source     string  `json:"source"`
 	Confidence float64 `json:"confidence,omitempty"`
