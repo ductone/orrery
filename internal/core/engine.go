@@ -762,7 +762,16 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 	emptyCompletions := 0
 	// outputCap bounds each response. It rises when a response is cut off at
 	// the limit, since a truncated reply is a budget problem, not a model one.
-	outputCap := defaultOutputCap
+	// A raise is remembered per model for the rest of the run: a model that
+	// needed the room once tends to need it again, and restarting every hard
+	// turn at the default burns the whole limit on reasoning before the retry.
+	outputCaps := map[string]int{}
+	capFor := func(id string) int {
+		if raised, ok := outputCaps[id]; ok {
+			return raised
+		}
+		return defaultOutputCap
+	}
 	synthesizing := false
 	var compactions compactionGate
 	if answer, ok := e.limitAnswer(ctx, sid); ok && answer.declined {
@@ -859,6 +868,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		if err != nil {
 			return e.routeFailureAfter(sid, parentJob, err, progress, outcome, emit)
 		}
+		outputCap := capFor(decision.Model.ID)
 		e.emit(ctx, sid, "routing.decision", map[string]any{"decision": decision, "explanation": why}, emit)
 		e.shadowTurn(ctx, s, stored, state, decision)
 		reg := e.toolRegistry(sid, parentJob, req, decision.EditDialect, discovery, emit)
@@ -1065,6 +1075,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				return e.routeFailureAfter(sid, parentJob, err, progress, outcome, emit)
 			}
 			modelAttempts = 0
+			outputCap = capFor(decision.Model.ID)
 			e.emit(ctx, sid, "routing.fallback", map[string]any{"decision": decision, "explanation": why}, emit)
 		}
 		cost := decision.Model.Pricing.EstimateDetailed(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CacheReadTokens, resp.Usage.CacheWriteTokens)
@@ -1100,6 +1111,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				// the nudge cannot help and the same limit would cut it off again.
 				if resp.Truncated && outputCap < maxOutputCap && outputCap < decision.Model.MaxOutput {
 					outputCap = min(outputCap*2, maxOutputCap)
+					outputCaps[decision.Model.ID] = outputCap
 					e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "response truncated at the output limit", "stop_reason": resp.StopReason, "output_kinds": resp.OutputKinds, "output_cap": outputCap}, emit)
 					continue
 				}
@@ -1219,7 +1231,6 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Pass, Result: result, Outcome: outcome}, emit)
 		}
 		emptyCompletions = 0
-		outputCap = defaultOutputCap
 		turnImages := []provider.Image{}
 		type toolExecution struct {
 			value  any

@@ -208,6 +208,31 @@ func TestTruncatedEmptyResponseRetriesWithMoreRoom(t *testing.T) {
 	}
 }
 
+// A response cut off at the output limit raises the cap, and the raise is
+// remembered for the model: the next turn starts at the raised cap instead
+// of burning the default limit on reasoning before another retry.
+func TestRaisedOutputCapSurvivesIntoTheNextTurn(t *testing.T) {
+	var caps []float64
+	s := &scriptedResponses{reply: func(n int, body map[string]any) map[string]any {
+		caps = append(caps, body["max_output_tokens"].(float64))
+		switch n {
+		case 1:
+			return map[string]any{"model": "gpt-5.6-terra", "status": "incomplete", "incomplete_details": map[string]any{"reason": "max_output_tokens"}, "output": []any{map[string]any{"type": "reasoning", "summary": []any{}}}, "usage": map[string]any{"input_tokens": 10, "output_tokens": 8000}}
+		case 2:
+			return responsesCall("c1", "read", map[string]any{"path": "f0.txt"})
+		default:
+			return responsesText("finished")
+		}
+	}}
+	result := runScripted(t, s, "shared-write")
+	if result.Status != agentproto.Pass {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(caps) != 3 || caps[0] != defaultOutputCap || caps[1] != 2*defaultOutputCap || caps[2] != 2*defaultOutputCap {
+		t.Fatalf("output caps = %v", caps)
+	}
+}
+
 func TestEmptyResponsesReportTheStopReason(t *testing.T) {
 	s := &scriptedResponses{reply: func(int, map[string]any) map[string]any {
 		return map[string]any{"model": "gpt-5.6-terra", "status": "completed", "output": []any{map[string]any{"type": "reasoning", "summary": []any{}}}, "usage": map[string]any{"input_tokens": 10, "output_tokens": 50}}
