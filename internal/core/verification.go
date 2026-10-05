@@ -232,10 +232,11 @@ func shellLiteral(w *syntax.Word) (string, bool) {
 }
 
 // maxVerificationRejections bounds how often completion is refused for
-// missing verification. Past it the gate is waived and the outcome records the
-// change as unverified: repeated refusals teach a model to manufacture a check
-// (a new build target, a wrapper script) rather than to run a real one.
-const maxVerificationRejections = 3
+// missing verification: one reminder, after which the gate is waived and the
+// outcome records the change as unverified. Repeated refusals cost turns and
+// teach a model to manufacture a check (a new build target, a wrapper script)
+// rather than to run a real one, and independent review still runs.
+const maxVerificationRejections = 1
 
 // meaningfulCheck is the probability at which a classifier's judgement that a
 // command checked the change counts as verification.
