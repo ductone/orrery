@@ -76,22 +76,30 @@ func TestCompactionContinuationUsesActiveReportInsteadOfResolvedQuestion(t *test
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Instructions string `json:"instructions"`
+			Input        []struct {
+				Content string `json:"content"`
+			} `json:"input"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Error(err)
 		}
+		tail := body.Input[len(body.Input)-1].Content
 		for _, want := range []string{
-			"CURRENT OBJECTIVE (authoritative)",
+			"CURRENT OBJECTIVE (continuation context; the latest request takes precedence)",
 			"Wrap up the completed",
 			"Run the pinned-plan UI verification",
-			"PENDING REPORT (authoritative)",
+			"PENDING REPORT (continuation context; the latest request takes precedence)",
 			"Produce the final report",
-			"RESOLVED REQUESTS (do not re-answer or reopen)",
-			req.Spec,
 		} {
-			if !strings.Contains(body.Instructions, want) {
-				t.Errorf("continuation request missing %q: %s", want, body.Instructions)
+			if !strings.Contains(tail, want) {
+				t.Errorf("continuation tail missing %q: %s", want, tail)
 			}
+		}
+		if !strings.Contains(body.Instructions, `"resolved_requests":["What time is it?"]`) {
+			t.Error("resolved initial request lost from durable system state")
+		}
+		if strings.Contains(body.Instructions, "Produce the final report") {
+			t.Error("pending report leaked into system sections")
 		}
 		requestChecked.Store(true)
 		_, _ = w.Write([]byte(`{"model":"gpt-5.6-terra","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Completed the pinned-plan UI work and verification."}]}],"usage":{"input_tokens":10,"output_tokens":5}}`))

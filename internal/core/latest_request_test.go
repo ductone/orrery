@@ -17,20 +17,26 @@ import (
 )
 
 func TestTaskSectionLeadsWithTheLatestRequest(t *testing.T) {
-	if got := taskSection("Is there a way to resume a session?", ""); got != "TASK\nIs there a way to resume a session?" {
-		t.Fatalf("a single-request session keeps TASK: %q", got)
-	}
-	if got := taskSection("Build it", " Build it "); !strings.HasPrefix(got, "TASK\n") {
-		t.Fatalf("a latest request equal to the spec keeps TASK: %q", got)
+	if got := taskSection("Build it", ""); !strings.HasPrefix(got, "CURRENT REQUEST (the person's latest message; authoritative)\nBuild it") {
+		t.Fatalf("no follow-up uses the first request: %q", got)
 	}
 	got := taskSection("Is there a way to resume a session?", "Build it")
 	if !strings.HasPrefix(got, "CURRENT REQUEST") || strings.Index(got, "Build it") > strings.Index(got, "resume") || !strings.Contains(got, "already answered unless") {
 		t.Fatalf("section = %q", got)
 	}
-	summary := store.JSON(DurableState{Objective: "x", CurrentObjective: "Implement the schema", PendingReport: "report", ResolvedRequests: []string{"resume question answered"}})
-	spec := durableSpec(store.Session{Spec: "Is there a way to resume a session?", DurableSummary: summary}, "Build it")
-	if !strings.HasPrefix(spec, "CURRENT REQUEST (the person's latest message; authoritative)\nBuild it") || !strings.Contains(spec, "CURRENT OBJECTIVE") {
+	state := DurableState{Objective: "x", CurrentObjective: "Implement the schema", PendingReport: "report", ResolvedRequests: []string{"resume question answered"}}
+	s := store.Session{Spec: "Is there a way to resume a session?", DurableSummary: store.JSON(state)}
+	spec := durableSpec(s)
+	if strings.Contains(spec, "Implement the schema") || strings.Contains(spec, `"pending_report":"report"`) || !strings.Contains(spec, "resume question answered") {
 		t.Fatalf("durable spec = %q", spec)
+	}
+	if got := currentRequest(s, "Build it"); !strings.HasPrefix(got, "CURRENT REQUEST (the person's latest message; authoritative)\nBuild it") || !strings.Contains(got, "Implement the schema") || !strings.Contains(got, "PENDING REPORT") {
+		t.Fatalf("current request = %q", got)
+	}
+	state.CurrentObjective, state.PendingReport = "", ""
+	s.DurableSummary = store.JSON(state)
+	if got := durableSpec(s); got != spec {
+		t.Fatalf("acknowledging a report changed the cached prefix:\n%s\n%s", spec, got)
 	}
 }
 
@@ -125,9 +131,13 @@ func TestStaleAnswerToAnEarlierRequestIsRefused(t *testing.T) {
 	}))
 	t.Cleanup(jevSrv.Close)
 	var instructions []string
+	var tails []string
 	nudged := false
 	s := &scriptedResponses{reply: func(n int, body map[string]any) map[string]any {
 		instructions = append(instructions, body["instructions"].(string))
+		input := body["input"].([]any)
+		tail := input[len(input)-1].(map[string]any)
+		tails = append(tails, tail["content"].(string))
 		for _, raw := range body["input"].([]any) {
 			if m, _ := raw.(map[string]any); m != nil {
 				if c, _ := m["content"].(string); strings.Contains(c, "does not address the person's latest request") && strings.Contains(c, "Explain the build plan") {
@@ -151,7 +161,8 @@ func TestStaleAnswerToAnEarlierRequestIsRefused(t *testing.T) {
 	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
 	ctx := context.Background()
 	sid := uuid.NewString()
-	if err := st.CreateSession(ctx, store.Session{ID: sid, Spec: "Is there a way to resume a session in the TUI?", Phase: "plan", BudgetUSD: 5, WorkspacePath: workspace}); err != nil {
+	summary := store.JSON(DurableState{Objective: "resume sessions", CurrentObjective: "Explain the build plan", PendingReport: "Report the build plan"})
+	if err := st.CreateSession(ctx, store.Session{ID: sid, Spec: "Is there a way to resume a session in the TUI?", DurableSummary: summary, Phase: "plan", BudgetUSD: 5, WorkspacePath: workspace}); err != nil {
 		t.Fatal(err)
 	}
 	_ = st.AddMessage(ctx, sid, "assistant", provider.Message{Role: "assistant", Content: "Yes: orrery tui --session ID."})
@@ -166,8 +177,26 @@ func TestStaleAnswerToAnEarlierRequestIsRefused(t *testing.T) {
 	if !nudged || result.Outcome.CompletionRejects != 1 {
 		t.Fatalf("the stale answer must be refused once, quoting the latest request: nudged=%v rejects=%d", nudged, result.Outcome.CompletionRejects)
 	}
-	if !strings.Contains(instructions[0], "CURRENT REQUEST (the person's latest message; authoritative)\nExplain the build plan") {
-		t.Fatal("the prompt must lead with the latest request")
+	if !strings.HasPrefix(tails[0], "CURRENT REQUEST (the person's latest message; authoritative)\nExplain the build plan") || !strings.Contains(tails[0], "PENDING REPORT") {
+		t.Fatal("the conversation tail must prominently carry the latest request and report")
+	}
+	if _, err := st.AcceptMessage(ctx, sid, "r2", "t2", "message", "h2", provider.Message{Role: "user", Content: "Summarize the build plan"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	result = e.run(ctx, sid, "", req, nil)
+	if result.Status != agentproto.Pass {
+		t.Fatalf("follow-up result = %+v", result)
+	}
+	for _, got := range instructions {
+		if got != instructions[0] {
+			t.Fatalf("follow-up changed system sections:\n%s\n%s", instructions[0], got)
+		}
+	}
+	if strings.Contains(instructions[0], "CURRENT REQUEST") || strings.Contains(instructions[0], "Report the build plan") {
+		t.Fatal("volatile request/report leaked into system sections")
+	}
+	if !strings.HasPrefix(tails[len(tails)-1], "CURRENT REQUEST (the person's latest message; authoritative)\nSummarize the build plan") || strings.Contains(tails[len(tails)-1], "PENDING REPORT") {
+		t.Fatal("follow-up tail must carry the new request without the delivered report")
 	}
 }
 

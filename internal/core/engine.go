@@ -951,8 +951,9 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				tools: names, readOnlyWorker: req.Workspace.Mode == "read", efficientWorker: efficientWorker,
 				deployment: runtimeCfg.Instructions, bootstrap: discovery.Bootstrap(),
 			})
+			history = append(history, provider.Message{Role: "user", Content: currentRequest(s, latestRequest)})
 			history = mode.apply(history)
-			return provider.Request{System: system, Memory: e.memoryForRequest(runtimeCfg, sid), DurableSpec: durableSpec(s, latestRequest), Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the durable summary.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: definitions, NoToolCalls: mode.noCalls, MaxOutput: min(outputCap, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
+			return provider.Request{System: system, Memory: e.memoryForRequest(runtimeCfg, sid), DurableSpec: durableSpec(s), Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the durable summary.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: definitions, NoToolCalls: mode.noCalls, MaxOutput: min(outputCap, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
 		}
 		var resp provider.Response
 		failed := []string{}
@@ -1437,39 +1438,39 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 	}
 }
 
-// taskSection leads the durable spec with the request the agent is working
-// on. A session's spec is its first message; in a conversation that has moved
-// on, leading with it makes the oldest question the most prominent request
-// in every prompt, and after compaction the newer ones may be gone from
-// history entirely. So the person's latest message leads, verbatim, and the
-// first is kept as context.
+// taskSection keeps the latest request prominent at the conversation tail,
+// including after compaction, without changing the cached system prefix.
 func taskSection(spec, latest string) string {
 	latest = strings.TrimSpace(latest)
-	if latest == "" || latest == strings.TrimSpace(spec) {
-		return "TASK\n" + spec
+	if latest == "" {
+		latest = spec
 	}
 	return "CURRENT REQUEST (the person's latest message; authoritative)\n" + latest +
 		"\n\nFIRST REQUEST OF THIS SESSION (context only; already answered unless the current request restates it)\n" + spec
 }
 
-func durableSpec(s store.Session, latest string) string {
+// durableSpec excludes the continuation anchors that are cleared on pass.
+// The remaining state stays stable between compactions.
+func durableSpec(s store.Session) string {
+	summary := s.DurableSummary
 	var state DurableState
-	if json.Unmarshal([]byte(s.DurableSummary), &state) != nil || strings.TrimSpace(state.CurrentObjective) == "" {
-		return taskSection(s.Spec, latest) + "\n\nDURABLE SUMMARY\n" + s.DurableSummary
+	if json.Unmarshal([]byte(summary), &state) == nil {
+		state.CurrentObjective = ""
+		state.PendingReport = ""
+		summary = store.JSON(state)
 	}
-	var b strings.Builder
-	b.WriteString(taskSection(s.Spec, latest))
-	b.WriteString("\n\nCURRENT OBJECTIVE (authoritative)\n")
-	b.WriteString(state.CurrentObjective)
-	b.WriteString("\n\nPENDING REPORT (authoritative)\n")
-	b.WriteString(state.PendingReport)
-	if len(state.ResolvedRequests) > 0 {
-		b.WriteString("\n\nRESOLVED REQUESTS (do not re-answer or reopen)\n")
-		b.WriteString(strings.Join(state.ResolvedRequests, "\n"))
+	return "FIRST REQUEST OF THIS SESSION (context only; the latest request is authoritative)\n" + s.Spec +
+		"\n\nDURABLE SUMMARY\n" + summary
+}
+
+func currentRequest(s store.Session, latest string) string {
+	text := taskSection(s.Spec, latest)
+	var state DurableState
+	if json.Unmarshal([]byte(s.DurableSummary), &state) == nil && strings.TrimSpace(state.CurrentObjective) != "" {
+		text += "\n\nCURRENT OBJECTIVE (continuation context; the latest request takes precedence)\n" + state.CurrentObjective
+		text += "\n\nPENDING REPORT (continuation context; the latest request takes precedence)\n" + state.PendingReport
 	}
-	b.WriteString("\n\nDURABLE SUMMARY\n")
-	b.WriteString(s.DurableSummary)
-	return b.String()
+	return text
 }
 
 func shouldBlockEditForInstructions(call provider.ToolCall, instructionBoundaryHit bool) bool {

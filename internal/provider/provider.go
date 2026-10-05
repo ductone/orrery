@@ -98,9 +98,8 @@ type Request struct {
 
 // systemSections joins a request's system-level text in the cache-aware order
 // System, Memory, DurableSpec, Plan: stable instructions first, then the
-// volatile pinned-memory suffix, then the per-turn durable spec/plan. A
-// memory refresh therefore invalidates only its own section, not the whole
-// prefix.
+// pinned memory and durable state. Latest requests and pending reports travel
+// in Messages instead, so follow-ups preserve this prefix.
 func systemSections(r Request) []string {
 	sections := []string{r.System}
 	if r.Memory != "" {
