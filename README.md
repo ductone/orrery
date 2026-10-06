@@ -74,6 +74,16 @@ The `ask` tool transitions only the current turn to `input_required`; the sessio
 
 The terminal UI renders one session's event log into scrollback and keeps a live region for the running turn, plan, queue, and composer. It embeds the engine or attaches to `serve`, and implements the harness side of Squire's agent contract: session binding, a prompt control socket, and an event journal. See [terminal UI](docs/tui.md).
 
+## Workspace memory
+
+Orrery stores durable memory in local SQLite, scoped to the workspace rather than a session. Active-record injection defaults on, bounded to **8 records / 1200 estimated tokens**; set `memory.inject: false` to omit active memory from prompts without disabling extraction or storage. Retrieved memory is untrusted data, never instructions.
+
+The parent extracts evidence-backed proposals from root-session evidence after successful requests (with startup catch-up) and during compaction. Workers cannot propose typed memory candidates, and worker results are not a direct extraction source. Extracted records start pending: Jev triage drops candidates scoring below 0.5; missing credentials, failed calls, or missing answers leave them pending. Successful triage plus sightings in **two distinct sessions** promotes a proposal, even with `auto_commit: false` (the default). Opting into `auto_commit` allows immediate activation after successful triage.
+
+Pending proposals are surfaced in the next request context as **untrusted proposals, not established facts**, so the agent can ask for confirmation. Proposal event notices carry IDs, not memory text. The `memory` tool supports inspect/propose/confirm/correct/forget; confirmation, corrections, and forgetting require the person's explicit instruction. Corrections supersede old records; forgetting removes their content and invalidates pinned memory.
+
+Supported kinds are `fact`, `command`, `decision`, `preference`, and `lesson`; provenance is `user`, `instruction`, `observed`, or `extracted`. Migration normalizes unknown legacy kinds/provenance to `fact`/`observed`. `retain_days: 0` means no automatic expiry; memory listing sweeps elapsed expiry timestamps into the persisted `expired` status, excluding those records from active injection. See [memory design and current behavior](docs/proposals/memory.md) and [example config](orrery.example.yaml).
+
 ## Routing
 
 Most harnesses pick one model per session. Orrery re-decides at four points: the start of every turn (`turn`), when a worker job is spawned (`spawn`), when an independent reviewer is created (`review`), and when the loop escalates after a stall (`escalation`). Each decision is scored, recorded, and explained in one line, for example `stayed on <model>: phase implement, warm prefix 82K, estimated next-call cost $0.0141`.

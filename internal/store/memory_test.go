@@ -163,8 +163,15 @@ func TestMemoryReviewRegressions(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := s.ListMemory(ctx, MemoryFilter{WorkspaceID: w.ID, Status: "expired"})
-	if err != nil || len(got) != 1 || got[0].ID != expiredByStatus.ID {
-		t.Fatalf("explicit expired filter: %+v %v", got, err)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("explicit expired filter includes swept and explicitly retired records: %+v %v", got, err)
+	}
+	seenExpired := map[string]bool{}
+	for _, rec := range got {
+		seenExpired[rec.ID] = true
+	}
+	if !seenExpired[expiredRec.ID] || !seenExpired[expiredByStatus.ID] {
+		t.Fatalf("missing expired record: %+v", got)
 	}
 	if got, err := s.ListMemory(ctx, MemoryFilter{WorkspaceID: w.ID}); err != nil || len(got) != 1 {
 		t.Fatalf("expired status leaked into default list: %+v %v", got, err)

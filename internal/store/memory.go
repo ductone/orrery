@@ -7,12 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-const memorySchema = `CREATE TABLE IF NOT EXISTS workspaces(workspace_id TEXT PRIMARY KEY, identity_key TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS memory_records(memory_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id), scope TEXT NOT NULL CHECK(scope IN ('workspace','project','user')), kind TEXT NOT NULL, text TEXT NOT NULL, provenance TEXT NOT NULL, confidence REAL NOT NULL CHECK(confidence>=0 AND confidence<=1), status TEXT NOT NULL CHECK(status IN ('pending','active','superseded','expired','deleted')), evidence_refs TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT, superseded_by TEXT REFERENCES memory_records(memory_id)); CREATE INDEX IF NOT EXISTS memory_records_lookup ON memory_records(workspace_id,scope,status,updated_at);`
+const memoryBaseSchema = `CREATE TABLE IF NOT EXISTS workspaces(workspace_id TEXT PRIMARY KEY, identity_key TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS memory_records(memory_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id), scope TEXT NOT NULL CHECK(scope IN ('workspace','project','user')), kind TEXT NOT NULL, text TEXT NOT NULL, provenance TEXT NOT NULL, confidence REAL NOT NULL CHECK(confidence>=0 AND confidence<=1), status TEXT NOT NULL CHECK(status IN ('pending','active','superseded','expired','deleted')), evidence_refs TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT, superseded_by TEXT REFERENCES memory_records(memory_id)); CREATE INDEX IF NOT EXISTS memory_records_lookup ON memory_records(workspace_id,scope,status,updated_at);`
 
 var (
 	ErrMemoryNotFound        = errors.New("memory record not found")
@@ -39,6 +40,9 @@ type MemoryFilter struct {
 	Scope          string
 	Status         string
 	IncludeExpired bool
+	// IncludeDeleted also returns forget tombstones, so extraction can avoid
+	// resurrecting something the person explicitly forgot.
+	IncludeDeleted bool
 }
 
 // EnsureWorkspace returns the stable workspace row for an application-resolved identity key.
@@ -333,7 +337,15 @@ func (s *Store) ListMemory(ctx context.Context, f MemoryFilter) ([]MemoryRecord,
 	if f.WorkspaceID == "" {
 		return nil, errors.New("workspace id is required")
 	}
-	query := `SELECT memory_id,workspace_id,scope,kind,text,provenance,confidence,status,evidence_refs,created_at,updated_at,expires_at,COALESCE(superseded_by,'') FROM memory_records WHERE workspace_id=? AND status!='deleted'`
+	// Persist expiry before filtering, including pending records. Terminal user
+	// corrections and forget tombstones keep their status.
+	if _, err := s.db.ExecContext(ctx, `UPDATE memory_records SET status='expired',updated_at=? WHERE workspace_id=? AND status IN ('active','pending') AND expires_at IS NOT NULL AND julianday(expires_at)<=julianday(?)`, time.Now().UTC().Format(time.RFC3339Nano), f.WorkspaceID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return nil, err
+	}
+	query := `SELECT memory_id,workspace_id,scope,kind,text,provenance,confidence,status,evidence_refs,created_at,updated_at,expires_at,COALESCE(superseded_by,'') FROM memory_records WHERE workspace_id=?`
+	if !f.IncludeDeleted {
+		query += ` AND status!='deleted'`
+	}
 	args := []any{f.WorkspaceID}
 	if f.Scope != "" {
 		query += ` AND scope=?`
@@ -423,6 +435,12 @@ func validateMemoryRecord(x MemoryRecord) error {
 	}
 	if x.Provenance == "" {
 		return errors.New("memory provenance is required")
+	}
+	if !validMemoryKind(x.Kind) {
+		return fmt.Errorf("memory kind must be one of %s", strings.Join(MemoryKinds, ", "))
+	}
+	if !validMemoryProvenance(x.Provenance) {
+		return fmt.Errorf("memory provenance must be one of %s", strings.Join(MemoryProvenances, ", "))
 	}
 	if x.Confidence < 0 || x.Confidence > 1 {
 		return errors.New("memory confidence must be between 0 and 1")

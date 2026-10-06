@@ -47,7 +47,8 @@ type DurableState struct {
 	InputToMessage   int `json:"input_to_message,omitempty"`
 	// EvidenceRefs are bounded pointers (session/event or repository path) a
 	// later turn can follow instead of re-deriving evidence from prose.
-	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+	EvidenceRefs     []string          `json:"evidence_refs,omitempty"`
+	MemoryCandidates []MemoryCandidate `json:"memory_candidates,omitempty"`
 	// Trigger/Reason record why compaction ran (phase_or_context_boundary,
 	// manual, token_pressure, ...).
 	Trigger string `json:"trigger,omitempty"`
@@ -72,6 +73,14 @@ type DurableState struct {
 	// session start, phase transition, or compaction can be correlated with
 	// the checkpoint that caused it.
 	CacheBoundaryID string `json:"cache_boundary_id,omitempty"`
+}
+
+// MemoryCandidate is an evidence-backed proposal extracted from a completed
+// request or compaction, not a record of task progress.
+type MemoryCandidate struct {
+	Kind         string   `json:"kind"`
+	Text         string   `json:"text"`
+	EvidenceRefs []string `json:"evidence_refs"`
 }
 
 type durableAnchor struct {
@@ -177,6 +186,16 @@ func (e *Engine) compactState(ctx context.Context, sid, reason string, emit Emit
 	state.ClearedToolBytes = clearedBytes
 	state.Validated = true
 	state.CacheBoundaryID = uuid.NewString()
+	compactedEvents, err := e.store.EventsAfter(ctx, sid, 0)
+	if err != nil {
+		return err
+	}
+	compactedSeq := 0
+	for _, event := range compactedEvents {
+		if !event.CreatedAt.After(msgs[keepAt-1].CreatedAt) {
+			compactedSeq = event.Seq
+		}
+	}
 	encoded, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -184,6 +203,16 @@ func (e *Engine) compactState(ctx context.Context, sid, reason string, emit Emit
 	s.DurableSummary = string(encoded)
 	if err = e.store.ApplyCompaction(ctx, s, len(msgs)-keepAt); err != nil {
 		return err
+	}
+	if len(state.MemoryCandidates) > 0 {
+		if err := e.persistMemoryCandidates(ctx, sid, s.WorkspacePath, state.MemoryCandidates, state.EvidenceRefs); err != nil {
+			return err
+		}
+	}
+	if summaryErr == nil {
+		if err := e.store.AdvanceMemoryWatermark(ctx, sid, compactedSeq); err != nil {
+			return err
+		}
 	}
 	if err := e.mcpBoundary(ctx); err != nil {
 		e.emit(ctx, sid, "runtime_config.reload_failed", map[string]any{"error": err.Error()}, emit)
@@ -262,7 +291,7 @@ func (e *Engine) summarizeTranscript(ctx context.Context, s store.Session, todos
 	if !ok || providers == nil || !providers.Available(spec) {
 		return DurableState{}, nil, errors.New("current model unavailable for semantic summary")
 	}
-	system := `Summarize an autonomous coding session for lossless continuation. Return one JSON object only with these exact keys: objective, current_objective, pending_report, resolved_requests, requirements, decisions, completed, files, verification, open_work, blockers, instructions, worker_results. objective, current_objective, and pending_report are strings; every other field is an array of concise strings. current_objective and pending_report must preserve the supplied LIVE TODO ANCHOR rather than an older request. resolved_requests lists requests already answered or superseded; never make them active again. Preserve concrete paths, symbols, commands, test outcomes, constraints, unresolved hypotheses, loaded instruction/skill names, and worker findings. Do not invent completion or evidence.`
+	system := `Summarize an autonomous coding session for lossless continuation. Return one JSON object only with these exact keys: objective, current_objective, pending_report, resolved_requests, requirements, decisions, completed, files, verification, open_work, blockers, instructions, worker_results, memory_candidates. objective, current_objective, and pending_report are strings; other fields are arrays of concise strings except memory_candidates, an optional array of objects with kind (fact, command, decision, preference, lesson), text, and evidence_refs (session/event pointers or repository paths, never copied content). Extract zero to a few evidence-backed facts true of the repository or person beyond this task, not session progress, secrets or speculation. current_objective and pending_report must preserve the supplied LIVE TODO ANCHOR rather than an older request. resolved_requests lists requests already answered or superseded; never make them active again. Preserve concrete paths, symbols, commands, test outcomes, constraints, unresolved hypotheses, loaded instruction/skill names, and worker findings. Do not invent completion or evidence.`
 	active := ""
 	if latest, _ := e.store.LatestRequest(ctx, s.ID); latest != "" && strings.TrimSpace(latest) != strings.TrimSpace(s.Spec) {
 		active = "\n\nACTIVE REQUEST (the person's latest message; it is the work in progress and must never be listed in resolved_requests)\n" + latest

@@ -64,12 +64,18 @@ type Engine struct {
 	// session, refreshed only at a declared cache-safe boundary: session
 	// start, phase transition, or compaction. It is never re-retrieved every
 	// turn.
-	memoryMu     sync.Mutex
-	memoryEpochs map[string]*memoryEpoch
+	memoryExtractionMu sync.Mutex
+	memoryRunMu        sync.Mutex
+	memoryMu           sync.Mutex
+	memoryEpochs       map[string]*memoryEpoch
 }
 
 func New(cfg config.Config, s *store.Store, p *provider.Registry, mc *mcp.Manager) *Engine {
-	return &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), lsp: lsp.New(cfg.LSP), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}, writers: map[string]string{}, compactedLastTurn: map[string]bool{}, toolStates: map[string]*builtin.SessionState{}, memoryEpochs: map[string]*memoryEpoch{}}
+	e := &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), lsp: lsp.New(cfg.LSP), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}, writers: map[string]string{}, compactedLastTurn: map[string]bool{}, toolStates: map[string]*builtin.SessionState{}, memoryEpochs: map[string]*memoryEpoch{}}
+	if p != nil {
+		e.catchUpMemory(context.Background())
+	}
+	return e
 }
 
 // markCompacted records that a session's history was just compacted so the
@@ -1289,7 +1295,14 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			turnOutcome["completion"] = "accepted"
 			turnOutcome["progress"] = progress.stall()
 			_ = e.store.UpdateLatestTurnRoutingOutcome(ctx, sid, s.Turn, turnOutcome)
-			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Pass, Result: result, Outcome: outcome}, emit)
+			if parentJob == "" {
+				e.emit(ctx, sid, "memory.extraction_input", map[string]any{"files_changed": e.changedPaths(ctx, sid, req.Workspace.Path, progress), "checks": progress.checksSinceEdit}, emit)
+			}
+			finished := e.finish(sid, agentproto.TaskResult{Status: agentproto.Pass, Result: result, Outcome: outcome}, emit)
+			if parentJob == "" {
+				e.scheduleMemoryExtraction(ctx, sid)
+			}
+			return finished
 		}
 		emptyCompletions = 0
 		turnImages := []provider.Image{}

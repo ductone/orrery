@@ -31,7 +31,7 @@ func TestMemoryControlLifecycle(t *testing.T) {
 	emit := func(ev agentproto.AgentEvent) { events = append(events, ev) }
 
 	proposed, err := e.controlMemory(ctx, "s1", root, "propose", map[string]any{
-		"kind": "convention", "text": "tests live beside sources",
+		"kind": "fact", "text": "tests live beside sources",
 		"evidence_refs": []any{"internal/core/memory.go"},
 	}, emit)
 	if err != nil {
@@ -121,7 +121,7 @@ func TestMemoryCorrectionGuardsAndPinnedCopy(t *testing.T) {
 	e := memoryEngine(t, config.MemoryConfig{MaxRecordBytes: 8})
 	root := t.TempDir()
 	pending, err := e.controlMemory(ctx, "s1", root, "propose", map[string]any{
-		"kind": "convention", "text": "short", "evidence_refs": []any{"test"},
+		"kind": "fact", "text": "short", "evidence_refs": []any{"test"},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -184,7 +184,7 @@ func TestMemoryControlInvalidatesPinnedMemory(t *testing.T) {
 	e.memoryMu.Unlock()
 
 	if _, err := e.controlMemory(ctx, "s1", root, "propose", map[string]any{
-		"kind": "convention", "text": "prefer table tests",
+		"kind": "preference", "text": "prefer table tests",
 		"evidence_refs": []any{"internal/core"},
 	}, nil); err != nil {
 		t.Fatal(err)
@@ -350,8 +350,8 @@ func TestMemoryControlCannotRevivedExpiredRecord(t *testing.T) {
 	root := t.TempDir()
 	workspaceID := mustMemoryWorkspace(t, e, root)
 	expired, err := e.store.CommitMemory(ctx, store.MemoryRecord{
-		WorkspaceID: workspaceID, Scope: "workspace", Kind: "convention",
-		Text: "stale note", Provenance: "evidence_backed_candidate", Confidence: 1,
+		WorkspaceID: workspaceID, Scope: "workspace", Kind: "fact",
+		Text: "stale note", Provenance: "observed", Confidence: 1,
 		Status: "expired", EvidenceRefs: `["internal/core"]`,
 	})
 	if err != nil {

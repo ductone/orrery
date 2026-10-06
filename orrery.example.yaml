@@ -58,13 +58,13 @@ budget:
 #   # of always planning it. Sends the message, task, and todo plan to TypeSafe.
 #   routing: true
 #   timeout_seconds: 5
-# Durable, workspace-scoped memory (see docs/proposals/memory.md). Memory is
-# always on and cannot be disabled; shadow, inject, and auto_commit are
-# independently gated: memory can be derived and measured in shadow mode
-# without ever being injected into a prompt or committed automatically.
+# Durable, workspace-scoped memory (see docs/proposals/memory.md). Derivation,
+# retrieval, and storage are always on. Bounded active-record injection defaults
+# on; set inject: false to omit active memory from prompts. Extracted proposals
+# stay pending unless confirmed or successfully triaged and repeated across two
+# distinct sessions. auto_commit opts into immediate activation after triage.
 # memory:
-#   shadow: true
-#   inject: false
+#   inject: true
 #   auto_commit: false
 #   max_records: 8
 #   max_tokens: 1200

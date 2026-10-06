@@ -324,11 +324,11 @@ func TestLoadUnresolvedNeedsNoSecrets(t *testing.T) {
 
 func TestMemoryDefaults(t *testing.T) {
 	d := Default()
-	if d.Memory.Inject || d.Memory.AutoCommit {
-		t.Fatalf("memory inject/auto_commit must default to false: %+v", d.Memory)
+	if !d.Memory.Inject {
+		t.Fatal("memory inject must default to true")
 	}
-	if !d.Memory.Shadow {
-		t.Fatal("memory shadow must default to true")
+	if d.Memory.AutoCommit {
+		t.Fatal("memory auto_commit must default to false")
 	}
 	if d.Memory.Records() != 8 {
 		t.Fatalf("default max_records = %d, want 8", d.Memory.Records())
@@ -373,7 +373,10 @@ func TestMemoryStrictDecodeAndValidation(t *testing.T) {
 		}
 	}
 
-	if _, err := write("memory:\n  shadow: true\n  bogus_field: true\n"); err == nil {
+	if _, err := write("memory:\n  shadow: true\n"); err == nil {
+		t.Fatal("removed memory.shadow must be rejected")
+	}
+	if _, err := write("memory:\n  bogus_field: true\n"); err == nil {
 		t.Fatal("an unknown memory field must be rejected")
 	}
 	if _, err := write("memory:\n  jev:\n    bogus_field: true\n"); err == nil {
@@ -397,11 +400,11 @@ func TestMemoryStrictDecodeAndValidation(t *testing.T) {
 		t.Fatalf("memory.jev.compaction_benefit without jev.api_key must fall back cleanly, not fail to load: %v", err)
 	}
 
-	cfg, err := write("jev:\n  api_key: k\nmemory:\n  inject: true\n  auto_commit: true\n  max_records: 20\n  jev:\n    selection: true\n    compaction_benefit: true\n    timeout: 500ms\n    max_candidates: 30\n")
+	cfg, err := write("jev:\n  api_key: k\nmemory:\n  inject: false\n  auto_commit: true\n  max_records: 20\n  jev:\n    selection: true\n    compaction_benefit: true\n    timeout: 500ms\n    max_candidates: 30\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Memory.Inject || !cfg.Memory.AutoCommit {
+	if cfg.Memory.Inject || !cfg.Memory.AutoCommit {
 		t.Fatalf("memory overrides lost: %+v", cfg.Memory)
 	}
 	if cfg.Memory.Records() != 20 {

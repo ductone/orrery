@@ -114,25 +114,20 @@ func (j JevConfig) Timeout() time.Duration {
 }
 
 // MemoryConfig governs the durable, workspace-scoped memory layer described
-// in docs/proposals/memory.md. Memory is always on: derivation, retrieval,
-// and storage cannot be turned off. Shadow, inject, and auto-commit remain
-// independently gated: memory can be derived and measured in shadow mode
-// without ever being injected into a prompt or committed automatically.
+// in docs/proposals/memory.md. Derivation, retrieval, and storage are always on;
+// injection defaults on and can be disabled independently of automatic commit.
 // Numeric limits are clamped in code to safe ceilings/floors; RetainDays of 0
 // means records never expire automatically.
 type MemoryConfig struct {
 	// LegacyEnabled accepts the removed enabled key so existing strict-decoded
 	// configs continue to load. Its value is ignored; memory is always on.
 	LegacyEnabled *bool `yaml:"enabled,omitempty"`
-	// Shadow retrieves/derives candidate records and records observations
-	// without injecting them into a prompt or changing behaviour.
-	Shadow bool `yaml:"shadow"`
-	// Inject allows selected memory to be added to the assembled prompt. It is
-	// independent of Shadow so injection can be opted into separately after
-	// shadow evaluation.
+	// Inject adds selected active memory to the assembled prompt by default.
+	// Selection remains bounded by MaxRecords and MaxTokens.
 	Inject bool `yaml:"inject"`
-	// AutoCommit allows model-derived candidates to become active records
-	// without explicit user confirmation. Suggestions stay pending otherwise.
+	// AutoCommit allows immediate activation of model-derived candidates.
+	// It defaults off; extracted proposals can still be promoted after successful
+	// triage and observations in two distinct sessions, or user confirmation.
 	AutoCommit bool `yaml:"auto_commit"`
 	// MaxRecords caps how many memory records may be selected/pinned at once.
 	// Optional: zero/negative means defaultMemoryMaxRecords.
@@ -432,7 +427,7 @@ func Default() Config {
 		LSP:    map[string]LSPConfig{},
 		Router: RouterConfig{LambdaCost: .35, FrontierFloorPhases: []string{"plan", "diagnose"}},
 		Budget: BudgetConfig{SessionUSD: 25, JobDefaultFraction: .2, MinReviewUSD: defaultMinReviewUSD},
-		Memory: MemoryConfig{Shadow: true},
+		Memory: MemoryConfig{Inject: true},
 	}
 }
 
