@@ -84,7 +84,7 @@ func responsesCall(id, name string, args map[string]any) map[string]any {
 	return map[string]any{"model": "gpt-5.6-terra", "status": "completed", "output": []any{map[string]any{"type": "function_call", "call_id": id, "name": name, "arguments": string(b)}}, "usage": map[string]any{"input_tokens": 10, "output_tokens": 5}}
 }
 
-func runScripted(t *testing.T, s *scriptedResponses, mode string) agentproto.TaskResult {
+func runScripted(t *testing.T, s *scriptedResponses, mode string, callbacks ...EmitFunc) agentproto.TaskResult {
 	t.Helper()
 	e, _ := testEngine(t)
 	workspace := t.TempDir()
@@ -98,6 +98,10 @@ func runScripted(t *testing.T, s *scriptedResponses, mode string) agentproto.Tas
 		Router:        config.RouterConfig{DisableSwitch: true, DefaultModel: "openai/gpt-5.6-terra"},
 	}
 	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
+	var emit EmitFunc
+	if len(callbacks) > 0 {
+		emit = callbacks[0]
+	}
 	req := agentproto.TaskRequest{
 		Spec:      "Summarise the files",
 		Budget:    agentproto.Budget{MaxUSD: 5, MaxTokens: 1_000_000, MaxWallClock: time.Minute},
@@ -109,9 +113,9 @@ func runScripted(t *testing.T, s *scriptedResponses, mode string) agentproto.Tas
 		if err := e.store.CreateSession(context.Background(), store.Session{ID: sid, Spec: req.Spec, Phase: "explore", BudgetUSD: 5, WorkspacePath: workspace, WorkspaceOwnership: "external"}); err != nil {
 			t.Fatal(err)
 		}
-		return e.run(context.Background(), sid, "job-1", req, nil)
+		return e.run(context.Background(), sid, "job-1", req, emit)
 	}
-	_, results, err := e.Start(context.Background(), req, nil)
+	_, results, err := e.Start(context.Background(), req, emit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +148,28 @@ func TestForcedSynthesisKeepsPrefixAndForbidsCalls(t *testing.T) {
 		}
 		return responsesCall(fmt.Sprintf("c%d", n), "read", map[string]any{"path": fmt.Sprintf("f%d.txt", n)})
 	}}
-	result := runScripted(t, s, "read")
+	var interventions []map[string]any
+	result := runScripted(t, s, "read", func(event agentproto.AgentEvent) {
+		if event.Type == "progress.intervention" {
+			interventions = append(interventions, event.Data.(map[string]any))
+		}
+	})
+	if len(interventions) != 1 {
+		t.Fatalf("interventions = %#v", interventions)
+	}
+	intervention := interventions[0]
+	if intervention["kind"] != "mode.restrict" || intervention["no_calls"] != true || fmt.Sprint(intervention["modes"]) != "[synthesis]" {
+		t.Fatalf("synthesis intervention = %#v", intervention)
+	}
+	// Session turns are zero-based; phaseTurns counts the current turn too.
+	if intervention["turn"] != defaultWorkerTurns || intervention["worker_turn_limit"] != defaultWorkerTurns || intervention["phase_turns"] != defaultWorkerTurns+1 {
+		t.Fatalf("synthesis counters = %#v", intervention)
+	}
+	for _, key := range []string{"allowed_tools", "phase", "no_progress_turns", "repeated_todos", "turns_since_edit", "delegated", "verified", "awaiting_fix"} {
+		if _, ok := intervention[key]; !ok {
+			t.Errorf("missing %s in %#v", key, intervention)
+		}
+	}
 	if result.Status != agentproto.Pass {
 		t.Fatalf("result = %+v", result)
 	}

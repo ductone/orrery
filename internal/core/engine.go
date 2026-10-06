@@ -937,6 +937,28 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		if forceFinalResolution {
 			mode.advise("This review or diagnosis has run long. Unless a specific fix remains, return the final result now from the existing diff, verification, and review evidence.")
 		}
+		if mode.active() {
+			forced := map[string]bool{"synthesis": forceSynthesis, "advance": forceAdvance, "plan_synthesis": forcePlanSynthesis, "plan_execution": forcePlanExecution, "implementation": forceImplementation, "verified_completion": forceVerifiedCompletion, "resolution": forceResolution, "final_resolution": forceFinalResolution}
+			kinds := []string{}
+			for kind, on := range forced {
+				if on {
+					kinds = append(kinds, kind)
+				}
+			}
+			slices.Sort(kinds)
+			modeKind := "mode.advise"
+			if mode.noCalls || mode.allowed != nil {
+				modeKind = "mode.restrict"
+			}
+			e.emit(ctx, sid, "progress.intervention", map[string]any{
+				"kind": modeKind, "modes": kinds, "no_calls": mode.noCalls, "allowed_tools": mode.allowed,
+				"phase": s.Phase, "turn": s.Turn, "phase_turns": progress.phaseTurns,
+				"no_progress_turns": progress.noProgressTurns, "repeated_todos": progress.repeatedTodos,
+				"turns_since_edit": progress.turnsSinceEdit, "delegated": progress.delegated,
+				"verified": progress.verified, "awaiting_fix": progress.awaitingFix(),
+				"worker_turn_limit": workerTurnLimit(req),
+			}, emit)
+		}
 		build := func(m model.ModelSpec, d router.Decision) (provider.Request, error) {
 			history, err := e.providerMessages(ctx, sid)
 			if err != nil {
