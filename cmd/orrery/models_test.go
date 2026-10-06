@@ -339,7 +339,37 @@ func TestModelsStatsColumns(t *testing.T) {
 	var code int
 	out := captureStdout(t, func() { code = listModels(ctx, rt, []string{"--stats"}) })
 	row := tableRows(out)["xai/grok-4.6"]
-	if code != 0 || len(row) != 14 || strings.Join(row[8:13], " ") != "1 200.0s 5 100 1" || row[13] == "-" {
+	if code != 0 || len(row) != 19 || strings.Join(row[8:13], " ") != "1 200.0s 5 100 1" || row[13] == "-" {
+		t.Fatalf("exit=%d row=%v output=%s", code, row, out)
+	}
+}
+
+func TestModelsStatsOutcomeColumns(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ORRERY_HOME", dir)
+	rt := modelsRuntime(t, dir, filepath.Join(dir, "missing.yaml"))
+	ctx := context.Background()
+	if err := rt.store.CreateSession(ctx, store.Session{ID: "a", BudgetUSD: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range []struct {
+		kind string
+		data any
+	}{
+		{"routing.decision", map[string]any{"decision": map[string]any{"model": map[string]any{"id": "xai/grok-4.6"}}}},
+		{"tool.finished", map[string]any{"call": map[string]any{"name": "edit"}}},
+		{"review.outcome", map[string]any{"pass": true}},
+		{"assistant.message", map[string]any{"model": "xai/grok-4.6"}},
+		{"session.terminal", map[string]any{"status": "pass"}},
+	} {
+		if _, err := rt.store.AddEvent(ctx, "a", ev.kind, ev.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var code int
+	out := captureStdout(t, func() { code = listModels(ctx, rt, []string{"--stats"}) })
+	row := tableRows(out)["xai/grok-4.6"]
+	if code != 0 || len(row) != 19 || row[14] != "1.0/0.0" || row[18] != "1/0/0/0" {
 		t.Fatalf("exit=%d row=%v output=%s", code, row, out)
 	}
 }

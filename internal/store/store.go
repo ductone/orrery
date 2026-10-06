@@ -16,7 +16,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-type Store struct{ db *sql.DB }
+type Store struct {
+	db       *sql.DB
+	outcomes *outcomeProjector
+}
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -30,7 +33,7 @@ func Open(path string) (*Store, error) {
 	// worker goroutines deterministic transaction ordering without SQLITE_BUSY.
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	s := &Store{db}
+	s := &Store{db: db, outcomes: newOutcomeProjector()}
 	if err = s.migrate(); err != nil {
 		db.Close()
 		return nil, err
@@ -82,11 +85,14 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(shadowSchema + modelStatsSchema)
+	_, err = s.db.Exec(shadowSchema + modelStatsSchema + modelOutcomesSchema)
 	if err != nil {
 		return err
 	}
-	return s.backfillModelStats()
+	if err := s.backfillModelStats(); err != nil {
+		return err
+	}
+	return s.backfillModelOutcomes()
 }
 
 func (s *Store) ensureColumn(table, name, definition string) error {
@@ -1336,6 +1342,9 @@ func (s *Store) addEventTx(ctx context.Context, tx *sql.Tx, sid, turnID, typ str
 	}
 	now := time.Now().UTC()
 	if _, err = tx.ExecContext(ctx, `INSERT INTO events(session_id,seq,turn_id,type,data_json,created_at)VALUES(?,?,?,?,?,?)`, sid, seq, turnID, typ, string(b), now.Format(time.RFC3339Nano)); err != nil {
+		return Event{}, err
+	}
+	if err = s.outcomes.apply(ctx, tx, sid, typ, b); err != nil {
 		return Event{}, err
 	}
 	return Event{SchemaVersion: 1, EventID: fmt.Sprintf("%s:%d", sid, seq), Seq: seq, SessionID: sid, TurnID: turnID, Type: typ, Data: b, CreatedAt: now}, nil
