@@ -99,10 +99,11 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 	req.Header.Set("x-api-key", key)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("content-type", "application/json")
-	resp, err := c.http.Do(req)
+	resp, release, err := sendWithDeadlines(c.http, req, c.pool, key, m.ID, m.Compat.FirstByteTimeout)
 	if err != nil {
 		return Response{}, err
 	}
+	defer release()
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode/100 != 2 {

@@ -114,10 +114,11 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 	req, _ := http.NewRequestWithContext(ctx, "POST", c.base+"/v1/chat/completions", bytes.NewReader(b))
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.http.Do(req)
+	resp, release, err := sendWithDeadlines(c.http, req, c.pool, key, m.ID, m.Compat.FirstByteTimeout)
 	if err != nil {
 		return Response{}, err
 	}
+	defer release()
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode/100 != 2 {

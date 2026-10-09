@@ -295,6 +295,7 @@ type ModelCompatConfig struct {
 	RequiresAssistantText   *bool                    `yaml:"requires_assistant_text,omitempty"`
 	SupportsStrictTools     *bool                    `yaml:"supports_strict_tools,omitempty"`
 	StreamIdleTimeout       *time.Duration           `yaml:"stream_idle_timeout,omitempty"`
+	FirstByteTimeout        *time.Duration           `yaml:"first_byte_timeout,omitempty"`
 	SystemPromptStyle       *model.SystemStyle       `yaml:"system_prompt_style,omitempty"`
 	CacheControl            *bool                    `yaml:"cache_control,omitempty"`
 }
@@ -575,6 +576,9 @@ func validateModels(models []ModelConfig) error {
 			}
 			if m.Compat.StreamIdleTimeout != nil && *m.Compat.StreamIdleTimeout < 0 {
 				return fmt.Errorf("%s: stream_idle_timeout must be non-negative", m.ID)
+			}
+			if m.Compat.FirstByteTimeout != nil && *m.Compat.FirstByteTimeout < 0 {
+				return fmt.Errorf("%s: first_byte_timeout must be non-negative", m.ID)
 			}
 		}
 		if m.Pricing != nil {

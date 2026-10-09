@@ -241,6 +241,9 @@ func override(m model.ModelSpec, o config.ModelConfig) model.ModelSpec {
 		if c.StreamIdleTimeout != nil {
 			m.Compat.StreamIdleTimeout = *c.StreamIdleTimeout
 		}
+		if c.FirstByteTimeout != nil {
+			m.Compat.FirstByteTimeout = *c.FirstByteTimeout
+		}
 		if c.SystemPromptStyle != nil {
 			m.Compat.SystemPromptStyle = *c.SystemPromptStyle
 		}

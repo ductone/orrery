@@ -22,6 +22,10 @@ type Model struct {
 	Effort            []Effort
 	EditDialect       EditDialect
 	StreamIdleTimeout time.Duration
+	// FirstByteTimeout is how long to wait for a response's first byte
+	// before treating the call as a stalled transport failure. Zero uses the
+	// provider's default.
+	FirstByteTimeout time.Duration
 }
 
 // Route is one provider serving a model. The route's id, as recorded in
@@ -99,7 +103,7 @@ func ProviderCompat(provider string, m Model) (Compat, []Effort) {
 	for _, e := range effort {
 		reasoning = reasoning || e != EffortNone
 	}
-	c := Compat{SupportsToolChoice: true, SupportsReasoningEffort: reasoning, StreamIdleTimeout: m.StreamIdleTimeout, SystemPromptStyle: SystemTopLevel}
+	c := Compat{SupportsToolChoice: true, SupportsReasoningEffort: reasoning, StreamIdleTimeout: m.StreamIdleTimeout, FirstByteTimeout: m.FirstByteTimeout, SystemPromptStyle: SystemTopLevel}
 	switch provider {
 	case "anthropic":
 		c.MaxTokensField, c.SupportsStrictTools, c.CacheControl = "max_tokens", true, true

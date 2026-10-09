@@ -103,6 +103,7 @@ type Compat struct {
 	EffortWireMap                                                     map[Effort]string
 	RequiresReasoningEcho, RequiresAssistantText, SupportsStrictTools bool
 	StreamIdleTimeout                                                 time.Duration
+	FirstByteTimeout                                                  time.Duration
 	SystemPromptStyle                                                 SystemStyle
 	CacheControl                                                      bool
 }

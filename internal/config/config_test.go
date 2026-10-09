@@ -268,7 +268,7 @@ func TestModelOverrides(t *testing.T) {
     tier: frontier
     family: qwen
     pricing: {output: 1.5, thresholds: [{above_tokens: 200000, input: 1, output: 3, cache_read: 0.1, cache_write: 0}]}
-    compat: {supports_strict_tools: true, stream_idle_timeout: 5m}
+    compat: {supports_strict_tools: true, stream_idle_timeout: 5m, first_byte_timeout: 45s}
   - id: ramp/noisy
     disabled: true
 `)
@@ -276,23 +276,23 @@ func TestModelOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := cfg.Models[0]
-	if *q.Tier != "frontier" || *q.Family != "qwen" || *q.Pricing.Output != 1.5 || q.Pricing.Input != nil || len(*q.Pricing.Thresholds) != 1 || !*q.Compat.SupportsStrictTools || q.Compat.StreamIdleTimeout.Minutes() != 5 {
+	if *q.Tier != "frontier" || *q.Family != "qwen" || *q.Pricing.Output != 1.5 || q.Pricing.Input != nil || len(*q.Pricing.Thresholds) != 1 || !*q.Compat.SupportsStrictTools || q.Compat.StreamIdleTimeout.Minutes() != 5 || q.Compat.FirstByteTimeout.Seconds() != 45 {
 		t.Fatalf("override = %+v", q)
 	}
 	if !*cfg.Models[1].Disabled {
 		t.Fatal("disabled lost")
 	}
 	for body, want := range map[string]string{
-		"models:\n  - id: ramp/\n":                                        "provider/model",
-		"models:\n  - id: ramp/a\n  - id: ramp/a\n":                       "duplicate",
-		"models:\n  - id: ramp/a\n    family: Not Valid\n":                "invalid family",
-		"models:\n  - id: ramp/a\n    tier: legendary\n":                  "unknown tier",
-		"models:\n  - id: ramp/a\n    pricing: {input: -1}\n":             "non-negative",
-		"models:\n  - id: ramp/a\n    context_window: 0\n":                "positive",
-		"models:\n  - id: ramp/a\n    effort: [maximum]\n":                "unknown effort",
-		"models:\n  - id: ramp/a\n    edit_dialect: diff\n":               "edit_dialect",
-		"models:\n  - id: ramp/a\n    pricing: {inptu: 1}\n":              "inptu",
-		"models:\n  - id: ramp/a\n    compat: {system_prompt_style: x}\n": "system_prompt_style",
+		"models:\n  - id: ramp/\n":                                         "provider/model",
+		"models:\n  - id: ramp/a\n  - id: ramp/a\n":                        "duplicate",
+		"models:\n  - id: ramp/a\n    family: Not Valid\n":                 "invalid family",
+		"models:\n  - id: ramp/a\n    tier: legendary\n":                   "unknown tier",
+		"models:\n  - id: ramp/a\n    pricing: {input: -1}\n":              "non-negative",
+		"models:\n  - id: ramp/a\n    context_window: 0\n":                 "positive",
+		"models:\n  - id: ramp/a\n    effort: [maximum]\n":                 "unknown effort",
+		"models:\n  - id: ramp/a\n    edit_dialect: diff\n":                "edit_dialect",
+		"models:\n  - id: ramp/a\n    pricing: {inptu: 1}\n":               "inptu",
+		"models:\n  - id: ramp/a\n    compat: {first_byte_timeout: -1s}\n": "first_byte_timeout",
 	} {
 		if _, err := write(body); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: err = %v, want it to mention %q", body, err, want)
