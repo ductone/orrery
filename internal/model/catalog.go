@@ -120,6 +120,7 @@ type ModelSpec struct {
 	ContextWindow, MaxOutput int
 	Pricing                  Pricing
 	Effort                   []Effort
+	WorkEffort               Effort `json:",omitempty"`
 	Compat                   Compat
 	EditDialect              EditDialect
 	// Discovered marks a model inferred from a provider listing rather than

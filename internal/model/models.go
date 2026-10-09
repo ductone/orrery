@@ -19,7 +19,10 @@ type Model struct {
 	ContextWindow, MaxOutput int
 	// Effort lists the reasoning levels the model supports, EffortNone
 	// included when it can answer without reasoning.
-	Effort            []Effort
+	Effort []Effort
+	// WorkEffort is the reasoning level for routine explore and implement
+	// turns, from the 2026-10-09 effort sweep; empty means medium.
+	WorkEffort        Effort
 	EditDialect       EditDialect
 	StreamIdleTimeout time.Duration
 	// FirstByteTimeout is how long to wait for a response's first byte
@@ -45,9 +48,9 @@ type Route struct {
 // Models is the curated set: every model is defined once, here.
 var Models = []Model{
 	{Name: "claude-fable-5", Family: Anthropic, Tier: Frontier, Inputs: []Modality{Text, Image}, ContextWindow: 1000000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineXML, StreamIdleTimeout: 15 * time.Minute},
-	{Name: "claude-opus-5-5", Family: Anthropic, Tier: Frontier, Inputs: []Modality{Text, Image}, ContextWindow: 1000000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineXML, StreamIdleTimeout: 15 * time.Minute},
+	{Name: "claude-opus-5-5", Family: Anthropic, Tier: Frontier, Inputs: []Modality{Text, Image}, ContextWindow: 1000000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, WorkEffort: EffortLow, EditDialect: HashlineXML, StreamIdleTimeout: 15 * time.Minute},
 	{Name: "claude-sonnet-5", Family: Anthropic, Tier: Efficient, Inputs: []Modality{Text, Image}, ContextWindow: 1000000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineXML, StreamIdleTimeout: 10 * time.Minute},
-	{Name: "claude-sonnet-5-5", Family: Anthropic, Tier: Efficient, Inputs: []Modality{Text, Image}, ContextWindow: 1000000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineXML, StreamIdleTimeout: 10 * time.Minute},
+	{Name: "claude-sonnet-5-5", Family: Anthropic, Tier: Efficient, Inputs: []Modality{Text, Image}, ContextWindow: 1000000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, WorkEffort: EffortLow, EditDialect: HashlineXML, StreamIdleTimeout: 10 * time.Minute},
 
 	{Name: "gpt-5.6-sol", Family: OpenAI, Tier: Frontier, Inputs: []Modality{Text, Image}, ContextWindow: 1050000, MaxOutput: 128000, Effort: []Effort{EffortNone, EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineJSON, StreamIdleTimeout: 15 * time.Minute},
 	{Name: "gpt-5.6-terra", Family: OpenAI, Tier: Efficient, Inputs: []Modality{Text, Image}, ContextWindow: 1050000, MaxOutput: 128000, Effort: []Effort{EffortNone, EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineJSON, StreamIdleTimeout: 12 * time.Minute},
@@ -57,14 +60,14 @@ var Models = []Model{
 
 	{Name: "grok-4.5", Family: XAI, Tier: Frontier, Inputs: []Modality{Text, Image}, ContextWindow: 500000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh}, EditDialect: HashlineJSON, StreamIdleTimeout: 15 * time.Minute},
 	{Name: "grok-4.6", Family: XAI, Tier: Frontier, Inputs: []Modality{Text, Image}, ContextWindow: 500000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh}, EditDialect: HashlineJSON, StreamIdleTimeout: 6 * time.Minute},
-	{Name: "grok-4.7", Family: XAI, Tier: Frontier, Inputs: []Modality{Text, Image}, ContextWindow: 500000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineJSON, StreamIdleTimeout: 10 * time.Minute},
+	{Name: "grok-4.7", Family: XAI, Tier: Frontier, Inputs: []Modality{Text, Image}, ContextWindow: 500000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, WorkEffort: EffortLow, EditDialect: HashlineJSON, StreamIdleTimeout: 10 * time.Minute},
 
 	{Name: "kimi-k2p7-code", Family: Moonshot, Tier: Frontier, Inputs: []Modality{Text, Image}, ContextWindow: 262144, MaxOutput: 32768, Effort: []Effort{EffortLow, EffortMedium, EffortHigh}, EditDialect: HashlineJSON, StreamIdleTimeout: 15 * time.Minute},
 	{Name: "kimi-k3", Family: Moonshot, Tier: Efficient, Inputs: []Modality{Text, Image}, ContextWindow: 1048576, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineContextual, StreamIdleTimeout: 10 * time.Minute},
 	{Name: "qwen3p7-plus", Family: Qwen, Tier: Efficient, Inputs: []Modality{Text, Image}, ContextWindow: 1000000, MaxOutput: 32768, Effort: []Effort{EffortLow, EffortMedium, EffortHigh}, EditDialect: HashlineJSON, StreamIdleTimeout: 15 * time.Minute},
 	{Name: "qwen3p8-max", Family: Qwen, Tier: Efficient, Inputs: []Modality{Text, Image}, ContextWindow: 1000000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineContextual, StreamIdleTimeout: 10 * time.Minute},
 	{Name: "deepseek-v4-flash-0731", Family: DeepSeek, Tier: Efficient, Inputs: []Modality{Text}, ContextWindow: 1048576, MaxOutput: 128000, Effort: []Effort{EffortHigh}, EditDialect: HashlineContextual, StreamIdleTimeout: 15 * time.Minute},
-	{Name: "deepseek-v4.1-flash", Family: DeepSeek, Tier: Efficient, Inputs: []Modality{Text, Image}, ContextWindow: 1048576, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineContextual, StreamIdleTimeout: 10 * time.Minute},
+	{Name: "deepseek-v4.1-flash", Family: DeepSeek, Tier: Efficient, Inputs: []Modality{Text, Image}, ContextWindow: 1048576, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, WorkEffort: EffortLow, EditDialect: HashlineContextual, StreamIdleTimeout: 10 * time.Minute},
 	{Name: "glm-5p3", Family: Zhipu, Tier: Efficient, Inputs: []Modality{Text}, ContextWindow: 1048576, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineContextual, StreamIdleTimeout: 10 * time.Minute},
 	{Name: "llama-3.3-70b-instruct-turbo", Family: Llama, Tier: Tiny, Inputs: []Modality{Text}, ContextWindow: 131072, MaxOutput: 16384, Effort: []Effort{EffortNone}, EditDialect: HashlineJSON, StreamIdleTimeout: 5 * time.Minute},
 }
@@ -149,7 +152,7 @@ func (r Route) Spec(m Model) ModelSpec {
 	s := ModelSpec{
 		ID: r.Provider + "/" + wire, Model: m.Name, Family: m.Family, Tier: m.Tier,
 		Inputs: append([]Modality(nil), m.Inputs...), ContextWindow: m.ContextWindow, MaxOutput: m.MaxOutput,
-		Pricing: r.Pricing, Effort: effort, Compat: compat, EditDialect: m.EditDialect,
+		Pricing: r.Pricing, Effort: effort, WorkEffort: m.WorkEffort, Compat: compat, EditDialect: m.EditDialect,
 	}
 	if r.ContextWindow > 0 {
 		s.ContextWindow = r.ContextWindow

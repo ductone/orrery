@@ -410,3 +410,16 @@ func TestEffortLadder(t *testing.T) {
 		t.Fatalf("sparse model got %s, want low", got)
 	}
 }
+
+func TestWorkEffortDefault(t *testing.T) {
+	m := model.ModelSpec{WorkEffort: model.EffortLow, Effort: []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh}}
+	if got := effortFor(m, RoutingState{Phase: Implement}); got != model.EffortLow {
+		t.Fatalf("implement got %s, want the model's work effort", got)
+	}
+	if got := effortFor(m, RoutingState{Phase: Implement, Stall: StallSignals{FailedCommands: 2}}); got != model.EffortMedium {
+		t.Fatalf("failures got %s, want one level above the work effort", got)
+	}
+	if got := effortFor(m, RoutingState{Phase: Plan}); got != model.EffortHigh {
+		t.Fatalf("plan got %s, want high", got)
+	}
+}

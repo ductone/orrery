@@ -452,6 +452,9 @@ func effortFor(m model.ModelSpec, s RoutingState) model.Effort {
 		return s.EffortPin
 	}
 	want := model.EffortMedium
+	if m.WorkEffort != "" && slices.Contains([]Phase{Explore, Implement}, s.Phase) {
+		want = m.WorkEffort
+	}
 	if slices.Contains([]Phase{Plan, Diagnose, Review}, s.Phase) {
 		want = model.EffortHigh
 	}
