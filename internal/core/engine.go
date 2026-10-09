@@ -783,6 +783,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 	started := time.Now()
 	outcome := agentproto.Outcome{}
 	stall := router.StallSignals{}
+	stallEscalated := false
 	progress := newProgressTracker()
 	discovery, err := e.instructionDiscovery(sid, req.Workspace.Path, req.Spec)
 	if err != nil {
@@ -898,6 +899,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		}
 		state.ExcludeModels = append(state.ExcludeModels, progress.excluded...)
 		applyHints(&state, req.Hints)
+		state.Stall.Deescalated = stallEscalated
 		decision, why, err := e.decideWaiting(ctx, sid, runtimePolicy, runtimeProviders, &state, emit)
 		// No model can hold the history: bound stored tool results, compact,
 		// and route again rather than failing with "no compatible models".
@@ -917,6 +919,11 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		}
 		if err != nil {
 			return e.routeFailureAfter(sid, parentJob, err, progress, outcome, emit)
+		}
+		if decision.Model.Tier == model.Frontier && (decision.StallBoost == "failed commands" || decision.StallBoost == "failing tests" || decision.StallBoost == "repeated edits") {
+			stallEscalated = true
+		} else if decision.Model.Tier != model.Frontier {
+			stallEscalated = false
 		}
 		outputCap := capFor(decision.Model.ID)
 		e.emit(ctx, sid, "routing.decision", map[string]any{"decision": decision, "explanation": why}, emit)
@@ -943,19 +950,19 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			mode.restrict("Exploration is now complete. Synthesize the strongest existing evidence into the required result now.")
 		}
 		if forceAdvance || forcePlanSynthesis {
-			mode.restrict("The exploration turn limit has been reached. Existing evidence is sufficient. Update the todo and plan, make the smallest justified edit, or run verification.", "todo", "edit", "job_result")
+			mode.advise("Exploration or planning has run long. Consider using the evidence gathered so far to update the plan, make the smallest justified edit, or run verification.")
 		}
 		if forcePlanExecution {
-			mode.restrict("Planning is complete. Another plan update cannot advance the task. Use the evidence already gathered to make the smallest justified edit and verify it. If no change is needed or the task cannot be completed, return a concise final result now.", "read", "edit", "exec", "job_result")
+			mode.advise("Planning has run long. Consider using the evidence already gathered to make the smallest justified edit and verify it. If no change is needed or the task cannot be completed, return a concise final result.")
 		}
 		if forceImplementation {
-			mode.restrict("Implementation is stalled after decisive evidence. Stop broad exploration. Read only an exact edit window if needed, finish the smallest justified edit, then run focused verification.", "todo", "read", "edit", "exec")
+			mode.advise("Implementation has gone several turns without an edit. If the evidence is sufficient, consider finishing the smallest justified edit and running focused verification rather than broadening exploration.")
 		}
 		if forceVerifiedCompletion {
 			mode.advise("The workspace has been verified and no edit has been made for several turns. If nothing remains, return the final result now from the existing diff and verification evidence.")
 		}
 		if forceResolution {
-			mode.restrict("Review or diagnosis has reached its resolution limit. Existing issue, diff, test, and review evidence is sufficient. Do not rediscover or refetch the task. Make only the smallest correction required by current evidence, run one focused verification command, then return the final result.", "todo", "read", "edit", "exec")
+			mode.advise("Review or diagnosis has run long. Consider using the current issue, diff, test, and review evidence to make the smallest required correction, run focused verification, then return the final result.")
 		}
 		if forceFinalResolution {
 			mode.advise("This review or diagnosis has run long. Unless a specific fix remains, return the final result now from the existing diff, verification, and review evidence.")
