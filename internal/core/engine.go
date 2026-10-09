@@ -1233,14 +1233,20 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				var passed bool
 				var reviewText string
 				var reviewErr error
+				disputeAccepted := false
 				unchanged := diffHash != "" && diffHash == progress.rejectedDiff
 				if unchanged {
-					if !progress.adjudicatedDiffs[diffHash] && disputesReview(resp.Message.Content) {
+					// One refusal, then adjudication. Text matching missed real
+					// rebuttals and the refusal then repeated every turn.
+					already := progress.adjudicatedDiffs[diffHash]
+					disputed := disputesReview(resp.Message.Content)
+					switch {
+					case !already && (disputed || progress.unchangedRefusals[diffHash] >= 1):
 						if progress.adjudicatedDiffs == nil {
 							progress.adjudicatedDiffs = map[string]bool{}
 						}
 						progress.adjudicatedDiffs[diffHash] = true
-						passed, reviewText, reviewErr = e.adjudicateReview(ctx, sid, parentJob, req, progress.rejectedReview, resp.Message.Content, emit)
+						passed, reviewText, reviewErr = e.adjudicateReview(ctx, sid, parentJob, req, progress.rejectedReview, disputeRebuttal(resp.Message.Content), emit)
 						if reviewErr != nil {
 							progress.completionRejections++
 							progress.markReviewRejected(false)
@@ -1248,17 +1254,34 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 							_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Adjudication could not provide a consistent independent verdict. The original findings still stand; fix them and re-run verification:\n" + progress.rejectedReview})
 							continue
 						}
-					} else {
+					case already:
+						// Adjudication already ran for this unchanged diff and the agent
+						// still will not edit. Do not refuse again: a root session asks
+						// the person; a worker is accepted with the dispute recorded so
+						// its parent decides.
+						if parentJob == "" {
+							progress.export(&outcome)
+							return e.askAboutLimit(sid, "Independent review and adjudication upheld findings on this change, and the agent disputes them without editing. Keep going, stop here, or reply with guidance.", outcome, emit)
+						}
+						disputeAccepted = true
+						e.emit(ctx, sid, "review.dispute_accepted", map[string]any{"review": progress.rejectedReview}, emit)
+					default:
+						if progress.unchangedRefusals == nil {
+							progress.unchangedRefusals = map[string]int{}
+						}
+						progress.unchangedRefusals[diffHash]++
 						progress.completionRejections++
 						progress.markReviewRejected(true)
 						e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "diff unchanged since a failed review", "review": progress.rejectedReview}, emit)
-						_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Completion rejected: the workspace diff has not changed since the independent review that rejected it. Fix the findings with edit and re-run verification, or explicitly dispute them with a correctness rebuttal for one adjudication per diff:\n" + progress.rejectedReview})
+						_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Completion rejected: the workspace diff has not changed since the independent review that rejected it. Fix the findings with edit and re-run verification, or dispute them with a line `" + reviewDisputeMarker + "` and the correctness rebuttal. This diff is refused once; the next unchanged completion is adjudicated.\n" + progress.rejectedReview})
 						continue
 					}
 				} else {
 					passed, reviewText, reviewErr = e.reviewWorkspace(ctx, sid, parentJob, req, progress.checksSinceEdit, emit)
 				}
-				if reviewErr != nil && errors.Is(reviewErr, ErrReviewInconclusive) {
+				if disputeAccepted {
+					// Accepted unreviewed; the outcome records the dispute.
+				} else if reviewErr != nil && errors.Is(reviewErr, ErrReviewInconclusive) {
 					e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "review_inconclusive", "error": reviewErr.Error()}, emit)
 					progress.reviewed = true
 				} else if reviewErr != nil {

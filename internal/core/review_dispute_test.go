@@ -100,12 +100,9 @@ func TestReviewDispute(t *testing.T) {
 				t.Fatal("terminal outcome must record the dispute")
 			}
 			if upheld {
-				expectedRejects := maxReviewRejections
-				if mode == "unavailable" || mode == "contradictory" {
-					expectedRejects++
-				}
-				if result.Status != agentproto.InputRequired || result.Outcome.CompletionRejects != expectedRejects {
-					t.Fatalf("upheld and subsequent unchanged rejections must reach cap: %+v", result)
+				input, _ := result.Result["input"].(agentproto.InputRequest)
+				if result.Status != agentproto.InputRequired || !strings.HasPrefix(input.ID, limitQuestion) || !strings.Contains(input.Question, "adjudication upheld") || result.Outcome.CompletionRejects != 2 {
+					t.Fatalf("an upheld or inconclusive adjudication must ask the person instead of refusing again: %+v", result)
 				}
 			} else if result.Status != agentproto.Pass || !result.Outcome.IndependentlyReviewed {
 				t.Fatalf("overturned finding must pass: %+v", result)
@@ -136,12 +133,8 @@ func TestReviewDispute(t *testing.T) {
 			if !disputed {
 				t.Fatal("outcome must record dispute")
 			}
-			expectedUnchanged := maxReviewRejections - 2
-			if mode == "unavailable" || mode == "contradictory" {
-				expectedUnchanged++
-			}
-			if upheld && unchanged != expectedUnchanged {
-				t.Fatalf("unchanged rejections=%d", unchanged)
+			if unchanged != 0 {
+				t.Fatalf("an explicit dispute must not be refused as unchanged, got %d refusals", unchanged)
 			}
 		})
 	}
@@ -174,5 +167,84 @@ func TestDisputesReviewRequiresRebuttal(t *testing.T) {
 		if !disputesReview(answer) {
 			t.Errorf("missed rebuttal: %q", answer)
 		}
+	}
+}
+
+func TestDisputeMarkerIsExplicitSignal(t *testing.T) {
+	answer := "Done.\n" + reviewDisputeMarker + " errors.Is walks the unwrap chain, so the wrapped *json.SyntaxError matches."
+	if !disputesReview(answer) {
+		t.Fatal("the marker must be recognised without prose matching")
+	}
+	if got := disputeRebuttal(answer); got != "errors.Is walks the unwrap chain, so the wrapped *json.SyntaxError matches." {
+		t.Fatalf("rebuttal = %q", got)
+	}
+}
+
+// Session f0f7fa45: the agent rebutted in words the matcher did not know and
+// was refused twelve times. Now it is refused once, then adjudicated.
+func TestUnrecognisedDisputeIsAdjudicatedAfterOneRefusal(t *testing.T) {
+	e, st := testEngine(t)
+	workspace, git := gitRepo(t)
+	writeFile(t, workspace, "Makefile", "test:\n\t@true\n")
+	git("add", "-A")
+	git("commit", "-qm", "base")
+	mainTurns, reviews, adjudications := 0, 0, 0
+	rebuttal := "No change needed here; errors.Is works with the wrapped *json.SyntaxError."
+	if disputesReview(rebuttal) {
+		t.Fatal("fixture must not match the prose detector")
+	}
+	s := &scriptedResponses{reply: func(_ int, body map[string]any) map[string]any {
+		instructions := body["instructions"].(string)
+		if strings.Contains(instructions, "Adjudicate disputed") {
+			adjudications++
+			if !strings.Contains(instructions, "errors.Is works") {
+				t.Error("adjudication must see the agent's statement")
+			}
+			return verdictJSON(true)
+		}
+		if strings.Contains(instructions, "Review this proposed workspace diff") {
+			reviews++
+			return verdictJSON(false, "main.go: errors.Is misses the wrapped error")
+		}
+		mainTurns++
+		switch mainTurns {
+		case 1:
+			return responsesCall("e1", "edit", map[string]any{"path": "main.go", "hunks": []any{map[string]any{"anchor": "e3b0c442", "delete": 0, "insert": []any{"package main"}}}})
+		case 2:
+			return responsesCall("x1", "exec", map[string]any{"command": "make test"})
+		case 3:
+			return responsesText("Implemented main.go; make test passed.")
+		}
+		return responsesText("Implemented main.go; make test passed. " + rebuttal)
+	}}
+	srv := s.serve(t)
+	cfg := gateConfig(workspace, srv.URL)
+	cfg.Providers = map[string]config.ProviderConfig{"ramp": {APIKey: "test", BaseURL: srv.URL}}
+	cfg.Router.DisableSwitch = false
+	cfg.Router.DefaultModel = "ramp/gpt-5.6-terra"
+	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
+	req := agentproto.TaskRequest{Spec: "Write main.go", Budget: agentproto.Budget{MaxUSD: 20, MaxTokens: 10_000_000, MaxWallClock: time.Minute}, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"}}
+	sid, results, err := e.Start(context.Background(), req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result agentproto.TaskResult
+	select {
+	case result = <-results:
+	case <-time.After(45 * time.Second):
+		t.Fatal("dispute must terminate")
+	}
+	if result.Status != agentproto.Pass || !result.Outcome.ReviewDisputed || reviews != 1 || adjudications != 1 {
+		t.Fatalf("reviews=%d adjudications=%d result=%+v", reviews, adjudications, result)
+	}
+	events, _ := st.EventsAfter(context.Background(), sid, 0)
+	unchanged := 0
+	for _, ev := range events {
+		if ev.Type == "completion.rejected" && strings.Contains(string(ev.Data), "diff unchanged") {
+			unchanged++
+		}
+	}
+	if unchanged != 1 {
+		t.Fatalf("an unchanged diff must be refused at most once, got %d", unchanged)
 	}
 }

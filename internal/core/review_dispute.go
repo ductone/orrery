@@ -12,19 +12,35 @@ import (
 	"github.com/ductone/orrey/internal/store"
 )
 
-// disputesReview recognizes an explicit rebuttal rather than a bare completion.
+// reviewDisputeMarker is the explicit signal an agent uses to dispute a rejected review.
+const reviewDisputeMarker = "REVIEW_DISPUTE:"
+
+// disputesReview reports an explicit dispute. The marker is decisive; the prose
+// matcher remains for rebuttals written before the marker existed.
 func disputesReview(answer string) bool {
+	if strings.Contains(answer, reviewDisputeMarker) {
+		return true
+	}
 	answer = strings.ToLower(answer)
 	for _, paragraph := range strings.Split(answer, "\n") {
 		for _, claim := range strings.Split(paragraph, ";") {
 			if containsAny(claim, "finding", "reviewer", "review ") &&
-				containsAny(claim, "i dispute", "i disagree with", "false positive", "is wrong", "are wrong", "is incorrect", "are incorrect", "not a correctness bug", "not a bug") &&
+				containsAny(claim, "i dispute", "i disagree with", "false positive", "is wrong", "are wrong", "is incorrect", "are incorrect", "not a correctness bug", "not a bug", "does work", "does handle", "is handled", "already handles", "already handled") &&
 				containsAny(claim, "because", "since ", "actually", "instead", "but ", ":") {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// disputeRebuttal is the argument adjudication weighs. A marked dispute is the
+// statement after the marker.
+func disputeRebuttal(answer string) string {
+	if i := strings.Index(answer, reviewDisputeMarker); i >= 0 {
+		return strings.TrimSpace(answer[i+len(reviewDisputeMarker):])
+	}
+	return strings.TrimSpace(answer)
 }
 
 // adjudicateReview never relaxes family exclusions: without an independent third

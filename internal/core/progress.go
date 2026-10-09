@@ -48,9 +48,12 @@ type progressTracker struct {
 	strikes          map[string]int
 	exclusionReasons map[string]string
 	// rejectedDiff and rejectedReview hold the diff the last failed review
-	// covered and its findings. Adjudication is allowed once per diff hash.
+	// covered and its findings. Adjudication runs once per diff hash.
+	// unchangedRefusals counts refusals of an unchanged diff; one is allowed,
+	// and the next unchanged completion is adjudicated instead of refused.
 	rejectedDiff, rejectedReview string
 	adjudicatedDiffs             map[string]bool
+	unchangedRefusals            map[string]int
 	// answerRejections counts completions refused for answering something
 	// other than the latest request.
 	answerRejections int
