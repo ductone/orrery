@@ -437,22 +437,51 @@ func stallReason(s StallSignals) string {
 }
 
 func stalled(s StallSignals) bool { return stallReason(s) != "" }
+
+// effortLadder orders reasoning levels from least to most.
+var effortLadder = []model.Effort{model.EffortNone, model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortXHigh}
+
+// effortFor picks a call's reasoning effort: a phase default, raised one
+// level while real failures persist (failed commands, failing tests, repeated
+// edits, or review findings to fix). Phase length never raises it. The
+// failure signals clear only when the agent makes progress, so the level
+// changes rarely; that matters because an effort change can cost the prompt
+// cache on some providers.
 func effortFor(m model.ModelSpec, s RoutingState) model.Effort {
 	if s.EffortPin != "" && slices.Contains(m.Effort, s.EffortPin) {
 		return s.EffortPin
 	}
 	want := model.EffortMedium
-	if slices.Contains([]Phase{Plan, Diagnose, Review}, s.Phase) || s.Stall.TestFailStreak >= 2 {
+	if slices.Contains([]Phase{Plan, Diagnose, Review}, s.Phase) {
 		want = model.EffortHigh
 	}
 	if s.Phase == WrapUp {
 		want = model.EffortLow
 	}
-	if slices.Contains(m.Effort, want) {
-		return want
+	if failing(s.Stall) && want != model.EffortHigh {
+		want = effortLadder[slices.Index(effortLadder, want)+1]
 	}
-	if len(m.Effort) > 0 {
-		return m.Effort[len(m.Effort)-1]
+	return supportedEffort(m, want)
+}
+
+// failing reports failure signals that justify more reasoning.
+func failing(s StallSignals) bool {
+	return s.FailedCommands >= 2 || s.TestFailStreak >= 2 || s.RepeatedEdits >= 3 || s.ReviewRejected
+}
+
+// supportedEffort returns want if m supports it, else the nearest supported
+// level below it, else the nearest above it.
+func supportedEffort(m model.ModelSpec, want model.Effort) model.Effort {
+	at := slices.Index(effortLadder, want)
+	for i := at; i >= 0; i-- {
+		if slices.Contains(m.Effort, effortLadder[i]) {
+			return effortLadder[i]
+		}
+	}
+	for i := at + 1; i < len(effortLadder); i++ {
+		if slices.Contains(m.Effort, effortLadder[i]) {
+			return effortLadder[i]
+		}
 	}
 	return model.EffortNone
 }

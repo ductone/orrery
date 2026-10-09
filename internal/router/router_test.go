@@ -382,3 +382,31 @@ func TestModelAndEffortPin(t *testing.T) {
 		t.Fatalf("effort pin gave %s", d.Effort)
 	}
 }
+
+func TestEffortLadder(t *testing.T) {
+	m := model.ModelSpec{Effort: []model.Effort{model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortXHigh}}
+	cases := []struct {
+		name  string
+		state RoutingState
+		want  model.Effort
+	}{
+		{"implement default", RoutingState{Phase: Implement}, model.EffortMedium},
+		{"long phase does not escalate", RoutingState{Phase: Implement, Stall: StallSignals{PhaseTurns: 30, NoProgressTurns: 9}}, model.EffortMedium},
+		{"failed commands escalate", RoutingState{Phase: Implement, Stall: StallSignals{FailedCommands: 2}}, model.EffortHigh},
+		{"failing tests escalate", RoutingState{Phase: Explore, Stall: StallSignals{TestFailStreak: 2}}, model.EffortHigh},
+		{"review findings escalate", RoutingState{Phase: Implement, Stall: StallSignals{ReviewRejected: true}}, model.EffortHigh},
+		{"wrap-up stays light", RoutingState{Phase: WrapUp}, model.EffortLow},
+		{"wrap-up failures raise one level", RoutingState{Phase: WrapUp, Stall: StallSignals{RepeatedEdits: 3}}, model.EffortMedium},
+		{"review is high and capped", RoutingState{Phase: Review, Stall: StallSignals{FailedCommands: 3}}, model.EffortHigh},
+	}
+	for _, c := range cases {
+		if got := effortFor(m, c.state); got != c.want {
+			t.Errorf("%s: got %s, want %s", c.name, got, c.want)
+		}
+	}
+	// An unsupported level falls back to the nearest one below, not the top.
+	sparse := model.ModelSpec{Effort: []model.Effort{model.EffortLow, model.EffortXHigh}}
+	if got := effortFor(sparse, RoutingState{Phase: Implement}); got != model.EffortLow {
+		t.Fatalf("sparse model got %s, want low", got)
+	}
+}
