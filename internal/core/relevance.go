@@ -56,10 +56,12 @@ func jevRelevanceAsker(client *jev.Client) relevanceAsker {
 const relevanceConcurrency = 8
 
 // maskThresholdNumerator/Denominator: a masking batch is only considered once
-// the prompt passes this fraction of the effective window. maskMinClearDivisor
+// the prompt passes this fraction of the effective window. It sits below the
+// compaction trigger (3/5) so masking can postpone compaction rather than run
+// on the same step as it. maskMinClearDivisor
 // sets how many tokens a batch must clear to be worth the prefix-cache break.
 const (
-	maskThresholdNumerator   = 3
+	maskThresholdNumerator   = 2
 	maskThresholdDenominator = 5
 	maskMinClearDivisor      = 20
 	minMaskCandidates        = 4
@@ -187,6 +189,11 @@ func (e *Engine) maskingDue(r *sessionRelevance, inputTokens, window int) bool {
 	}
 	if inputTokens < window*maskThresholdNumerator/maskThresholdDenominator {
 		return false
+	}
+	// A prompt smaller than at the last batch was compacted or moved to a
+	// smaller window: start counting growth afresh.
+	if r.gated && inputTokens < r.gateAt {
+		r.gated = false
 	}
 	return !r.gated || inputTokens-r.gateAt >= maskMinClearTokens(window)
 }

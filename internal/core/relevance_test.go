@@ -197,7 +197,7 @@ func TestMaskingDueThresholdAndGrowth(t *testing.T) {
 	e, _ := testEngine(t)
 	r := e.relevanceCacheFor("s", "obj")
 	const window = 1000
-	// Below the 3/5 threshold, masking must not run.
+	// Below the threshold, masking must not run.
 	if e.maskingDue(r, window*maskThresholdNumerator/maskThresholdDenominator-1, window) {
 		t.Fatal("masking must wait until the prompt passes the threshold fraction")
 	}
@@ -211,6 +211,18 @@ func TestMaskingDueThresholdAndGrowth(t *testing.T) {
 	}
 	if !e.maskingDue(r, window*maskThresholdNumerator/maskThresholdDenominator+maskMinClearTokens(window), window) {
 		t.Fatal("masking must be due again after the minimum-clear growth")
+	}
+	// After compaction the prompt shrinks; growth is measured afresh.
+	e.recordMasking(r, window)
+	if !e.maskingDue(r, window*maskThresholdNumerator/maskThresholdDenominator, window) {
+		t.Fatal("masking must be due again once the prompt shrank below the last batch")
+	}
+}
+
+func TestMaskingThresholdBelowCompaction(t *testing.T) {
+	const window = 1000
+	if window*maskThresholdNumerator/maskThresholdDenominator >= window*3/5 {
+		t.Fatal("masking must become due before the compaction trigger, or compaction always runs on the same step")
 	}
 }
 
