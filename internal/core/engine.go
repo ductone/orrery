@@ -103,7 +103,11 @@ func (e *Engine) routePerformance(ctx context.Context) map[string]router.RoutePe
 		if st.Calls > 0 {
 			rate = float64(fail) / float64(st.Calls)
 		}
-		out[st.Route] = router.RoutePerformance{Calls: st.Calls, OutputTokensPerSecond: st.OutputTokensPerSecond, FailureRate: rate, LastSlowCall: st.LastSlowCall}
+		cache := 0.0
+		if st.InputTokens > 0 {
+			cache = float64(st.CacheReadTokens) / float64(st.InputTokens)
+		}
+		out[st.Route] = router.RoutePerformance{Calls: st.Calls, OutputTokensPerSecond: st.OutputTokensPerSecond, FailureRate: rate, LastSlowCall: st.LastSlowCall, LatencySeconds: st.LatencySeconds, OutputTokensPerCall: st.OutputTokensPerCall, CacheReadRatio: cache}
 	}
 	return out
 }
@@ -1802,6 +1806,7 @@ func applyBudgetDefaults(req *agentproto.TaskRequest, cfg config.Config) {
 func applyHints(s *router.RoutingState, h agentproto.RoutingHints) {
 	s.TierPin = model.Tier(h.TierPin)
 	s.ModelPin = h.Model
+	s.Background = h.Background
 	s.EffortPin = model.Effort(h.Effort)
 	for _, f := range h.FamilyExcludes {
 		s.ExcludeFamilies = append(s.ExcludeFamilies, model.Family(f))

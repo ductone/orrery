@@ -216,6 +216,6 @@ func adoptCurated(spec model.ModelSpec) model.ModelSpec {
 		compat.SupportsReasoningEffort, compat.EffortWireMap, effort = false, nil, []model.Effort{model.EffortNone}
 	}
 	spec.Model, spec.Family, spec.Tier, spec.EditDialect = m.Name, m.Family, m.Tier, m.EditDialect
-	spec.Effort, spec.WorkEffort, spec.Compat = effort, m.WorkEffort, compat
+	spec.Effort, spec.WorkEffort, spec.CallsPerTask, spec.Compat = effort, m.WorkEffort, m.CallsPerTask, compat
 	return spec
 }

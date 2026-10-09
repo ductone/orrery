@@ -44,6 +44,9 @@ type RoutingHints struct {
 	// Child jobs do not inherit them.
 	Model  string `json:"model,omitempty"`
 	Effort string `json:"effort,omitempty"`
+	// Background marks work nobody is waiting on; routing then values time
+	// at the background rate. Child jobs inherit it.
+	Background bool `json:"background,omitempty"`
 }
 type AttachmentRef struct {
 	ID        string `json:"id"`

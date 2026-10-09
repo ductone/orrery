@@ -331,6 +331,24 @@ type RouterConfig struct {
 	FrontierFloorPhases []string `yaml:"frontier_floor_phases"`
 	DisableSwitch       bool     `yaml:"disable_switch"`
 	DefaultModel        string   `yaml:"default_model"`
+	// TimeValue prices waiting, in USD per minute, so routing weighs a
+	// model's expected time as well as its cost.
+	TimeValue TimeValue `yaml:"time_value_usd_per_minute"`
+}
+
+// TimeValue is what a minute of waiting is worth: Interactive when a person
+// is waiting on the work, Background when nobody is.
+type TimeValue struct {
+	Interactive float64 `yaml:"interactive"`
+	Background  float64 `yaml:"background"`
+}
+
+// For returns the rate for interactive or background work.
+func (t TimeValue) For(background bool) float64 {
+	if background {
+		return t.Background
+	}
+	return t.Interactive
 }
 
 type BudgetConfig struct {
@@ -426,7 +444,7 @@ func Default() Config {
 		Listen: "127.0.0.1:7433", WorkspaceRoot: filepath.Join(home, "src"), Database: filepath.Join(Home(), "orrery.db"),
 		Providers: map[string]ProviderConfig{}, MCP: map[string]MCPConfig{},
 		LSP:    map[string]LSPConfig{},
-		Router: RouterConfig{LambdaCost: .35, FrontierFloorPhases: []string{"plan", "diagnose"}},
+		Router: RouterConfig{LambdaCost: .35, FrontierFloorPhases: []string{"plan", "diagnose"}, TimeValue: TimeValue{Interactive: .25}},
 		Budget: BudgetConfig{SessionUSD: 25, JobDefaultFraction: .2, MinReviewUSD: defaultMinReviewUSD},
 		Memory: MemoryConfig{Inject: true},
 	}
@@ -474,6 +492,9 @@ func load(path string, overrides map[string]string, secrets bool) (Config, error
 	cfg.Database = relativeTo(base, expandHome(cfg.Database))
 	if cfg.Router.LambdaCost < 0 {
 		return cfg, errors.New("config: router.lambda_cost must be non-negative")
+	}
+	if cfg.Router.TimeValue.Interactive < 0 || cfg.Router.TimeValue.Background < 0 {
+		return cfg, errors.New("config: router.time_value_usd_per_minute must be non-negative")
 	}
 	if cfg.Budget.SessionUSD <= 0 || cfg.Budget.JobDefaultFraction <= 0 || cfg.Budget.JobDefaultFraction > 1 {
 		return cfg, errors.New("config: invalid budget")

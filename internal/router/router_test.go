@@ -107,7 +107,9 @@ func TestPinnedDefaultBypassesFrontierFloor(t *testing.T) {
 
 func TestDefaultModelBreaksInitialScoreTie(t *testing.T) {
 	l := &ledger{}
-	p := NewV1(config.RouterConfig{LambdaCost: .35, DefaultModel: "xai/grok-4.6"}, l)
+	// No cost weight: the two routes differ only in cache-read price, and this
+	// tests the tie-break, not pricing.
+	p := NewV1(config.RouterConfig{DefaultModel: "xai/grok-4.6"}, l)
 	d, _, err := p.Decide(context.Background(), RoutingState{SessionID: "s", Point: TurnStart, Phase: Plan, InputTokens: 1000, AvailableModels: []string{"xai/grok-4.5", "xai/grok-4.6"}})
 	if err != nil {
 		t.Fatal(err)
@@ -421,5 +423,41 @@ func TestWorkEffortDefault(t *testing.T) {
 	}
 	if got := effortFor(m, RoutingState{Phase: Plan}); got != model.EffortHigh {
 		t.Fatalf("plan got %s, want high", got)
+	}
+}
+
+func TestTimeValueWeighsStepsAndLatency(t *testing.T) {
+	perf := map[string]RoutePerformance{
+		"ramp/claude-sonnet-5-5":   {Calls: 200, OutputTokensPerSecond: 300, LatencySeconds: 2, OutputTokensPerCall: 180, CacheReadRatio: .73},
+		"ramp/deepseek-v4.1-flash": {Calls: 200, OutputTokensPerSecond: 300, LatencySeconds: 3.1, OutputTokensPerCall: 340, CacheReadRatio: .6},
+	}
+	decide := func(background bool) string {
+		p := NewV1(config.RouterConfig{LambdaCost: .35, TimeValue: config.TimeValue{Interactive: .25}}, &ledger{})
+		d, _, err := p.Decide(context.Background(), RoutingState{
+			SessionID: "s", Point: TurnStart, Phase: Implement, InputTokens: 30_000,
+			AvailableModels: []string{"ramp/claude-sonnet-5-5", "ramp/deepseek-v4.1-flash"},
+			Performance:     perf, Background: background,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d.Model.ID
+	}
+	if got := decide(false); got != "ramp/claude-sonnet-5-5" {
+		t.Fatalf("interactive chose %s; the faster model with fewer steps should win when time is valued", got)
+	}
+	if got := decide(true); got != "ramp/deepseek-v4.1-flash" {
+		t.Fatalf("background chose %s; with time free the cheaper model should win", got)
+	}
+}
+
+func TestWorkEstimateCountsExtraCalls(t *testing.T) {
+	m := model.ModelSpec{ID: "x", Pricing: model.Pricing{Input: 1, Output: 1, CacheRead: .1}}
+	s := RoutingState{InputTokens: 10_000, Performance: map[string]RoutePerformance{"x": {Calls: 1_000_000, LatencySeconds: 2, OutputTokensPerCall: 100, CacheReadRatio: .5}}}
+	one, oneSecs := workEstimate(m, s, 0)
+	m.CallsPerTask = 3
+	three, threeSecs := workEstimate(m, s, 0)
+	if three <= 2*one || threeSecs != 3*oneSecs {
+		t.Fatalf("three-call model: cost %.5f vs %.5f, seconds %.1f vs %.1f", three, one, threeSecs, oneSecs)
 	}
 }

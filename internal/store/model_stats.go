@@ -8,12 +8,13 @@ import (
 	"time"
 )
 
-const modelStatsSchema = `CREATE TABLE IF NOT EXISTS model_stats(route TEXT PRIMARY KEY, calls INTEGER NOT NULL DEFAULT 0, latency_seconds REAL NOT NULL DEFAULT 0, output_tokens_per_second REAL NOT NULL DEFAULT 0, truncated INTEGER NOT NULL DEFAULT 0, empty INTEGER NOT NULL DEFAULT 0, malformed INTEGER NOT NULL DEFAULT 0, provider_errors INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0, last_call TEXT NOT NULL DEFAULT '', last_slow_call TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);`
+const modelStatsSchema = `CREATE TABLE IF NOT EXISTS model_stats(route TEXT PRIMARY KEY, calls INTEGER NOT NULL DEFAULT 0, latency_seconds REAL NOT NULL DEFAULT 0, output_tokens_per_second REAL NOT NULL DEFAULT 0, output_tokens_per_call REAL NOT NULL DEFAULT 0, truncated INTEGER NOT NULL DEFAULT 0, empty INTEGER NOT NULL DEFAULT 0, malformed INTEGER NOT NULL DEFAULT 0, provider_errors INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0, last_call TEXT NOT NULL DEFAULT '', last_slow_call TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);`
 
 type ModelStat struct {
 	Route                                       string
 	Calls                                       int
 	LatencySeconds, OutputTokensPerSecond       float64
+	OutputTokensPerCall                         float64
 	InputTokens, CacheReadTokens                int
 	Truncated, Empty, Malformed, ProviderErrors int
 	LastCall, LastSlowCall, UpdatedAt           time.Time
@@ -34,7 +35,7 @@ func recordModelCall(ctx context.Context, db statsExecer, route string, latency 
 	if latency > 120*time.Second {
 		slow = stamp
 	}
-	_, err := db.ExecContext(ctx, `INSERT INTO model_stats(route,calls,latency_seconds,output_tokens_per_second,truncated,input_tokens,cache_read_tokens,last_call,last_slow_call,updated_at) VALUES(?,1,?,?,?,?,?,?,?,?) ON CONFLICT(route) DO UPDATE SET calls=calls+1, latency_seconds=CASE WHEN calls=0 THEN excluded.latency_seconds ELSE 0.9*latency_seconds+0.1*excluded.latency_seconds END, output_tokens_per_second=CASE WHEN calls=0 THEN excluded.output_tokens_per_second ELSE 0.9*output_tokens_per_second+0.1*excluded.output_tokens_per_second END, truncated=truncated+excluded.truncated, input_tokens=input_tokens+excluded.input_tokens, cache_read_tokens=cache_read_tokens+excluded.cache_read_tokens, last_call=excluded.last_call, last_slow_call=CASE WHEN excluded.last_slow_call='' THEN last_slow_call ELSE excluded.last_slow_call END, updated_at=excluded.updated_at`, route, seconds, rate, truncated, inputTokens, cacheReadTokens, stamp, slow, stamp)
+	_, err := db.ExecContext(ctx, `INSERT INTO model_stats(route,calls,latency_seconds,output_tokens_per_second,output_tokens_per_call,truncated,input_tokens,cache_read_tokens,last_call,last_slow_call,updated_at) VALUES(?,1,?,?,?,?,?,?,?,?,?) ON CONFLICT(route) DO UPDATE SET calls=calls+1, latency_seconds=CASE WHEN calls=0 THEN excluded.latency_seconds ELSE 0.9*latency_seconds+0.1*excluded.latency_seconds END, output_tokens_per_second=CASE WHEN calls=0 THEN excluded.output_tokens_per_second ELSE 0.9*output_tokens_per_second+0.1*excluded.output_tokens_per_second END, output_tokens_per_call=CASE WHEN calls=0 OR output_tokens_per_call=0 THEN excluded.output_tokens_per_call ELSE 0.9*output_tokens_per_call+0.1*excluded.output_tokens_per_call END, truncated=truncated+excluded.truncated, input_tokens=input_tokens+excluded.input_tokens, cache_read_tokens=cache_read_tokens+excluded.cache_read_tokens, last_call=excluded.last_call, last_slow_call=CASE WHEN excluded.last_slow_call='' THEN last_slow_call ELSE excluded.last_slow_call END, updated_at=excluded.updated_at`, route, seconds, rate, float64(outputTokens), truncated, inputTokens, cacheReadTokens, stamp, slow, stamp)
 	return err
 }
 
@@ -63,7 +64,7 @@ func (s *Store) RecordModelFailure(ctx context.Context, route, kind string) erro
 }
 
 func (s *Store) ModelStats(ctx context.Context) ([]ModelStat, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT route,calls,latency_seconds,output_tokens_per_second,truncated,empty,malformed,provider_errors,input_tokens,cache_read_tokens,last_call,last_slow_call,updated_at FROM model_stats ORDER BY route`)
+	rows, err := s.db.QueryContext(ctx, `SELECT route,calls,latency_seconds,output_tokens_per_second,output_tokens_per_call,truncated,empty,malformed,provider_errors,input_tokens,cache_read_tokens,last_call,last_slow_call,updated_at FROM model_stats ORDER BY route`)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +73,7 @@ func (s *Store) ModelStats(ctx context.Context) ([]ModelStat, error) {
 	for rows.Next() {
 		var x ModelStat
 		var last, slow, updated string
-		if err := rows.Scan(&x.Route, &x.Calls, &x.LatencySeconds, &x.OutputTokensPerSecond, &x.Truncated, &x.Empty, &x.Malformed, &x.ProviderErrors, &x.InputTokens, &x.CacheReadTokens, &last, &slow, &updated); err != nil {
+		if err := rows.Scan(&x.Route, &x.Calls, &x.LatencySeconds, &x.OutputTokensPerSecond, &x.OutputTokensPerCall, &x.Truncated, &x.Empty, &x.Malformed, &x.ProviderErrors, &x.InputTokens, &x.CacheReadTokens, &last, &slow, &updated); err != nil {
 			return nil, err
 		}
 		x.LastCall, _ = time.Parse(time.RFC3339Nano, last)

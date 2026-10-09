@@ -83,6 +83,9 @@ type RoutingState struct {
 	ExcludeModels    []string          `json:"exclude_models,omitempty"`
 	AvailableModels  []string          `json:"available_models,omitempty"`
 	TierPin          model.Tier        `json:"tier_pin,omitempty"`
+	// Background marks work nobody is waiting on, so time is valued at the
+	// background rate instead of the interactive one.
+	Background bool `json:"background,omitempty"`
 	// ModelPin restricts the decision to one route (id or canonical model
 	// name) and EffortPin fixes its effort when the model supports it.
 	ModelPin          string       `json:"model_pin,omitempty"`
@@ -102,6 +105,11 @@ type RoutePerformance struct {
 	OutputTokensPerSecond float64   `json:"output_tokens_per_second,omitempty"`
 	FailureRate           float64   `json:"failure_rate"`
 	LastSlowCall          time.Time `json:"last_slow_call,omitzero"`
+	// LatencySeconds, OutputTokensPerCall and CacheReadRatio are the route's
+	// typical call, for estimating what a unit of work costs on it.
+	LatencySeconds      float64 `json:"latency_seconds,omitempty"`
+	OutputTokensPerCall float64 `json:"output_tokens_per_call,omitempty"`
+	CacheReadRatio      float64 `json:"cache_read_ratio,omitempty"`
 }
 
 // InstructionPhase is the phase chosen for a turn that starts with a new user
@@ -116,11 +124,18 @@ type InstructionPhase struct {
 }
 
 type Candidate struct {
-	Model         string       `json:"model"`
-	Effort        model.Effort `json:"effort"`
-	Quality       float64      `json:"quality"`
-	CostUSD       float64      `json:"cost_usd"`
-	SwitchPenalty float64      `json:"switch_penalty"`
+	Model   string       `json:"model"`
+	Effort  model.Effort `json:"effort"`
+	Quality float64      `json:"quality"`
+	CostUSD float64      `json:"cost_usd"`
+	// WorkCostUSD and WorkSeconds estimate a unit of work on this model: the
+	// next call plus the extra calls it typically needs (CallsPerTask), at its
+	// typical output and cache reuse. TimeCostUSD values WorkSeconds at the
+	// interactive or background rate.
+	WorkCostUSD   float64 `json:"work_cost_usd"`
+	WorkSeconds   float64 `json:"work_seconds"`
+	TimeCostUSD   float64 `json:"time_cost_usd"`
+	SwitchPenalty float64 `json:"switch_penalty"`
 	// PerformancePenalty is subtracted for recorded slowness and failures.
 	PerformancePenalty float64       `json:"performance_penalty"`
 	Score              float64       `json:"score"`
@@ -242,6 +257,8 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 		}
 		c.Cache = CacheEstimate{WarmTokens: warmTokens, FreshTokens: s.InputTokens - warmTokens, Warm: warm, CostUSD: m.Pricing.Estimate(s.InputTokens, s.EstimatedOutput, warmTokens)}
 		c.CostUSD = c.Cache.CostUSD
+		c.WorkCostUSD, c.WorkSeconds = workEstimate(m, s, warmTokens)
+		c.TimeCostUSD = c.WorkSeconds / 60 * p.cfg.TimeValue.For(s.Background)
 		for _, tr := range m.Pricing.Thresholds {
 			if tr.AboveTokens > s.InputTokens {
 				c.Cache.TokensToCliff = tr.AboveTokens - s.InputTokens
@@ -272,7 +289,7 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 		if perf, ok := s.Performance[m.ID]; ok {
 			c.PerformancePenalty = performancePenalty(perf, p.now())
 		}
-		c.Score = c.Quality - p.cfg.LambdaCost*c.CostUSD - c.SwitchPenalty - c.PerformancePenalty
+		c.Score = c.Quality - p.cfg.LambdaCost*(c.WorkCostUSD+c.TimeCostUSD) - c.SwitchPenalty - c.PerformancePenalty
 		c.Effort = effortFor(m, s)
 		candidates = append(candidates, c)
 	}
@@ -375,6 +392,45 @@ func performancePenalty(perf RoutePerformance, now time.Time) float64 {
 		penalty += slowCallCoolOffPenalty
 	}
 	return penalty
+}
+
+// Priors for a route's typical call, used in proportion to how few calls it
+// has recorded (the same shrinkage as the performance penalty).
+const (
+	outputTokensPrior   = 1000
+	cacheReadRatioPrior = .7
+	latencySecondsPrior = 10
+	// workHorizonCalls is the unit of work routing prices: the calls a
+	// reference model typically takes for a task (about 4 in the 2026-10-09
+	// sweep). A switch's cold first call is amortised over it.
+	workHorizonCalls = 4
+)
+
+// workEstimate is the cost and time of a unit of work (workHorizonCalls
+// reference calls) on m: the next call at the session's actual cache warmth,
+// then the rest of the calls m typically takes for that work, each at its
+// typical output and cache reuse. A model that needs more steps pays for
+// re-sending the context each time.
+func workEstimate(m model.ModelSpec, s RoutingState, warmTokens int) (float64, float64) {
+	perf := s.Performance[m.ID]
+	weight := float64(perf.Calls) / float64(perf.Calls+performanceShrinkCalls)
+	blend := func(observed, prior float64) float64 {
+		if observed <= 0 {
+			return prior
+		}
+		return weight*observed + (1-weight)*prior
+	}
+	output := int(blend(perf.OutputTokensPerCall, outputTokensPrior))
+	cacheRatio := blend(perf.CacheReadRatio, cacheReadRatioPrior)
+	latency := blend(perf.LatencySeconds, latencySecondsPrior)
+	calls := m.CallsPerTask
+	if calls <= 0 {
+		calls = 1
+	}
+	next := m.Pricing.Estimate(s.InputTokens, output, warmTokens)
+	steady := m.Pricing.Estimate(s.InputTokens, output, int(cacheRatio*float64(s.InputTokens)))
+	total := workHorizonCalls * calls
+	return next + (total-1)*steady, total * latency
 }
 
 // discoveredQualityPenalty offsets the efficient-tier bonus for models known
@@ -503,6 +559,6 @@ func explain(s RoutingState, c Candidate, sw bool) Explanation {
 	if c.Cache.Warm {
 		cache = fmt.Sprintf("warm prefix %dK", c.Cache.WarmTokens/1000)
 	}
-	return Explanation(fmt.Sprintf("%s %s: phase %s, %s, estimated next-call cost $%.4f", action, c.Model, s.Phase, cache, c.CostUSD))
+	return Explanation(fmt.Sprintf("%s %s: phase %s, %s, estimated next-call cost $%.4f, work $%.4f over %.0fs", action, c.Model, s.Phase, cache, c.CostUSD, c.WorkCostUSD, c.WorkSeconds))
 }
 func MarshalState(s RoutingState) json.RawMessage { b, _ := json.Marshal(s); return b }

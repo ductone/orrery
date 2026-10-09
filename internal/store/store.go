@@ -94,6 +94,9 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
+	if err := s.ensureColumn("model_stats", "output_tokens_per_call", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	if err := s.backfillModelStats(); err != nil {
 		return err
 	}

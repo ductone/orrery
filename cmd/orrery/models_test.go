@@ -339,7 +339,7 @@ func TestModelsStatsColumns(t *testing.T) {
 	var code int
 	out := captureStdout(t, func() { code = listModels(ctx, rt, []string{"--stats"}) })
 	row := tableRows(out)["xai/grok-4.6"]
-	if code != 0 || len(row) != 20 || strings.Join(row[8:14], " ") != "1 200.0s 5 80 100 1" || row[14] == "-" {
+	if code != 0 || len(row) != 21 || strings.Join(row[8:15], " ") != "1 200.0s 5 1000 80 100 1" || row[15] == "-" {
 		t.Fatalf("exit=%d row=%v output=%s", code, row, out)
 	}
 }
@@ -369,7 +369,7 @@ func TestModelsStatsOutcomeColumns(t *testing.T) {
 	var code int
 	out := captureStdout(t, func() { code = listModels(ctx, rt, []string{"--stats"}) })
 	row := tableRows(out)["xai/grok-4.6"]
-	if code != 0 || len(row) != 20 || row[15] != "1.0/0.0" || row[19] != "1/0/0/0" {
+	if code != 0 || len(row) != 21 || row[16] != "1.0/0.0" || row[20] != "1/0/0/0" {
 		t.Fatalf("exit=%d row=%v output=%s", code, row, out)
 	}
 }

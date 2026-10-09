@@ -117,7 +117,7 @@ func printModelRows(w io.Writer, res catalog.Result, overrides []config.ModelCon
 	sort.Slice(rows, func(i, j int) bool { return rows[i].id < rows[j].id })
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	if stats != nil {
-		fmt.Fprintln(tw, "ID\tMODEL\tTIER\tFAMILY\tIN/1M\tOUT/1M\tCTX\tSOURCE\tCALLS\tAVG\tTOK/S\tCACHE%\tTRUNC%\tFAILS\tSLOW\tAUTH-P/F\tREVIEWS\tOVERTURNED\tANS-REJ\tRUNS-P/F/I/C")
+		fmt.Fprintln(tw, "ID\tMODEL\tTIER\tFAMILY\tIN/1M\tOUT/1M\tCTX\tSOURCE\tCALLS\tAVG\tTOK/S\tOUT/CALL\tCACHE%\tTRUNC%\tFAILS\tSLOW\tAUTH-P/F\tREVIEWS\tOVERTURNED\tANS-REJ\tRUNS-P/F/I/C")
 	} else {
 		fmt.Fprintln(tw, "ID\tMODEL\tTIER\tFAMILY\tIN/1M\tOUT/1M\tCTX\tSOURCE")
 	}
@@ -125,9 +125,9 @@ func printModelRows(w io.Writer, res catalog.Result, overrides []config.ModelCon
 		if stats != nil {
 			st := stats[r.id]
 			oc := outcomes[r.id]
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%d\t%d\t%d\t%s\n",
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%d\t%d\t%d\t%s\n",
 				r.id, dash(r.model), r.tier, r.family, r.input, r.output, r.ctx, r.source,
-				st.Calls, seconds(st.LatencySeconds), tokps(st.OutputTokensPerSecond), pct(st.CacheReadTokens, st.InputTokens),
+				st.Calls, seconds(st.LatencySeconds), tokps(st.OutputTokensPerSecond), tokps(st.OutputTokensPerCall), pct(st.CacheReadTokens, st.InputTokens),
 				pct(st.Truncated, st.Calls), st.ProviderErrors+st.Empty+st.Malformed,
 				when(st.LastSlowCall), authored(oc), oc.Reviews, oc.Overturned, oc.AnswerRejected,
 				fmt.Sprintf("%d/%d/%d/%d", oc.RunPass, oc.RunFail, oc.RunInputRequired, oc.RunCancelled))

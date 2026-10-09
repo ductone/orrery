@@ -92,10 +92,11 @@ A decision runs in two stages: hard filters, then scoring.
 
 **Filters** remove models that cannot or must not run the call. A candidate is rejected when the provider is not configured, the model was excluded after a provider failure, the request carries an image the model cannot read, input plus expected output exceeds the context window, its family is excluded, a tier pin does not match, switching is disabled, or the phase sits under the frontier floor (`plan`, `diagnose`, and `review` by default). Reviewers additionally reject the implementer's own family, but only after confirming some other family is actually usable, so single-provider deployments still get a review. If nothing survives, routing fails loudly rather than silently downgrading.
 
-**Scoring** ranks whatever remains by `score = quality − lambda_cost × cost − switch_penalty`.
+**Scoring** ranks whatever remains by `score = quality − lambda_cost × (work_cost + time_cost) − switch_penalty − performance_penalty`.
 
 - *Quality* starts from the tier (frontier, efficient, tiny) and is then adjusted by phase. Judgement-heavy phases (`plan`, `diagnose`, `review`) reward frontier models and penalize the rest; throughput phases (`explore`, `implement`, `wrap-up`) give efficient models a bonus, since most agent turns are mechanical.
-- *Cost* is the estimated price of the actual next call, computed from live token counts and cached-prefix pricing, not a list price. `lambda_cost` is the single dial that says how much quality a dollar is worth.
+- *Work cost* prices a unit of work, not one call: the next call at the session's actual cache warmth, then the further calls the model typically needs for the same work (`CallsPerTask` in the catalog, measured by pinned benchmark sweeps: a model that takes 2.7 steps where Claude takes one pays for re-sending the context each time), each at the route's recorded output per call and cache reuse from `model_stats`. Routes with few recorded calls lean on priors. `lambda_cost` is the dial that says how much quality a dollar is worth.
+- *Time cost* values the expected seconds of that work (steps × recorded latency) at `time_value_usd_per_minute`: `interactive` when someone is waiting (the default), `background` for runs marked `orrery run --background` and the jobs they spawn. With time free, the cheapest model wins; with it valued, a faster model that needs fewer steps can win despite a higher token price.
 - *Switch penalty* prices the cache you would throw away. Leaving a warm model mid-tool-chain costs more, and the penalty grows with conversation size. Critically, it only applies when the prefix is warm: right after compaction there is no cache to protect, so cost and quality decide freely.
 
 While the agent fixes findings from a failed independent review, its turns are routed to frontier models: a reviewer finding real bugs is a hard-failure signal, not mechanical work. That remediation ends a run after eight turns without an edit, or after four rejected reviews; a completion whose diff is unchanged since a failed review is refused with those findings instead of being reviewed again.
@@ -111,6 +112,9 @@ Every decision — full input state, all candidates including rejected ones with
 ```yaml
 router:
   lambda_cost: 0.35                            # higher = more cost-sensitive
+  time_value_usd_per_minute:                   # what waiting is worth
+    interactive: 0.25                          # someone is waiting (default)
+    background: 0                              # orrery run --background and its jobs
   frontier_floor_phases: [plan, diagnose, review]
   disable_switch: false                        # true pins the session to one model
 ```
