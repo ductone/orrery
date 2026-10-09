@@ -51,6 +51,10 @@ type StallSignals struct {
 	// ReviewRejected is set while the agent is fixing findings from a failed
 	// independent review: correctness work that needs a frontier model.
 	ReviewRejected bool `json:"review_rejected,omitempty"`
+	// Deescalated drops the warm-cache penalty that keeps an incumbent. It is
+	// set once a stall boost has put a frontier model in place and the failure
+	// signals have since cleared, so a clean phase can return to efficient.
+	Deescalated bool `json:"deescalated,omitempty"`
 }
 type CacheEstimate struct {
 	WarmTokens      int     `json:"warm_tokens,omitempty"`
@@ -125,7 +129,11 @@ type Decision struct {
 	EditDialect    model.EditDialect `json:"edit_dialect"`
 	ToolsetVariant string            `json:"toolset_variant"`
 	WasSwitch      bool              `json:"was_switch"`
-	Candidates     []Candidate       `json:"candidates"`
+	// StallBoost records why the stall boost applied, so its effect is visible
+	// in routing.decision instead of only in quality values. Empty means the
+	// boost did not apply.
+	StallBoost string      `json:"stall_boost"`
+	Candidates []Candidate `json:"candidates"`
 }
 type Explanation string
 type Policy interface {
@@ -241,10 +249,15 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 		// Cache stickiness: switching to a warm model costs latency/context; but
 		// when the prefix is cold (e.g. right after compaction) there is no cache
 		// to preserve, so drop stickiness and let cost/quality decide.
-		if s.ToolContinuation && m.ID != s.CurrentModel && warm {
+		deescalate := s.Stall.Deescalated && !stalled(s.Stall) && !s.Stall.ReviewRejected && slices.Contains([]Phase{Explore, Implement, WrapUp}, s.Phase)
+		if s.ToolContinuation && m.ID != s.CurrentModel && warm && !deescalate {
 			c.SwitchPenalty += .18
 		}
-		if s.CurrentModel != "" && m.ID != s.CurrentModel && warm {
+		// A warm prefix normally keeps the incumbent: rebuilding the cache costs
+		// more than a small score gap. That must not hold a frontier model a stall
+		// boost put in place once the failures have cleared, or a long clean
+		// implement phase never returns to the efficient tier.
+		if s.CurrentModel != "" && m.ID != s.CurrentModel && warm && !deescalate {
 			c.SwitchPenalty += .08 + math.Min(.25, float64(s.InputTokens)/400000)
 		}
 		if perf, ok := s.Performance[m.ID]; ok {
@@ -286,7 +299,7 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 	chosen := valid[0]
 	span.SetAttributes(attribute.String("model", chosen.Model), attribute.Float64("estimated_cost_usd", chosen.CostUSD))
 	spec, _ := model.Get(chosen.Model)
-	d := Decision{Model: spec, Effort: chosen.Effort, EditDialect: spec.EditDialect, ToolsetVariant: toolset(spec), WasSwitch: s.CurrentModel != "" && s.CurrentModel != spec.ID, Candidates: candidates}
+	d := Decision{Model: spec, Effort: chosen.Effort, EditDialect: spec.EditDialect, ToolsetVariant: toolset(spec), WasSwitch: s.CurrentModel != "" && s.CurrentModel != spec.ID, StallBoost: stallReason(s.Stall), Candidates: candidates}
 	why := explain(s, chosen, d.WasSwitch)
 	rec := store.RoutingRecord{ID: uuid.NewString(), SessionID: s.SessionID, Turn: s.Turn, DecisionPoint: string(s.Point), StateJSON: store.JSON(s), CandidatesJSON: store.JSON(candidates), ChosenModel: spec.ID, ChosenEffort: string(chosen.Effort), WasSwitch: d.WasSwitch, CacheEstJSON: store.JSON(chosen.Cache), Explanation: string(why)}
 	if err := p.ledger.WriteRouting(ctx, rec); err != nil {
@@ -373,11 +386,6 @@ func quality(t model.Tier, p Phase, stall StallSignals) float64 {
 		q += .20
 	}
 	if stalled(stall) {
-		// Read/search repetition is a cheap-model behavior problem, not a
-		// capability ceiling; bump efficient models most so a stall triggered by
-		// redundant exploration escalates to a disciplined cheap model rather
-		// than a much pricier frontier one. Hard failures (failed commands, test
-		// failures, repeated edits) still favor frontier.
 		readStall := stall.RepeatedReads >= 2 || stall.RepeatedSearches >= 2
 		switch {
 		case readStall && t == model.Efficient:
@@ -395,9 +403,31 @@ func quality(t model.Tier, p Phase, stall StallSignals) float64 {
 	return q
 }
 
-func stalled(s StallSignals) bool {
-	return s.FailedCommands >= 2 || s.TestFailStreak >= 2 || s.RepeatedEdits >= 3 || s.NoProgressTurns >= 4 || s.PhaseTurns >= 7
+// stallReason reports the failure signal that escalates quality toward
+// frontier. Phase length and turns without an edit are not failures: a long
+// implement phase does ordinary work, and treating it as stalled kept frontier
+// models in place. Read/search repetition is a stall too, but quality() handles
+// it separately so it favours an efficient model.
+func stallReason(s StallSignals) string {
+	if s.RepeatedReads >= 2 {
+		return "repeated reads"
+	}
+	if s.RepeatedSearches >= 2 {
+		return "repeated searches"
+	}
+	switch {
+	case s.FailedCommands >= 2:
+		return "failed commands"
+	case s.TestFailStreak >= 2:
+		return "failing tests"
+	case s.RepeatedEdits >= 3:
+		return "repeated edits"
+	default:
+		return ""
+	}
 }
+
+func stalled(s StallSignals) bool { return stallReason(s) != "" }
 func effortFor(m model.ModelSpec, s RoutingState) model.Effort {
 	want := model.EffortMedium
 	if slices.Contains([]Phase{Plan, Diagnose, Review}, s.Phase) || s.Stall.TestFailStreak >= 2 {
