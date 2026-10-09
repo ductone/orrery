@@ -86,7 +86,7 @@ func (e *Engine) markCompacted(sid string) {
 	e.compactedLastTurn[sid] = true
 }
 
-// routePerformance loads recorded per-route latency and reliability for
+// routePerformance loads recorded per-route generation speed and reliability for
 // scoring. Best effort: on error the router scores without penalties.
 func (e *Engine) routePerformance(ctx context.Context) map[string]router.RoutePerformance {
 	stats, err := e.store.ModelStats(ctx)
@@ -100,7 +100,7 @@ func (e *Engine) routePerformance(ctx context.Context) map[string]router.RoutePe
 		if st.Calls > 0 {
 			rate = float64(fail) / float64(st.Calls)
 		}
-		out[st.Route] = router.RoutePerformance{Calls: st.Calls, LatencySeconds: st.LatencySeconds, FailureRate: rate, LastSlowCall: st.LastSlowCall}
+		out[st.Route] = router.RoutePerformance{Calls: st.Calls, OutputTokensPerSecond: st.OutputTokensPerSecond, FailureRate: rate, LastSlowCall: st.LastSlowCall}
 	}
 	return out
 }

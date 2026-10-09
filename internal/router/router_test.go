@@ -249,8 +249,8 @@ func TestSlowRouteLosesToFasterSlightlyPricierRoute(t *testing.T) {
 	d := decideWith(t, catalog, RoutingState{
 		Point: TurnStart, Phase: Implement,
 		Performance: map[string]RoutePerformance{
-			slow.ID: {Calls: 100, LatencySeconds: 40},
-			fast.ID: {Calls: 100, LatencySeconds: 4},
+			slow.ID: {Calls: 100, OutputTokensPerSecond: 9},
+			fast.ID: {Calls: 100, OutputTokensPerSecond: 179},
 		},
 	})
 	if d.Model.ID != fast.ID {
@@ -264,12 +264,28 @@ func TestSlowRouteLosesToFasterSlightlyPricierRoute(t *testing.T) {
 	if fastCand.PerformancePenalty != 0 {
 		t.Fatalf("fast candidate penalty=%v", fastCand.PerformancePenalty)
 	}
+
+}
+
+func TestFastVerboseRouteGetsNoThroughputPenalty(t *testing.T) {
+	now := time.Now()
+	fast := performancePenalty(RoutePerformance{Calls: 100, OutputTokensPerSecond: 179}, now)
+	if fast != 0 {
+		t.Fatalf("fast verbose route penalty=%v", fast)
+	}
+	slow := performancePenalty(RoutePerformance{Calls: 100, OutputTokensPerSecond: 9}, now)
+	if slow <= 0 {
+		t.Fatalf("slow-generating route penalty=%v", slow)
+	}
+	if performancePenalty(RoutePerformance{Calls: 100, OutputTokensPerSecond: throughputBaselineTokensPerSecond}, now) != 0 {
+		t.Fatal("baseline throughput was penalized")
+	}
 }
 
 func TestFewCallsShrinkPerformancePenalty(t *testing.T) {
 	now := time.Now()
-	full := performancePenalty(RoutePerformance{Calls: 100, LatencySeconds: 40, FailureRate: .1}, now)
-	shrunk := performancePenalty(RoutePerformance{Calls: 5, LatencySeconds: 40, FailureRate: .1}, now)
+	full := performancePenalty(RoutePerformance{Calls: 100, OutputTokensPerSecond: 9, FailureRate: .1}, now)
+	shrunk := performancePenalty(RoutePerformance{Calls: 5, OutputTokensPerSecond: 9, FailureRate: .1}, now)
 	if full <= 0 || shrunk <= 0 {
 		t.Fatalf("full=%v shrunk=%v", full, shrunk)
 	}
@@ -295,8 +311,8 @@ func TestRecentSlowCallCoolsOffThenExpires(t *testing.T) {
 	cool, _, err := p.Decide(context.Background(), RoutingState{
 		SessionID: "s", Point: TurnStart, Phase: Implement, InputTokens: 40_000, AvailableModels: ids,
 		Performance: map[string]RoutePerformance{
-			// No latency/reliability hit: only the cool-off should move the score.
-			slow.ID: {Calls: 50, LatencySeconds: 4, LastSlowCall: now.Add(-5 * time.Minute)},
+			// No throughput or reliability hit: only the cool-off should move the score.
+			slow.ID: {Calls: 50, OutputTokensPerSecond: 179, LastSlowCall: now.Add(-5 * time.Minute)},
 		},
 	})
 	if err != nil {
@@ -314,7 +330,7 @@ func TestRecentSlowCallCoolsOffThenExpires(t *testing.T) {
 	after, _, err := p.Decide(context.Background(), RoutingState{
 		SessionID: "s", Point: TurnStart, Phase: Implement, InputTokens: 40_000, AvailableModels: ids,
 		Performance: map[string]RoutePerformance{
-			slow.ID: {Calls: 50, LatencySeconds: 4, LastSlowCall: now.Add(-5 * time.Minute)},
+			slow.ID: {Calls: 50, OutputTokensPerSecond: 179, LastSlowCall: now.Add(-5 * time.Minute)},
 		},
 	})
 	if err != nil {

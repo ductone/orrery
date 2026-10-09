@@ -87,21 +87,24 @@ type RoutingState struct {
 
 // RoutePerformance summarizes a route's recorded calls for scoring.
 type RoutePerformance struct {
-	Calls          int       `json:"calls"`
-	LatencySeconds float64   `json:"latency_seconds"`
-	FailureRate    float64   `json:"failure_rate"`
-	LastSlowCall   time.Time `json:"last_slow_call,omitzero"`
+	Calls int `json:"calls"`
+	// OutputTokensPerSecond is the route's recorded generation speed. It is the
+	// slowness signal the penalty scores; call latency is not, because it
+	// tracks how much a model writes rather than how fast it generates.
+	OutputTokensPerSecond float64   `json:"output_tokens_per_second,omitempty"`
+	FailureRate           float64   `json:"failure_rate"`
+	LastSlowCall          time.Time `json:"last_slow_call,omitzero"`
 }
 
 // InstructionPhase is the phase chosen for a turn that starts with a new user
 // message, and where the choice came from.
 type InstructionPhase struct {
-	QuestionVersion string `json:"question_version,omitempty"`
-	Phase      Phase   `json:"phase"`
-	Source     string  `json:"source"`
-	Confidence float64 `json:"confidence,omitempty"`
-	Suggested  Phase   `json:"suggested,omitempty"`
-	Error      string  `json:"error,omitempty"`
+	QuestionVersion string  `json:"question_version,omitempty"`
+	Phase           Phase   `json:"phase"`
+	Source          string  `json:"source"`
+	Confidence      float64 `json:"confidence,omitempty"`
+	Suggested       Phase   `json:"suggested,omitempty"`
+	Error           string  `json:"error,omitempty"`
 }
 
 type Candidate struct {
@@ -317,27 +320,34 @@ func (p *V1) reviewHasAlternateFamily(s RoutingState) bool {
 }
 
 // Performance penalties keep slow or flaky routes from winning on price alone.
-// Latency and reliability penalties are shrunk toward zero for routes with few
+// Throughput and reliability penalties are shrunk toward zero for routes with
 // calls (weight = calls/(calls+performanceShrinkCalls)); the cool-off is not.
 const (
-	performanceShrinkCalls  = 20
-	latencyBaselineSeconds  = 10.0
-	latencyPenaltyPerSecond = .01
-	maxLatencyPenalty       = .3
-	maxReliabilityPenalty   = .2
-	slowCallCoolOffPenalty  = .2
-	slowCallCoolOff         = 30 * time.Minute
+	performanceShrinkCalls            = 20
+	throughputBaselineTokensPerSecond = 40.0
+	throughputPenaltyPerToken         = .01
+	maxThroughputPenalty              = .3
+	maxReliabilityPenalty             = .2
+	slowCallCoolOffPenalty            = .2
+	slowCallCoolOff                   = 30 * time.Minute
 )
 
-// performancePenalty scores a route's recorded latency and reliability. Routes
-// with no stats get no penalty.
+// performancePenalty scores a route's recorded generation speed and reliability.
+// Routes with no stats get no penalty.
 func performancePenalty(perf RoutePerformance, now time.Time) float64 {
 	penalty := 0.0
 	if perf.Calls > 0 {
 		weight := float64(perf.Calls) / float64(perf.Calls+performanceShrinkCalls)
-		latency := math.Min(maxLatencyPenalty, math.Max(0, perf.LatencySeconds-latencyBaselineSeconds)*latencyPenaltyPerSecond)
+		// Call latency tracks output length more than route speed, so score
+		// generation speed: a route that writes long answers fast is not slow.
+		// A missing rate means no call reported tokens, so score no throughput
+		// penalty rather than an implicit zero.
+		throughput := 0.0
+		if perf.OutputTokensPerSecond > 0 {
+			throughput = math.Min(maxThroughputPenalty, math.Max(0, throughputBaselineTokensPerSecond-perf.OutputTokensPerSecond)*throughputPenaltyPerToken)
+		}
 		reliability := maxReliabilityPenalty * math.Min(1, math.Max(0, perf.FailureRate))
-		penalty += weight * (latency + reliability)
+		penalty += weight * (throughput + reliability)
 	}
 	if !perf.LastSlowCall.IsZero() && now.Sub(perf.LastSlowCall) < slowCallCoolOff {
 		penalty += slowCallCoolOffPenalty
