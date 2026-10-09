@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +70,71 @@ func TestBudgetPausesAndResumesOnAgreement(t *testing.T) {
 	if after, _ := st.Session(ctx, sid); after.BudgetUSD != 2 {
 		t.Fatalf("budget = %v, want one more session's worth", after.BudgetUSD)
 	}
+	// The choice is not the person's request: latest_request is untouched and
+	// the model sees the outcome as a harness note, not the bare choice.
+	if latest, _ := st.LatestRequest(ctx, sid); latest != "" {
+		t.Fatalf("latest_request = %q, a budget choice must not replace it", latest)
+	}
+	msgs, _ := st.Messages(ctx, sid)
+	var note provider.Message
+	for _, m := range msgs {
+		var pm provider.Message
+		if json.Unmarshal([]byte(m.ContentJSON), &pm) == nil && strings.Contains(fmt.Sprint(pm.Content), "extended the session budget by $1.00 (now $2.00)") {
+			note = pm
+		}
+		if strings.Contains(m.ContentJSON, budgetChoice(1)) {
+			t.Fatalf("the bare choice must not be stored as a message: %s", m.ContentJSON)
+		}
+	}
+	if !note.Harness {
+		t.Fatalf("want a model-visible harness note recording the extension, got %+v", msgs)
+	}
+	// A later ordinary message is a real request again.
+	results, err = e.Continue(ctx, sid, "Now add a README", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := waitResult(t, results); r.Status != agentproto.Pass {
+		t.Fatalf("follow-up = %+v", r)
+	}
+	if latest, _ := st.LatestRequest(ctx, sid); latest != "Now add a README" {
+		t.Fatalf("latest_request = %q after an ordinary follow-up", latest)
+	}
+	if after, _ := st.Session(ctx, sid); after.BudgetUSD != 2 {
+		t.Fatalf("a follow-up must not extend the budget again: %v", after.BudgetUSD)
+	}
+}
+
+// Free-form guidance in answer to a harness question is the person's request.
+func TestFreeformAnswerToLimitQuestionIsARequest(t *testing.T) {
+	e, st := testEngine(t)
+	s := &scriptedResponses{reply: func(int, map[string]any) map[string]any { return responsesText("done") }}
+	srv := s.serve(t)
+	workspace := t.TempDir()
+	cfg := gateConfig(workspace, srv.URL)
+	cfg.Budget = config.BudgetConfig{SessionUSD: 1, JobDefaultFraction: .2}
+	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
+	ctx := context.Background()
+	sid := uuid.NewString()
+	_ = st.CreateSession(ctx, store.Session{ID: sid, Spec: "task", Phase: "plan", BudgetUSD: 1, SpentUSD: 1.5, WorkspacePath: workspace})
+	req := agentproto.TaskRequest{Spec: "task", Budget: agentproto.Budget{MaxUSD: 1, MaxTokens: 1_000_000, MaxWallClock: time.Minute}, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"}}
+	if r := e.run(ctx, sid, "", req, nil); r.Status != agentproto.InputRequired {
+		t.Fatalf("r = %+v", r)
+	}
+	guidance := "Skip the docs and only fix the parser"
+	if err := st.AddBudget(ctx, sid, 5); err != nil {
+		t.Fatal(err)
+	}
+	results, err := e.Continue(ctx, sid, guidance, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := waitResult(t, results); r.Status != agentproto.Pass {
+		t.Fatalf("guidance continues the work: %+v", r)
+	}
+	if latest, _ := st.LatestRequest(ctx, sid); latest != guidance {
+		t.Fatalf("latest_request = %q, want the guidance", latest)
+	}
 }
 
 func TestDecliningAHarnessQuestionStops(t *testing.T) {
@@ -96,6 +163,18 @@ func TestDecliningAHarnessQuestionStops(t *testing.T) {
 	}
 	if len(s.requests) != 0 {
 		t.Fatal("no model call after the person said stop")
+	}
+	if latest, _ := st.LatestRequest(ctx, sid); latest != "" {
+		t.Fatalf("latest_request = %q, stopping must not replace it", latest)
+	}
+	// The stop answer does not stick: an ordinary message right after runs.
+	_ = st.AddBudget(ctx, sid, 5)
+	results, err = e.Continue(ctx, sid, "Actually, finish the task", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := waitResult(t, results); r.Status != agentproto.Pass {
+		t.Fatalf("a follow-up after stopping must run: %+v", r)
 	}
 }
 

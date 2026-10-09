@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ductone/orrey/internal/agentproto"
 	"github.com/ductone/orrey/internal/provider"
@@ -61,27 +62,64 @@ func declines(answer string) bool {
 	return false
 }
 
-// answeredLimit is a harness question the person answered with this run's
-// message.
-type answeredLimit struct {
-	budget, declined bool
+// harnessQuestion reports a pending input the harness raised.
+func harnessQuestion(id string) bool {
+	return strings.HasPrefix(id, limitQuestion) || strings.HasPrefix(id, budgetQuestion)
 }
 
-// limitAnswer reports whether the latest message answered a harness question.
+// offeredChoice reports whether the answer is one of the question's choices.
+// Free-form guidance is a real message; a bare choice is not a new request.
+func offeredChoice(choices []string, answer string) bool {
+	for _, choice := range choices {
+		if answer == choice {
+			return true
+		}
+	}
+	return false
+}
+
+// harnessAnswerNote is what the model sees when the person picks an offered
+// choice. The model never saw the question, so the note states the outcome
+// instead of the bare choice text.
+func harnessAnswerNote(kind, answer string, added, budget float64) string {
+	switch {
+	case declines(answer):
+		return "The person chose to stop here."
+	case strings.HasPrefix(kind, budgetQuestion):
+		return fmt.Sprintf("The person extended the session budget by $%.2f (now $%.2f). Continue the current task.", added, budget)
+	default:
+		return "The person chose to keep going. Continue the current task."
+	}
+}
+
+// answeredLimit is a harness question answered by this acceptance.
+type answeredLimit struct {
+	declined bool
+}
+
+// limitAnswer reports whether the message just accepted answered a harness
+// question. Older answered questions stay in the session, so only one whose
+// answer timestamp matches this acceptance counts.
 func (e *Engine) limitAnswer(ctx context.Context, sid string) (answeredLimit, bool) {
 	inputs, err := e.store.PendingInputs(ctx, sid)
 	if err != nil || len(inputs) == 0 {
 		return answeredLimit{}, false
 	}
 	last := inputs[len(inputs)-1]
-	if last.Status != "answered" || !(strings.HasPrefix(last.ID, limitQuestion) || strings.HasPrefix(last.ID, budgetQuestion)) {
+	if last.Status != "answered" || !harnessQuestion(last.ID) {
 		return answeredLimit{}, false
 	}
-	latest, _ := e.store.LatestRequest(ctx, sid)
-	if strings.TrimSpace(latest) != strings.TrimSpace(last.Answer) {
+	msgs, err := e.store.Messages(ctx, sid)
+	if err != nil || len(msgs) == 0 {
 		return answeredLimit{}, false
 	}
-	return answeredLimit{budget: strings.HasPrefix(last.ID, budgetQuestion), declined: declines(last.Answer)}, true
+	acceptedAt := msgs[len(msgs)-1].CreatedAt
+	// The answer is resolved just after its message is stored, so a later
+	// ordinary message is newer than the answer and does not count.
+	if last.AnsweredAt.Before(acceptedAt) || last.AnsweredAt.Sub(acceptedAt) > time.Minute {
+		return answeredLimit{}, false
+	}
+	return answeredLimit{declined: declines(last.Answer)}, true
 }
 
 func (e *Engine) harnessMessage(ctx context.Context, sid, text string) {

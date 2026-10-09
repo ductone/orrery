@@ -593,8 +593,13 @@ func (s *Store) DeliverQueuedMessage(ctx context.Context, sid, requestID, turnID
 	if _, err = tx.ExecContext(ctx, `INSERT INTO messages(session_id,role,content_json,created_at) VALUES(?,?,?,?)`, sid, "user", JSON(content), now.Format(time.RFC3339Nano)); err != nil {
 		return RequestReceipt{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET latest_request=? WHERE id=?`, messageText(content), sid); err != nil {
-		return RequestReceipt{}, err
+	// A harness note is not a person's request. Review, compaction and the
+	// task section lead with latest_request, so a budget or limit choice must
+	// not replace it.
+	if !harnessContent(content) {
+		if _, err = tx.ExecContext(ctx, `UPDATE sessions SET latest_request=? WHERE id=?`, messageText(content), sid); err != nil {
+			return RequestReceipt{}, err
+		}
 	}
 	if request != nil {
 		if _, err = tx.ExecContext(ctx, `UPDATE sessions SET request_json=?,updated_at=? WHERE id=?`, JSON(request), now.Format(time.RFC3339Nano), sid); err != nil {
@@ -1422,8 +1427,13 @@ func (s *Store) AcceptMessage(ctx context.Context, sid, requestID, turnID, kind,
 	if _, err = tx.ExecContext(ctx, `INSERT INTO messages(session_id,role,content_json,created_at) VALUES(?,?,?,?)`, sid, "user", JSON(content), now.Format(time.RFC3339Nano)); err != nil {
 		return RequestReceipt{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET latest_request=? WHERE id=?`, messageText(content), sid); err != nil {
-		return RequestReceipt{}, err
+	// A harness note is not a person's request. Review, compaction and the
+	// task section lead with latest_request, so a budget or limit choice must
+	// not replace it.
+	if !harnessContent(content) {
+		if _, err = tx.ExecContext(ctx, `UPDATE sessions SET latest_request=? WHERE id=?`, messageText(content), sid); err != nil {
+			return RequestReceipt{}, err
+		}
 	}
 	if request != nil {
 		if _, err = tx.ExecContext(ctx, `UPDATE sessions SET request_json=?,updated_at=? WHERE id=?`, JSON(request), now.Format(time.RFC3339Nano), sid); err != nil {
@@ -1515,6 +1525,15 @@ func (s *Store) UpdateRoutingOutcome(ctx context.Context, id, field string, v an
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE routing_records SET `+field+`=? WHERE id=?`, JSON(v), id)
 	return err
+}
+
+// harnessContent reports a stored harness note, which is not the person's request.
+func harnessContent(content any) bool {
+	var m struct {
+		Harness bool `json:"harness"`
+	}
+	_ = json.Unmarshal([]byte(JSON(content)), &m)
+	return m.Harness
 }
 
 // messageText extracts a stored message's text content.

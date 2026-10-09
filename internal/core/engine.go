@@ -448,7 +448,21 @@ func (e *Engine) ContinueIntegratedWithAttachments(ctx context.Context, id, inst
 		return StartInfo{SessionID: id, Accepted: true, Duplicate: dup, Queued: true}, nil
 	}
 	turnID := uuid.NewString()
-	receipt, err := e.store.AcceptMessage(ctx, id, requestID, turnID, source, payloadHash, provider.Message{Role: "user", Content: instruction}, req)
+	content := provider.Message{Role: "user", Content: instruction}
+	var storedRequest any = req
+	if pendingErr == nil && harnessQuestion(pending.ID) && offeredChoice(pending.Choices, instruction) {
+		// A bare choice is not the person's request. Record the outcome as a
+		// harness note and leave latest_request alone, or the model adopts
+		// "Add $50.00 and continue" as the task.
+		cfg, _, _, _, _ := e.runtimeSnapshot()
+		added, budget := cfg.Budget.SessionUSD, s.BudgetUSD
+		if strings.HasPrefix(pending.ID, budgetQuestion) && !declines(instruction) {
+			budget += added
+		}
+		content = provider.Message{Role: "user", Harness: true, Content: harnessAnswerNote(pending.ID, instruction, added, budget)}
+		storedRequest = nil
+	}
+	receipt, err := e.store.AcceptMessage(ctx, id, requestID, turnID, source, payloadHash, content, storedRequest)
 	if err != nil {
 		e.mu.Unlock()
 		return StartInfo{}, err
