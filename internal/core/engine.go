@@ -1314,10 +1314,6 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		seenCalls := map[string]toolExecution{}
 		duplicateCalls := 0
 		instructionBoundaryHit := false
-		// buildCheckDone tracks whether we have already run the automatic
-		// post-edit compile check during this turn. We run it at most once per
-		// turn to keep the overhead bounded while still surfacing breakage early.
-		buildCheckDone := false
 		for _, call := range resp.Message.ToolCalls {
 			outcome.ToolCalls++
 			if call.Name == "edit" {
@@ -1405,30 +1401,6 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				e.emit(ctx, sid, "instruction.discovered", map[string]any{"tool": call.Name, "documents": instructionPayload(instructionDocs), "blocked": instructionBlocked}, emit)
 			} else if instructionBlocked {
 				e.emit(ctx, sid, "instruction.blocked", map[string]any{"tool": call.Name, "reason": "instruction boundary crossed earlier in the same response"}, emit)
-			}
-			// Automatic post-edit Go compile verification: surface syntax/type errors
-			// immediately so the model can self-correct before compounding them. Run at most
-			// once per turn to avoid redundant work during rapid multi-edit responses.
-			if !buildCheckDone && callErr == nil && !instructionBlocked && call.Name == "edit" && req.Workspace.Mode != "read" {
-				editPath := fmt.Sprint(call.Arguments["path"])
-				if strings.HasSuffix(editPath, ".go") {
-					buildCheckDone = true
-					if buildOutput, buildOK, ran := goCompileCheck(ctx, req.Workspace.Path); ran {
-						if !buildOK {
-							hint := "Workspace no longer compiles after this edit. Fix the syntax/type error before making further edits."
-							if m, ok := shaped.(map[string]any); ok {
-								m["build_error"] = buildOutput
-								m["hint"] = hint
-								shaped = m
-							} else {
-								shaped = map[string]any{"result": shaped, "build_error": buildOutput, "hint": hint}
-							}
-						} else if m, ok := shaped.(map[string]any); ok {
-							m["build"] = "ok"
-							shaped = m
-						}
-					}
-				}
 			}
 			seenCalls[callKey] = toolExecution{value: value, shaped: shaped, callID: call.ID}
 			toolMsg := provider.Message{Role: "tool", ToolCallID: call.ID, Content: capToolResult(call.Name, store.JSON(shaped))}
