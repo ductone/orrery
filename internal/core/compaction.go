@@ -853,7 +853,7 @@ func recallHistory(checkpoints []store.Checkpoint, query string) []string {
 }
 
 func maskOldToolResults(ctx context.Context, client *jev.Client, objective string, msgs []store.Message) bool {
-	changed, _ := maskOldToolResultsCached(ctx, jevRelevanceAsker(client), nil, objective, msgs)
+	changed, _ := maskOldToolResultsCached(ctx, jevRelevanceAsker(client), nil, objective, maskGate{}, msgs)
 	return changed
 }
 

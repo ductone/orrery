@@ -89,6 +89,11 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
+	for _, name := range []string{"input_tokens", "cache_read_tokens"} {
+		if err := s.ensureColumn("model_stats", name, "INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+	}
 	if err := s.backfillModelStats(); err != nil {
 		return err
 	}

@@ -330,7 +330,7 @@ func TestModelsStatsColumns(t *testing.T) {
 	t.Setenv("ORRERY_HOME", dir)
 	rt := modelsRuntime(t, dir, filepath.Join(dir, "missing.yaml"))
 	ctx := context.Background()
-	if err := rt.store.RecordModelCall(ctx, "xai/grok-4.6", 200*time.Second, 1000, true); err != nil {
+	if err := rt.store.RecordModelCall(ctx, "xai/grok-4.6", 200*time.Second, 1000, true, 4000, 3200); err != nil {
 		t.Fatal(err)
 	}
 	if err := rt.store.RecordModelFailure(ctx, "xai/grok-4.6", "empty"); err != nil {
@@ -339,7 +339,7 @@ func TestModelsStatsColumns(t *testing.T) {
 	var code int
 	out := captureStdout(t, func() { code = listModels(ctx, rt, []string{"--stats"}) })
 	row := tableRows(out)["xai/grok-4.6"]
-	if code != 0 || len(row) != 19 || strings.Join(row[8:13], " ") != "1 200.0s 5 100 1" || row[13] == "-" {
+	if code != 0 || len(row) != 20 || strings.Join(row[8:14], " ") != "1 200.0s 5 80 100 1" || row[14] == "-" {
 		t.Fatalf("exit=%d row=%v output=%s", code, row, out)
 	}
 }
@@ -369,7 +369,7 @@ func TestModelsStatsOutcomeColumns(t *testing.T) {
 	var code int
 	out := captureStdout(t, func() { code = listModels(ctx, rt, []string{"--stats"}) })
 	row := tableRows(out)["xai/grok-4.6"]
-	if code != 0 || len(row) != 19 || row[14] != "1.0/0.0" || row[18] != "1/0/0/0" {
+	if code != 0 || len(row) != 20 || row[15] != "1.0/0.0" || row[19] != "1/0/0/0" {
 		t.Fatalf("exit=%d row=%v output=%s", code, row, out)
 	}
 }

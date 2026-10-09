@@ -1158,7 +1158,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		_ = e.store.AddMessage(ctx, sid, "assistant", resp.Message)
 		e.emit(ctx, sid, "assistant.message", map[string]any{"message": resp.Message, "usage": resp.Usage, "cost_usd": cost, "model": decision.Model.ID, "stop_reason": resp.StopReason, "truncated": resp.Truncated, "output_kinds": resp.OutputKinds}, emit)
 		e.emit(ctx, sid, "usage.reported", map[string]any{"model": decision.Model.ID, "job_id": parentJob, "input_tokens": resp.Usage.InputTokens, "output_tokens": resp.Usage.OutputTokens, "cache_read_tokens": resp.Usage.CacheReadTokens, "cache_write_tokens": resp.Usage.CacheWriteTokens, "cost_usd": cost, "latency": resp.Latency, "stop_reason": resp.StopReason, "truncated": resp.Truncated, "output_cap": min(outputCap, decision.Model.MaxOutput)}, emit)
-		_ = e.store.RecordModelCall(ctx, decision.Model.ID, resp.Latency, resp.Usage.OutputTokens, resp.Truncated)
+		_ = e.store.RecordModelCall(ctx, decision.Model.ID, resp.Latency, resp.Usage.OutputTokens, resp.Truncated, resp.Usage.InputTokens, resp.Usage.CacheReadTokens)
 		turnOutcome := map[string]any{"tokens": resp.Usage.InputTokens + resp.Usage.OutputTokens, "input_tokens": resp.Usage.InputTokens, "output_tokens": resp.Usage.OutputTokens, "cache_read_tokens": resp.Usage.CacheReadTokens, "cache_write_tokens": resp.Usage.CacheWriteTokens, "latency": resp.Latency, "cost_usd": cost, "model": decision.Model.ID}
 		if len(resp.Message.ToolCalls) == 0 {
 			if emptyFinalResponse(resp.Message) {
@@ -1435,15 +1435,27 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		objective := currentRequest(current, "")
 		// Apply only cached answers here so the next model call never waits on
 		// Jev; a background pass answers the rest for a later turn boundary.
-		maskStart := time.Now()
-		// Reload after this turn's tools so masking preserves their new results.
-		stored, _ = e.store.Messages(ctx, sid)
-		masked, mask, run := e.applyCachedMasking(ctx, sid, objective, stored)
-		if masked {
-			_ = e.store.ReplaceMessages(ctx, sid, stored)
-		}
-		if run != nil {
-			e.emit(ctx, sid, "context.masking", map[string]any{"duration_ms": time.Since(maskStart).Milliseconds(), "background_ms": run.duration.Milliseconds(), "candidates": run.stats.Candidates, "asked": run.stats.Asked, "cached": run.stats.Cached, "cleared": mask.Cleared}, emit)
+		// Masking rewrites history, which breaks the provider prefix cache from
+		// the first changed message on, so it runs in batches: only once the
+		// prompt crosses a fraction of the effective window, and only when the
+		// clearing removes enough tokens to pay for the break. Between crossings
+		// the stored history stays byte-identical.
+		r := e.relevanceCacheFor(sid, objective)
+		window := effectiveContextWindow(decision.Model)
+		if e.maskingDue(r, inputTokens, window) {
+			// Reload after this turn's tools so masking preserves their new results.
+			stored, _ = e.store.Messages(ctx, sid)
+			maskStart := time.Now()
+			masked, mask, run := e.applyCachedMasking(ctx, sid, objective, maskGateFor(window), stored)
+			if masked {
+				_ = e.store.ReplaceMessages(ctx, sid, stored)
+				e.recordMasking(r, inputTokens)
+				data := map[string]any{"candidates": mask.Candidates, "asked": mask.Asked, "cached": mask.Cached, "cleared": mask.Cleared, "tokens_removed": mask.TokensRemoved(), "earliest": mask.Earliest, "duration_ms": time.Since(maskStart).Milliseconds()}
+				if run != nil {
+					data["background_ms"] = run.duration.Milliseconds()
+				}
+				e.emit(ctx, sid, "context.masking", data, emit)
+			}
 		}
 		e.scheduleMasking(ctx, sid, objective)
 		compactNow := inputTokens > effectiveContextWindow(decision.Model)*3/5

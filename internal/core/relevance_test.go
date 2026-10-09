@@ -85,7 +85,7 @@ func TestMaskingCacheAvoidsRepeatedAsks(t *testing.T) {
 	var cache sync.Map
 	a := &countingAsker{}
 	msgs := oldToolHistory(20)
-	if _, stats := maskOldToolResultsCached(t.Context(), a.ask, &cache, "obj", msgs); stats.Asked != 20 || stats.Cleared != 10 {
+	if _, stats := maskOldToolResultsCached(t.Context(), a.ask, &cache, "obj", maskGate{}, msgs); stats.Asked != 20 || stats.Cleared != 10 {
 		t.Fatalf("first pass stats = %+v", stats)
 	}
 	if a.peak.Load() > relevanceConcurrency {
@@ -93,7 +93,7 @@ func TestMaskingCacheAvoidsRepeatedAsks(t *testing.T) {
 	}
 	// Kept results stay eligible; a fresh history must be answered from cache.
 	fresh := oldToolHistory(20)
-	_, stats := maskOldToolResultsCached(t.Context(), a.ask, &cache, "obj", fresh)
+	_, stats := maskOldToolResultsCached(t.Context(), a.ask, &cache, "obj", maskGate{}, fresh)
 	if stats.Asked != 0 || stats.Cached != 20 || a.total() != 20 || clearedCount(fresh) != 10 {
 		t.Fatalf("second pass stats = %+v asks=%d cleared=%d", stats, a.total(), clearedCount(fresh))
 	}
@@ -108,7 +108,7 @@ func TestMaskingCacheInvalidatesOnObjectiveChange(t *testing.T) {
 	e, _ := testEngine(t)
 	a := &countingAsker{}
 	first := e.relevanceCacheFor("s", "obj one")
-	maskOldToolResultsCached(t.Context(), a.ask, &first.answers, "obj one", oldToolHistory(4))
+	maskOldToolResultsCached(t.Context(), a.ask, &first.answers, "obj one", maskGate{}, oldToolHistory(4))
 	if e.relevanceCacheFor("s", "obj one") != first {
 		t.Fatal("same objective must reuse the cache")
 	}
@@ -116,7 +116,7 @@ func TestMaskingCacheInvalidatesOnObjectiveChange(t *testing.T) {
 	if second == first {
 		t.Fatal("new objective must replace the cache")
 	}
-	if _, stats := maskOldToolResultsCached(t.Context(), a.ask, &second.answers, "obj two", oldToolHistory(4)); stats.Asked != 4 || stats.Cached != 0 {
+	if _, stats := maskOldToolResultsCached(t.Context(), a.ask, &second.answers, "obj two", maskGate{}, oldToolHistory(4)); stats.Asked != 4 || stats.Cached != 0 {
 		t.Fatalf("stats after objective change = %+v", stats)
 	}
 	if a.total() != 8 {
@@ -130,8 +130,8 @@ func TestMaskingCacheInvalidatesOnObjectiveChange(t *testing.T) {
 func TestMaskingDoesNotCacheFailedAnswers(t *testing.T) {
 	var cache sync.Map
 	a := &countingAsker{fail: true}
-	maskOldToolResultsCached(t.Context(), a.ask, &cache, "obj", oldToolHistory(3))
-	maskOldToolResultsCached(t.Context(), a.ask, &cache, "obj", oldToolHistory(3))
+	maskOldToolResultsCached(t.Context(), a.ask, &cache, "obj", maskGate{}, oldToolHistory(3))
+	maskOldToolResultsCached(t.Context(), a.ask, &cache, "obj", maskGate{}, oldToolHistory(3))
 	if a.total() != 6 {
 		t.Fatalf("failed answers must be re-asked, asks = %d", a.total())
 	}
@@ -141,7 +141,7 @@ func TestCachedMaskingKeepsUnansweredResults(t *testing.T) {
 	e, _ := testEngine(t)
 	var warm sync.Map
 	dropC1 := func(_ context.Context, _, _, args, _ string) (bool, bool) { return !strings.Contains(args, "c1"), true }
-	maskOldToolResultsCached(t.Context(), dropC1, &warm, "obj", oldToolHistory(2))
+	maskOldToolResultsCached(t.Context(), dropC1, &warm, "obj", maskGate{}, oldToolHistory(2))
 	r := e.relevanceCacheFor("s", "obj")
 	warm.Range(func(k, v any) bool {
 		if !v.(bool) {
@@ -150,7 +150,7 @@ func TestCachedMaskingKeepsUnansweredResults(t *testing.T) {
 		return true
 	})
 	msgs := oldToolHistory(4)
-	masked, stats, run := e.applyCachedMasking(t.Context(), "s", "obj", msgs)
+	masked, stats, run := e.applyCachedMasking(t.Context(), "s", "obj", maskGate{}, msgs)
 	if !masked || stats.Cleared != 1 || stats.Cached != 1 || stats.Asked != 0 || run != nil {
 		t.Fatalf("masked=%v stats=%+v run=%v", masked, stats, run)
 	}
@@ -175,11 +175,11 @@ func TestScheduledMaskingWarmsCacheForNextTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	masked, stats, run := e.applyCachedMasking(ctx, s.ID, "obj", msgs)
+	masked, stats, run := e.applyCachedMasking(ctx, s.ID, "obj", maskGate{}, msgs)
 	if !masked || stats.Cached != 4 || stats.Cleared != 4 || run == nil || run.stats.Asked != 4 {
 		t.Fatalf("masked=%v stats=%+v run=%+v", masked, stats, run)
 	}
-	if _, _, again := e.applyCachedMasking(ctx, s.ID, "obj", msgs); again != nil {
+	if _, _, again := e.applyCachedMasking(ctx, s.ID, "obj", maskGate{}, msgs); again != nil {
 		t.Fatal("a background pass must be reported once")
 	}
 }
@@ -187,5 +187,133 @@ func TestScheduledMaskingWarmsCacheForNextTurn(t *testing.T) {
 func TestRelevanceExperimentFailsOpenWithoutClient(t *testing.T) {
 	if relevanceKeeps(t.Context(), nil, "objective", "read", "{}", "content") || lostFact(t.Context(), nil, DurableState{}, "fact") {
 		t.Fatal("disabled Jev relevance must not retain or reject")
+	}
+}
+
+// dropAllAsker always answers that a tool result can be cleared.
+func dropAllAsker(_ context.Context, _, _, _, _ string) (bool, bool) { return false, true }
+
+func TestMaskingDueThresholdAndGrowth(t *testing.T) {
+	e, _ := testEngine(t)
+	r := e.relevanceCacheFor("s", "obj")
+	const window = 1000
+	// Below the 3/5 threshold, masking must not run.
+	if e.maskingDue(r, window*maskThresholdNumerator/maskThresholdDenominator-1, window) {
+		t.Fatal("masking must wait until the prompt passes the threshold fraction")
+	}
+	if !e.maskingDue(r, window*maskThresholdNumerator/maskThresholdDenominator, window) {
+		t.Fatal("masking must be due once the threshold is crossed")
+	}
+	e.recordMasking(r, window*maskThresholdNumerator/maskThresholdDenominator)
+	// Between crossings the history stays byte-identical: growth must reach the min-clear first.
+	if e.maskingDue(r, window*maskThresholdNumerator/maskThresholdDenominator+maskMinClearTokens(window)-1, window) {
+		t.Fatal("masking must stay idle until the prompt grows by the minimum-clear amount")
+	}
+	if !e.maskingDue(r, window*maskThresholdNumerator/maskThresholdDenominator+maskMinClearTokens(window), window) {
+		t.Fatal("masking must be due again after the minimum-clear growth")
+	}
+}
+
+func TestMaskingMinimumClearSkipsSmallBatch(t *testing.T) {
+	var cache sync.Map
+	msgs := oldToolHistory(4)
+	// Warm answers that would clear every eligible result.
+	maskOldToolResultsCached(t.Context(), dropAllAsker, &cache, "obj", maskGate{}, oldToolHistory(4))
+	before := store.JSON(msgs)
+	// A gate that requires more tokens than this tiny history can free must leave it untouched.
+	gate := maskGate{minTokens: 1_000_000}
+	changed, stats := maskOldToolResultsCached(t.Context(), nil, &cache, "obj", gate, msgs)
+	if changed || stats.Cleared != 0 || store.JSON(msgs) != before {
+		t.Fatalf("minimum-clear must skip the rewrite: changed=%v stats=%+v", changed, stats)
+	}
+	// With a zero gate the same cached answers rewrite history.
+	changed, stats = maskOldToolResultsCached(t.Context(), nil, &cache, "obj", maskGate{}, msgs)
+	if !changed || stats.Cleared != 4 {
+		t.Fatalf("ungated pass must clear: changed=%v stats=%+v", changed, stats)
+	}
+}
+
+func TestMaskingKeepsEditAndVerificationExemptions(t *testing.T) {
+	var msgs []store.Message
+	// Old edit + verification exec, then many plain reads so the exemptions sit past the recent horizon.
+	for _, tc := range []struct{ id, name, arg string }{
+		{"edit1", "edit", "path"},
+		{"ver1", "exec", "go test ./..."},
+	} {
+		msgs = append(msgs,
+			store.Message{Role: "assistant", ContentJSON: store.JSON(provider.Message{ToolCalls: []provider.ToolCall{{ID: tc.id, Name: tc.name, Arguments: map[string]any{tc.arg: "x"}}}})},
+			store.Message{Role: "tool", ContentJSON: store.JSON(provider.Message{ToolCallID: tc.id, Content: "protected-" + tc.id})},
+		)
+	}
+	for i := 0; i < 6; i++ {
+		id := fmt.Sprintf("r%d", i)
+		msgs = append(msgs,
+			store.Message{Role: "assistant", ContentJSON: store.JSON(provider.Message{ToolCalls: []provider.ToolCall{{ID: id, Name: "read", Arguments: map[string]any{"path": id}}}})},
+			store.Message{Role: "tool", ContentJSON: store.JSON(provider.Message{ToolCallID: id, Content: "drop-" + id})},
+		)
+	}
+	for i := 0; i < 11; i++ {
+		msgs = append(msgs, store.Message{Role: "assistant", ContentJSON: "{}"})
+	}
+	changed, stats := maskOldToolResultsCached(t.Context(), dropAllAsker, nil, "obj", maskGate{}, msgs)
+	if !changed || stats.Cleared != 6 {
+		t.Fatalf("expected only the plain reads cleared: changed=%v stats=%+v", changed, stats)
+	}
+	for _, m := range msgs {
+		if m.Role != "tool" {
+			continue
+		}
+		if strings.Contains(m.ContentJSON, "protected-edit1") || strings.Contains(m.ContentJSON, "protected-ver1") {
+			if strings.Contains(m.ContentJSON, "cleared") {
+				t.Fatalf("exemption cleared: %s", m.ContentJSON)
+			}
+			continue
+		}
+		if !strings.Contains(m.ContentJSON, "cleared") {
+			t.Fatalf("eligible result not cleared: %s", m.ContentJSON)
+		}
+	}
+}
+
+func TestMaskingHistoryByteIdenticalBetweenCrossings(t *testing.T) {
+	e, _ := testEngine(t)
+	r := e.relevanceCacheFor("s", "obj")
+	history := func() []store.Message {
+		pad := strings.Repeat("x", 400)
+		var out []store.Message
+		for i := 0; i < 8; i++ {
+			id := fmt.Sprintf("c%d", i)
+			out = append(out,
+				store.Message{Role: "assistant", ContentJSON: store.JSON(provider.Message{ToolCalls: []provider.ToolCall{{ID: id, Name: "read", Arguments: map[string]any{"path": id}}}})},
+				store.Message{Role: "tool", ContentJSON: store.JSON(provider.Message{ToolCallID: id, Content: pad + id})},
+			)
+		}
+		for i := 0; i < 11; i++ {
+			out = append(out, store.Message{Role: "assistant", ContentJSON: "{}"})
+		}
+		return out
+	}
+	msgs := history()
+	// Warm the session cache directly; applyCachedMasking reads the same answers.
+	maskOldToolResultsCached(t.Context(), dropAllAsker, &r.answers, "obj", maskGate{}, history())
+	window := 1000
+	// First crossing rewrites.
+	if !e.maskingDue(r, window, window) {
+		t.Fatal("expected due at full window")
+	}
+	changed, _, _ := e.applyCachedMasking(t.Context(), "s", "obj", maskGateFor(window), msgs)
+	if !changed {
+		t.Fatal("first crossing must rewrite")
+	}
+	e.recordMasking(r, window)
+	// Between crossings the same pass must leave history untouched.
+	before := store.JSON(msgs)
+	if e.maskingDue(r, window+1, window) {
+		t.Fatal("must not be due between crossings")
+	}
+	// Even a direct gated apply with the same answers must refuse a tiny clear when minTokens is high.
+	changed, _ = maskOldToolResultsCached(t.Context(), nil, &r.answers, "obj", maskGate{minTokens: 1_000_000}, msgs)
+	if changed || store.JSON(msgs) != before {
+		t.Fatal("history must stay byte-identical between crossings")
 	}
 }

@@ -21,10 +21,10 @@ func TestModelStatsRoundTrip(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := s.RecordModelCall(ctx, "ramp/test", 200*time.Second, 1000, true); err != nil {
+	if err := s.RecordModelCall(ctx, "ramp/test", 200*time.Second, 1000, true, 5000, 4000); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordModelCall(ctx, "ramp/test", 10*time.Second, 200, false); err != nil {
+	if err := s.RecordModelCall(ctx, "ramp/test", 10*time.Second, 200, false, 1000, 250); err != nil {
 		t.Fatal(err)
 	}
 	stats, err := s.ModelStats(ctx)
@@ -35,7 +35,7 @@ func TestModelStatsRoundTrip(t *testing.T) {
 		t.Fatalf("stats=%+v", stats)
 	}
 	x := stats[0]
-	if x.Route != "ramp/test" || x.Calls != 2 || x.Truncated != 1 || x.Empty != 1 || x.Malformed != 1 || x.ProviderErrors != 1 || math.Abs(x.LatencySeconds-181) > 1e-9 || math.Abs(x.OutputTokensPerSecond-6.5) > 1e-9 {
+	if x.Route != "ramp/test" || x.Calls != 2 || x.Truncated != 1 || x.Empty != 1 || x.Malformed != 1 || x.ProviderErrors != 1 || x.InputTokens != 6000 || x.CacheReadTokens != 4250 || math.Abs(x.LatencySeconds-181) > 1e-9 || math.Abs(x.OutputTokensPerSecond-6.5) > 1e-9 {
 		t.Fatalf("stats=%+v", x)
 	}
 	if x.LastCall.IsZero() || x.LastSlowCall.IsZero() || x.UpdatedAt.Before(x.LastCall) || x.LastCall.Before(x.LastSlowCall) {

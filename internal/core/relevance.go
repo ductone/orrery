@@ -55,9 +55,44 @@ func jevRelevanceAsker(client *jev.Client) relevanceAsker {
 // relevanceConcurrency bounds parallel relevance questions in one masking pass.
 const relevanceConcurrency = 8
 
+// maskThresholdNumerator/Denominator: a masking batch is only considered once
+// the prompt passes this fraction of the effective window. maskMinClearDivisor
+// sets how many tokens a batch must clear to be worth the prefix-cache break.
+const (
+	maskThresholdNumerator   = 3
+	maskThresholdDenominator = 5
+	maskMinClearDivisor      = 20
+	minMaskCandidates        = 4
+)
+
+// maskGate bounds a batching masking pass: a pass must clear at least minTokens
+// estimated tokens and cover at least minMaskCandidates results to be worth a
+// prefix-cache break. Its zero value disables gating, so callers that ask Jev
+// directly keep the pre-batching behavior.
+type maskGate struct{ minTokens int }
+
+// maskGateFor gates a batch at a fixed fraction of the effective window.
+func maskGateFor(window int) maskGate { return maskGate{minTokens: maskMinClearTokens(window)} }
+
+// allows reports whether clearing tokens over candidates results justifies
+// rewriting stored history.
+func (g maskGate) allows(candidates, tokens int) bool {
+	return g.minTokens <= 0 || (candidates >= minMaskCandidates && tokens >= g.minTokens)
+}
+
+// maskMinClearTokens is the smallest clearing that justifies a history rewrite.
+func maskMinClearTokens(window int) int { return max(1, window/maskMinClearDivisor) }
+
 type maskStats struct {
 	Candidates, Asked, Cached, Cleared int
+	// Removed counts the characters this pass cleared and Earliest is the oldest
+	// message position it touched (-1 when it cleared nothing).
+	Removed  int
+	Earliest int
 }
+
+// TokensRemoved estimates the prompt tokens this pass removed.
+func (s maskStats) TokensRemoved() int { return s.Removed / 4 }
 
 // sessionRelevance holds keep/clear answers for one session's current
 // objective. A new objective replaces it, invalidating every answer.
@@ -65,6 +100,10 @@ type sessionRelevance struct {
 	objective string
 	answers   sync.Map // tool call id + call -> bool
 	running   atomic.Bool
+	// gated records that a batch was already applied: further batches wait
+	// for the prompt to grow by the minimum-clear amount before re-crossing.
+	gated  bool
+	gateAt int
 
 	mu      sync.Mutex
 	pending *maskRun // finished background pass not yet reported
@@ -116,7 +155,7 @@ func (e *Engine) scheduleMasking(ctx context.Context, sid, objective string) {
 			return
 		}
 		start := time.Now()
-		_, stats := maskOldToolResultsCached(bg, ask, &r.answers, objective, msgs)
+		_, stats := maskOldToolResultsCached(bg, ask, &r.answers, objective, maskGate{}, msgs)
 		if stats.Candidates == 0 {
 			return
 		}
@@ -128,26 +167,47 @@ func (e *Engine) scheduleMasking(ctx context.Context, sid, objective string) {
 
 // applyCachedMasking clears old results using only cached answers, so it never
 // blocks on Jev. It also returns the last finished background pass, if any.
-func (e *Engine) applyCachedMasking(ctx context.Context, sid, objective string, msgs []store.Message) (bool, maskStats, *maskRun) {
+func (e *Engine) applyCachedMasking(ctx context.Context, sid, objective string, gate maskGate, msgs []store.Message) (bool, maskStats, *maskRun) {
 	r := e.relevanceCacheFor(sid, objective)
-	masked, stats := maskOldToolResultsCached(ctx, nil, &r.answers, objective, msgs)
 	r.mu.Lock()
 	run := r.pending
 	r.pending = nil
 	r.mu.Unlock()
+	masked, stats := maskOldToolResultsCached(ctx, nil, &r.answers, objective, gate, msgs)
 	return masked, stats, run
+}
+
+// maskingDue reports whether the prompt has grown past the point where a
+// history rewrite is worth a prefix-cache break. A session that already
+// applied a batch must first grow by the minimum-clear amount again, so the
+// stored history stays byte-identical between crossings.
+func (e *Engine) maskingDue(r *sessionRelevance, inputTokens, window int) bool {
+	if window <= 0 {
+		return false
+	}
+	if inputTokens < window*maskThresholdNumerator/maskThresholdDenominator {
+		return false
+	}
+	return !r.gated || inputTokens-r.gateAt >= maskMinClearTokens(window)
+}
+
+// recordMasking notes where a batch was applied, so the next one waits for the
+// prompt to grow by the minimum-clear amount.
+func (e *Engine) recordMasking(r *sessionRelevance, inputTokens int) {
+	r.gated, r.gateAt = true, inputTokens
 }
 
 // maskOldToolResultsCached clears old tool results the agent no longer needs.
 // Answers are reused from cache (keyed by tool call within the cache's
 // objective); uncached results are asked in parallel with bounded concurrency.
 // With a cache but no asker, uncached results are kept until answered.
-func maskOldToolResultsCached(ctx context.Context, ask relevanceAsker, cache *sync.Map, objective string, msgs []store.Message) (bool, maskStats) {
+func maskOldToolResultsCached(ctx context.Context, ask relevanceAsker, cache *sync.Map, objective string, gate maskGate, msgs []store.Message) (bool, maskStats) {
 	type candidate struct {
 		index           int
 		name, args, key string
 		parsed          provider.Message
 		keep            bool
+		answered        bool
 	}
 	var cands []candidate
 	assistants := 0
@@ -174,11 +234,40 @@ func maskOldToolResultsCached(ctx context.Context, ask relevanceAsker, cache *sy
 		}
 		cands = append(cands, candidate{index: i, name: name, args: args, key: key, parsed: parsed})
 	}
-	stats := maskStats{Candidates: len(cands)}
+	stats := maskStats{Candidates: len(cands), Earliest: -1}
+	// A gated pass plans its clearing before touching history, so a batch too
+	// small to pay for the prefix-cache break leaves the messages byte-identical.
+	if gate.minTokens > 0 {
+		planned, tokens := 0, 0
+		for i := range cands {
+			c := &cands[i]
+			if cache == nil || c.key == "" {
+				continue
+			}
+			v, ok := cache.Load(c.key)
+			if !ok {
+				continue
+			}
+			c.keep = v.(bool)
+			c.answered = true
+			stats.Cached++
+			if !c.keep {
+				planned++
+				replacement := fmt.Sprintf("{\"cleared\":true,\"tool\":%q,\"original_chars\":%d,\"hint\":\"re-run to see it\"}", c.name, len(c.parsed.Content))
+				tokens += (len(c.parsed.Content) - len(replacement)) / 4
+			}
+		}
+		if !gate.allows(planned, tokens) {
+			return false, stats
+		}
+	}
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, relevanceConcurrency)
 	for i := range cands {
 		c := &cands[i]
+		if c.answered {
+			continue
+		}
 		if c.key != "" {
 			if v, ok := cache.Load(c.key); ok {
 				c.keep = v.(bool)
@@ -205,14 +294,21 @@ func maskOldToolResultsCached(ctx context.Context, ask relevanceAsker, cache *sy
 	}
 	wg.Wait()
 	changed := false
-	for _, c := range cands {
+	// Candidates were collected newest first; clear oldest eligible results first.
+	for i := len(cands) - 1; i >= 0; i-- {
+		c := cands[i]
 		if c.keep {
 			continue
 		}
-		c.parsed.Content = fmt.Sprintf("{\"cleared\":true,\"tool\":%q,\"original_chars\":%d,\"hint\":\"re-run to see it\"}", c.name, len(c.parsed.Content))
+		before := len(c.parsed.Content)
+		c.parsed.Content = fmt.Sprintf("{\"cleared\":true,\"tool\":%q,\"original_chars\":%d,\"hint\":\"re-run to see it\"}", c.name, before)
 		msgs[c.index].ContentJSON = store.JSON(c.parsed)
 		changed = true
 		stats.Cleared++
+		stats.Removed += before - len(c.parsed.Content)
+		if stats.Earliest < 0 || c.index < stats.Earliest {
+			stats.Earliest = c.index
+		}
 	}
 	return changed, stats
 }

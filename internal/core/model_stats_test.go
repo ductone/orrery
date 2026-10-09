@@ -43,7 +43,7 @@ func TestRoutingStateCarriesPerformanceFromStore(t *testing.T) {
 	e, st := testEngine(t)
 	ctx := context.Background()
 	const route = "openai/gpt-5.6-terra"
-	if err := st.RecordModelCall(ctx, route, 12*time.Second, 100, false); err != nil {
+	if err := st.RecordModelCall(ctx, route, 12*time.Second, 100, false, 1000, 800); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.RecordModelFailure(ctx, route, "empty"); err != nil {
