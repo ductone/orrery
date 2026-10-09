@@ -268,6 +268,24 @@ func (e *Engine) foldSummaries(ctx context.Context, s store.Session, todos []sto
 }
 
 func (e *Engine) semanticSummary(ctx context.Context, s store.Session, todos []store.Todo, cont store.Continuation, workItems []store.WorkItem, old []store.Message) (DurableState, map[string]any, error) {
+	_, registry, _, _, _ := e.runtimeSnapshot()
+	cheap := sideModel(registry, model.Efficient)
+	if cheap.ID != "" && cheap.ID != s.Model && !cheap.Discovered && tierAtLeast(cheap.Tier, model.Efficient) {
+		cheapSession := s
+		cheapSession.Model = cheap.ID
+		state, meta, err := e.semanticSummaryWithModel(ctx, cheapSession, todos, cont, workItems, old)
+		if err == nil {
+			return state, meta, nil
+		}
+		// Failed summaries still consume tokens. Refresh spend before the fallback.
+		if current, loadErr := e.store.Session(ctx, s.ID); loadErr == nil {
+			s.SpentUSD = current.SpentUSD
+		}
+	}
+	return e.semanticSummaryWithModel(ctx, s, todos, cont, workItems, old)
+}
+
+func (e *Engine) semanticSummaryWithModel(ctx context.Context, s store.Session, todos []store.Todo, cont store.Continuation, workItems []store.WorkItem, old []store.Message) (DurableState, map[string]any, error) {
 	spec, ok := model.Get(s.Model)
 	_, providers, _, _, _ := e.runtimeSnapshot()
 	if !ok || providers == nil || !providers.Available(spec) {

@@ -67,7 +67,7 @@ func TestSummaryThatIsInvalidButNotTruncatedIsNotRetried(t *testing.T) {
 	ctx := context.Background()
 	s := store.Session{ID: uuid.NewString(), Spec: "x", Model: "openai/gpt-5.6-terra", BudgetUSD: 5}
 	_ = st.CreateSession(ctx, s)
-	_, _, err := e.semanticSummary(ctx, s, nil, store.Continuation{}, nil, nil)
+	_, _, err := e.semanticSummaryWithModel(ctx, s, nil, store.Continuation{}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), `stop reason "completed"`) || len(*limits) != 1 {
 		t.Fatalf("err=%v limits=%v", err, *limits)
 	}

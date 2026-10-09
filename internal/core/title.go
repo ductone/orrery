@@ -61,11 +61,39 @@ func (e *Engine) generateSessionTitle(ctx context.Context, sid, spec string) {
 	}()
 }
 
+// sideModel picks the cheapest available curated model of minTier or better.
+// An empty spec means no qualifying model is available.
+func sideModel(registry *provider.Registry, minTier model.Tier) model.ModelSpec {
+	if registry == nil {
+		return model.ModelSpec{}
+	}
+	var candidates []model.ModelSpec
+	for _, m := range model.All() {
+		if registry.Available(m) {
+			candidates = append(candidates, m)
+		}
+	}
+	return cheapestModel(candidates, func(m model.ModelSpec) bool {
+		return !m.Discovered && tierAtLeast(m.Tier, minTier)
+	})
+}
+
+// tierAtLeast reports whether tier is minTier or better. Frontier is better
+// than Efficient, which is better than Tiny; an unknown tier qualifies for
+// nothing.
+func tierAtLeast(tier, minTier model.Tier) bool {
+	rank := map[model.Tier]int{model.Tiny: 1, model.Efficient: 2, model.Frontier: 3}
+	return rank[tier] >= rank[minTier] && rank[minTier] > 0
+}
+
 // titleModel picks the model for best-effort title generation: the cheapest
 // available curated Tiny model, then the cheapest curated Efficient model,
 // then the cheapest curated model of any tier. Discovered models are a last
 // resort, since an untested discovered model can return unparseable output.
 func titleModel(registry *provider.Registry) model.ModelSpec {
+	if registry == nil {
+		return model.ModelSpec{}
+	}
 	var candidates []model.ModelSpec
 	for _, m := range model.All() {
 		if registry.Available(m) {
