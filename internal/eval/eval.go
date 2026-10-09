@@ -100,6 +100,8 @@ type Report struct {
 	SchemaVersion int         `json:"schema_version"`
 	GeneratedAt   time.Time   `json:"generated_at"`
 	Policy        string      `json:"policy"`
+	PinnedModel   string      `json:"pinned_model,omitempty"`
+	PinnedEffort  string      `json:"pinned_effort,omitempty"`
 	Results       []Result    `json:"results"`
 	Summary       Summary     `json:"summary"`
 	Comparison    *Comparison `json:"comparison,omitempty"`
@@ -147,13 +149,19 @@ func Load(path string) ([]Case, error) {
 }
 
 func Run(ctx context.Context, engine *core.Engine, policy string, cases []Case) (Report, error) {
-	report := Report{SchemaVersion: SchemaVersion, GeneratedAt: time.Now().UTC(), Policy: policy}
+	return RunPinned(ctx, engine, policy, cases, agentproto.RoutingHints{})
+}
+
+// RunPinned runs cases with pin's model and effort applied to each case's own
+// model calls; reviews and workers route normally.
+func RunPinned(ctx context.Context, engine *core.Engine, policy string, cases []Case, pin agentproto.RoutingHints) (Report, error) {
+	report := Report{SchemaVersion: SchemaVersion, GeneratedAt: time.Now().UTC(), Policy: policy, PinnedModel: pin.Model, PinnedEffort: pin.Effort}
 	for _, c := range cases {
 		workspace, cleanup, err := caseWorkspace(c)
 		if err != nil {
 			return report, fmt.Errorf("case %s: %w", c.Name, err)
 		}
-		result := runCase(ctx, engine, policy, c, workspace)
+		result := runCase(ctx, engine, policy, c, workspace, pin)
 		cleanup()
 		report.Results = append(report.Results, result)
 	}
@@ -161,7 +169,7 @@ func Run(ctx context.Context, engine *core.Engine, policy string, cases []Case) 
 	return report, nil
 }
 
-func runCase(parent context.Context, engine *core.Engine, policy string, c Case, workspace string) Result {
+func runCase(parent context.Context, engine *core.Engine, policy string, c Case, workspace string, pin agentproto.RoutingHints) Result {
 	maxUSD := c.MaxUSD
 	if maxUSD <= 0 {
 		maxUSD = 5
@@ -180,6 +188,7 @@ func runCase(parent context.Context, engine *core.Engine, policy string, c Case,
 	if policy == "frontier-pinned" {
 		req.Hints.TierPin = "frontier"
 	}
+	req.Hints.Model, req.Hints.Effort = pin.Model, pin.Effort
 	taskResult, runErr := engine.Run(ctx, req, nil)
 	outcome := taskResult.Outcome
 	result := Result{

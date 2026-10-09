@@ -404,6 +404,8 @@ func evaluate(ctx context.Context, rt *runtime, args []string) int {
 	baseline := fs.String("baseline", "", "optional prior benchmark report for regression comparison")
 	output := fs.String("output", "", "optional path for the formatted benchmark report")
 	minPassRatio := fs.Float64("min-pass-ratio", .97, "minimum pass-rate ratio versus --baseline")
+	pinModel := fs.String("model", "", "pin each case's own model calls to this route or model name")
+	pinEffort := fs.String("effort", "", "pin each case's reasoning effort (low, medium, high, ...)")
 	if fs.Parse(args) != nil {
 		return 2
 	}
@@ -425,7 +427,7 @@ func evaluate(ctx context.Context, rt *runtime, args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	report, err := orreval.Run(ctx, rt.engine, *policy, cases)
+	report, err := orreval.RunPinned(ctx, rt.engine, *policy, cases, agentproto.RoutingHints{Model: *pinModel, Effort: *pinEffort})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

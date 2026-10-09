@@ -77,13 +77,17 @@ type RoutingState struct {
 	NewInstruction   bool          `json:"new_instruction,omitempty"`
 	// InstructionPhase records how a new instruction's phase was chosen:
 	// "plan" by default, or a classifier's answer and its confidence.
-	InstructionPhase  *InstructionPhase `json:"instruction_phase,omitempty"`
-	Stall             StallSignals      `json:"stall"`
-	ExcludeFamilies   []model.Family    `json:"exclude_families,omitempty"`
-	ExcludeModels     []string          `json:"exclude_models,omitempty"`
-	AvailableModels   []string          `json:"available_models,omitempty"`
-	TierPin           model.Tier        `json:"tier_pin,omitempty"`
-	ImplementerFamily model.Family      `json:"implementer_family,omitempty"`
+	InstructionPhase *InstructionPhase `json:"instruction_phase,omitempty"`
+	Stall            StallSignals      `json:"stall"`
+	ExcludeFamilies  []model.Family    `json:"exclude_families,omitempty"`
+	ExcludeModels    []string          `json:"exclude_models,omitempty"`
+	AvailableModels  []string          `json:"available_models,omitempty"`
+	TierPin          model.Tier        `json:"tier_pin,omitempty"`
+	// ModelPin restricts the decision to one route (id or canonical model
+	// name) and EffortPin fixes its effort when the model supports it.
+	ModelPin          string       `json:"model_pin,omitempty"`
+	EffortPin         model.Effort `json:"effort_pin,omitempty"`
+	ImplementerFamily model.Family `json:"implementer_family,omitempty"`
 	// Performance is recorded per-route latency and reliability, keyed by
 	// route id. Routes absent from the map are scored without a penalty.
 	Performance map[string]RoutePerformance `json:"performance,omitempty"`
@@ -166,10 +170,15 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 		s.EstimatedOutput = 2000
 	}
 	reviewHasAlternate := p.reviewHasAlternateFamily(s)
-	defaultModelPinned := p.cfg.DisableSwitch && p.cfg.DefaultModel != ""
+	defaultModelPinned := (p.cfg.DisableSwitch && p.cfg.DefaultModel != "") || s.ModelPin != ""
 	var candidates []Candidate
 	for _, m := range p.catalog {
 		c := Candidate{Model: m.ID}
+		if s.ModelPin != "" && m.ID != s.ModelPin && m.Model != s.ModelPin {
+			c.Rejected = "model pinned"
+			candidates = append(candidates, c)
+			continue
+		}
 		if !defaultModelPinned && s.TierPin == "" && s.Point != ReviewCreation && slices.Contains(p.cfg.FrontierFloorPhases, string(s.Phase)) && m.Tier != model.Frontier {
 			c.Rejected = "phase has frontier floor"
 			candidates = append(candidates, c)
@@ -429,6 +438,9 @@ func stallReason(s StallSignals) string {
 
 func stalled(s StallSignals) bool { return stallReason(s) != "" }
 func effortFor(m model.ModelSpec, s RoutingState) model.Effort {
+	if s.EffortPin != "" && slices.Contains(m.Effort, s.EffortPin) {
+		return s.EffortPin
+	}
 	want := model.EffortMedium
 	if slices.Contains([]Phase{Plan, Diagnose, Review}, s.Phase) || s.Stall.TestFailStreak >= 2 {
 		want = model.EffortHigh

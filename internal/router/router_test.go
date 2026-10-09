@@ -360,3 +360,25 @@ func TestNoStatsScoresAsBefore(t *testing.T) {
 		}
 	}
 }
+
+func TestModelAndEffortPin(t *testing.T) {
+	p := NewV1(config.RouterConfig{LambdaCost: .35, FrontierFloorPhases: []string{"plan"}}, &ledger{})
+	d, _, err := p.Decide(context.Background(), RoutingState{
+		SessionID:       "s",
+		Point:           TurnStart,
+		Phase:           Plan,
+		InputTokens:     1000,
+		AvailableModels: []string{"openai/gpt-5.6-sol", "openai/gpt-5.6-terra"},
+		ModelPin:        "gpt-5.6-terra",
+		EffortPin:       model.EffortLow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Model.ID != "openai/gpt-5.6-terra" {
+		t.Fatalf("model pin chose %s", d.Model.ID)
+	}
+	if d.Effort != model.EffortLow {
+		t.Fatalf("effort pin gave %s", d.Effort)
+	}
+}

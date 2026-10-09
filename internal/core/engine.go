@@ -1178,7 +1178,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		_ = e.store.WarmCache(ctx, sid, decision.Model.ID, max(inputTokens, resp.Usage.CacheReadTokens+resp.Usage.CacheWriteTokens), ttl)
 		_ = e.store.AddMessage(ctx, sid, "assistant", resp.Message)
 		e.emit(ctx, sid, "assistant.message", map[string]any{"message": resp.Message, "usage": resp.Usage, "cost_usd": cost, "model": decision.Model.ID, "stop_reason": resp.StopReason, "truncated": resp.Truncated, "output_kinds": resp.OutputKinds}, emit)
-		e.emit(ctx, sid, "usage.reported", map[string]any{"model": decision.Model.ID, "job_id": parentJob, "input_tokens": resp.Usage.InputTokens, "output_tokens": resp.Usage.OutputTokens, "cache_read_tokens": resp.Usage.CacheReadTokens, "cache_write_tokens": resp.Usage.CacheWriteTokens, "cost_usd": cost, "latency": resp.Latency, "stop_reason": resp.StopReason, "truncated": resp.Truncated, "output_cap": min(outputCap, decision.Model.MaxOutput)}, emit)
+		e.emit(ctx, sid, "usage.reported", map[string]any{"model": decision.Model.ID, "job_id": parentJob, "input_tokens": resp.Usage.InputTokens, "output_tokens": resp.Usage.OutputTokens, "cache_read_tokens": resp.Usage.CacheReadTokens, "cache_write_tokens": resp.Usage.CacheWriteTokens, "cost_usd": cost, "latency": resp.Latency, "effort": decision.Effort, "stop_reason": resp.StopReason, "truncated": resp.Truncated, "output_cap": min(outputCap, decision.Model.MaxOutput)}, emit)
 		_ = e.store.RecordModelCall(ctx, decision.Model.ID, resp.Latency, resp.Usage.OutputTokens, resp.Truncated, resp.Usage.InputTokens, resp.Usage.CacheReadTokens)
 		turnOutcome := map[string]any{"tokens": resp.Usage.InputTokens + resp.Usage.OutputTokens, "input_tokens": resp.Usage.InputTokens, "output_tokens": resp.Usage.OutputTokens, "cache_read_tokens": resp.Usage.CacheReadTokens, "cache_write_tokens": resp.Usage.CacheWriteTokens, "latency": resp.Latency, "cost_usd": cost, "model": decision.Model.ID}
 		if len(resp.Message.ToolCalls) == 0 {
@@ -1801,6 +1801,8 @@ func applyBudgetDefaults(req *agentproto.TaskRequest, cfg config.Config) {
 }
 func applyHints(s *router.RoutingState, h agentproto.RoutingHints) {
 	s.TierPin = model.Tier(h.TierPin)
+	s.ModelPin = h.Model
+	s.EffortPin = model.Effort(h.Effort)
 	for _, f := range h.FamilyExcludes {
 		s.ExcludeFamilies = append(s.ExcludeFamilies, model.Family(f))
 	}

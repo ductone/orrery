@@ -39,6 +39,11 @@ type RoutingHints struct {
 	// WorkerTurns is the turn at which a read-only worker must start
 	// synthesising its result. Zero selects the harness default.
 	WorkerTurns int `json:"worker_turns,omitempty"`
+	// Model and Effort pin this request's own model calls to one route (id or
+	// canonical model name) and one reasoning effort, for benchmark sweeps.
+	// Child jobs do not inherit them.
+	Model  string `json:"model,omitempty"`
+	Effort string `json:"effort,omitempty"`
 }
 type AttachmentRef struct {
 	ID        string `json:"id"`
