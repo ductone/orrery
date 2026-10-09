@@ -853,32 +853,7 @@ func recallHistory(checkpoints []store.Checkpoint, query string) []string {
 }
 
 func maskOldToolResults(ctx context.Context, client *jev.Client, objective string, msgs []store.Message) bool {
-	assistants := 0
-	keepVerification := true
-	changed := false
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "assistant" {
-			assistants++
-		}
-		if msgs[i].Role != "tool" || assistants <= 10 {
-			continue
-		}
-		var parsed provider.Message
-		if json.Unmarshal([]byte(msgs[i].ContentJSON), &parsed) != nil || strings.Contains(parsed.Content, "\"cleared\":true") {
-			continue
-		}
-		name, args := matchingCall(msgs, i, parsed.ToolCallID)
-		if name == "edit" || (keepVerification && name == "exec" && (strings.Contains(args, "test") || strings.Contains(args, "build"))) {
-			keepVerification = name != "exec"
-			continue
-		}
-		if relevanceKeeps(ctx, client, objective, name, args, parsed.Content) {
-			continue
-		}
-		parsed.Content = fmt.Sprintf("{\"cleared\":true,\"tool\":%q,\"original_chars\":%d,\"hint\":\"re-run to see it\"}", name, len(parsed.Content))
-		msgs[i].ContentJSON = store.JSON(parsed)
-		changed = true
-	}
+	changed, _ := maskOldToolResultsCached(ctx, jevRelevanceAsker(client), nil, objective, msgs)
 	return changed
 }
 

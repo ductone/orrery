@@ -68,6 +68,9 @@ type Engine struct {
 	memoryRunMu        sync.Mutex
 	memoryMu           sync.Mutex
 	memoryEpochs       map[string]*memoryEpoch
+	// relevanceCaches holds per-session keep/clear answers for old tool
+	// results (sid -> *sessionRelevance), invalidated when the objective changes.
+	relevanceCaches sync.Map
 }
 
 func New(cfg config.Config, s *store.Store, p *provider.Registry, mc *mcp.Manager) *Engine {
@@ -1429,9 +1432,20 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		turnOutcome["verified"] = progress.turnVerified
 		_ = e.store.UpdateLatestTurnRoutingOutcome(ctx, sid, s.Turn, turnOutcome)
 		current, _ := e.store.Session(ctx, sid)
-		if masked := maskOldToolResults(ctx, e.relevanceClient(), currentRequest(current, ""), stored); masked {
+		objective := currentRequest(current, "")
+		// Apply only cached answers here so the next model call never waits on
+		// Jev; a background pass answers the rest for a later turn boundary.
+		maskStart := time.Now()
+		// Reload after this turn's tools so masking preserves their new results.
+		stored, _ = e.store.Messages(ctx, sid)
+		masked, mask, run := e.applyCachedMasking(ctx, sid, objective, stored)
+		if masked {
 			_ = e.store.ReplaceMessages(ctx, sid, stored)
 		}
+		if run != nil {
+			e.emit(ctx, sid, "context.masking", map[string]any{"duration_ms": time.Since(maskStart).Milliseconds(), "background_ms": run.duration.Milliseconds(), "candidates": run.stats.Candidates, "asked": run.stats.Asked, "cached": run.stats.Cached, "cleared": mask.Cleared}, emit)
+		}
+		e.scheduleMasking(ctx, sid, objective)
 		compactNow := inputTokens > effectiveContextWindow(decision.Model)*3/5
 		e.maybeShadowCompactionBenefit(ctx, sid, s.Turn, inputTokens, decision.Model.ContextWindow)
 		if current.Phase != s.Phase && !compactNow {
