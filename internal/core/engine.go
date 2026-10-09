@@ -1233,19 +1233,17 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				}
 			}
 			e.syncWorkspaceChanges(ctx, sid, req.Workspace.Path, progress)
-			if progress.edited && !progress.verified && !progress.verificationWaived {
-				switch {
-				case e.verificationSatisfied(ctx, sid, req.Workspace.Path, progress, emit):
+			// Verification is advice, not a gate: the note appears once per set of
+			// changes and never refuses completion. A run with no edit, or whose
+			// changes no command could check, gets no note. The outcome still
+			// records whether the change was verified.
+			if progress.edited && !progress.verified && !progress.verificationAdvised {
+				if e.verificationSatisfied(ctx, sid, req.Workspace.Path, progress, emit) {
 					progress.verified = true
-				case progress.verificationRejections >= maxVerificationRejections:
-					// The outcome still records the change as unverified.
-					progress.verificationWaived = true
-					e.emit(ctx, sid, "verification.waived", map[string]any{"rejections": progress.verificationRejections, "changed": e.changedPaths(ctx, sid, req.Workspace.Path, progress)}, emit)
-				default:
-					progress.completionRejections++
-					progress.verificationRejections++
-					e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "workspace changed without verification", "attempt": progress.verificationRejections}, emit)
-					_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Completion rejected: you changed files that a command could check, but no successful command checked them. Run the relevant test, build, type check, or linter for the files you changed. If no existing check applies to these changes, say so in your final result instead. Do not add or change build targets, scripts, CI, or configuration to create a check."})
+				} else if e.shouldAdviseVerification(ctx, sid, req.Workspace.Path, progress) {
+					progress.verificationAdvised = true
+					e.emit(ctx, sid, "verification.advised", map[string]any{"changed": e.changedPaths(ctx, sid, req.Workspace.Path, progress)}, emit)
+					_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: verificationAdvice})
 					continue
 				}
 			}

@@ -2,10 +2,7 @@ package core
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,57 +12,33 @@ import (
 	"github.com/ductone/orrey/internal/review"
 )
 
-func TestOnlyAcceptedChecksBecomeFindingEvidence(t *testing.T) {
+func TestOnlyRecognizedChecksBecomeFindingEvidence(t *testing.T) {
 	e, _ := testEngine(t)
 	e.ReplaceRuntime(config.Config{Jev: config.JevConfig{APIKey: "k", Review: true}}, nil, nil)
-	for _, accepted := range []bool{false, true} {
-		checks := []commandRecord{{Command: "custom-check", Output: "PASS", Accepted: accepted}, {Command: "git status", Output: "clean"}}
+	for _, command := range []string{"custom-check", "go test ./..."} {
+		checks := []commandRecord{{Command: command, Output: "PASS"}, {Command: "git status", Output: "clean"}}
 		classifier := e.reviewClassifier(checks).(review.JevClassifier)
-		if accepted {
-			if classifier.Verification == nil || classifier.Verification.Command != "custom-check" {
-				t.Fatalf("accepted evidence = %#v", classifier.Verification)
+		if command == "go test ./..." {
+			if classifier.Verification == nil || classifier.Verification.Command != command {
+				t.Fatalf("recognized evidence = %#v", classifier.Verification)
 			}
 		} else if classifier.Verification != nil {
-			t.Fatalf("unaccepted evidence = %#v", classifier.Verification)
+			t.Fatalf("unrecognized evidence = %#v", classifier.Verification)
 		}
 	}
 }
 
-func TestVerificationClassifierRecordsAcceptanceAndExcludesFormatting(t *testing.T) {
-	ctx := context.Background()
+func TestFormatCheckDoesNotSatisfyCodeVerification(t *testing.T) {
 	e, _ := testEngine(t)
-	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		var req struct {
-			State map[string]any `json:"state"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Error(err)
-		}
-		if req.State["command"] != "custom-check" {
-			t.Errorf("unexpected classifier candidate: %#v", req.State["command"])
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"answers": map[string]any{"meaningful_check": map[string]any{"type": "noul", "noul": 0.9}}})
-	}))
-	t.Cleanup(srv.Close)
-	e.ReplaceRuntime(config.Config{Jev: config.JevConfig{APIKey: "k", BaseURL: srv.URL, Review: true}}, nil, nil)
 	p := newProgressTracker()
 	p.observe(provider.ToolCall{Name: "edit", Arguments: map[string]any{"path": "feature.go"}}, nil, nil)
 	p.observe(provider.ToolCall{Name: "exec", Arguments: map[string]any{"command": "gofmt -l ."}}, map[string]any{"summary": ""}, nil)
-	if e.verificationSatisfied(ctx, "missing-session", t.TempDir(), p, nil) || calls.Load() != 0 {
-		t.Fatal("format-only check must not satisfy code verification or be classified")
+	if e.verificationSatisfied(context.Background(), "missing-session", t.TempDir(), p, nil) || p.verified {
+		t.Fatal("format-only check must not satisfy code verification")
 	}
-	p.observe(provider.ToolCall{Name: "exec", Arguments: map[string]any{"command": "custom-check"}}, map[string]any{"summary": "PASS"}, nil)
-	if !e.verificationSatisfied(ctx, "missing-session", t.TempDir(), p, nil) || calls.Load() != 1 {
-		t.Fatal("custom check must be classified and accepted")
-	}
-	if len(p.checksSinceEdit) != 1 || !p.checksSinceEdit[0].Accepted {
-		t.Fatalf("checks = %#v", p.checksSinceEdit)
-	}
-	classifier := e.reviewClassifier(p.checksSinceEdit).(review.JevClassifier)
-	if classifier.Verification == nil || classifier.Verification.Command != "custom-check" || classifier.Verification.Output != "PASS" {
-		t.Fatalf("verification = %#v", classifier.Verification)
+	p.observe(provider.ToolCall{Name: "exec", Arguments: map[string]any{"command": "go test ./..."}}, map[string]any{"summary": "PASS"}, nil)
+	if !p.verified || len(p.checksSinceEdit) != 1 {
+		t.Fatalf("verified = %v, checks = %#v", p.verified, p.checksSinceEdit)
 	}
 }
 

@@ -29,12 +29,12 @@ type progressTracker struct {
 	// editedPaths are files changed by this run.
 	editedPaths map[string]bool
 	// checksSinceEdit holds successful commands since the last edit, including
-	// recognized verification. Classifiers use their output as check evidence.
+	// recognized verification, kept for the outcome and memory extraction.
 	checksSinceEdit []commandRecord
-	// verificationRejections bounds how often completion is refused for
-	// missing verification, so an unverifiable change cannot loop.
-	verificationRejections int
-	verificationWaived     bool
+	// verificationAdvised records that the one-time verification note has been
+	// added for the current set of changes. Verification is advice, not a gate:
+	// completion is not refused for missing verification.
+	verificationAdvised bool
 	// fixPending is set by a review rejection and cleared by the next edit.
 	fixPending bool
 	// workspaceHash tracks the last observed run changes, including exec writes.
@@ -64,9 +64,8 @@ type progressTracker struct {
 
 // commandRecord is a command and the tail of its output.
 type commandRecord struct {
-	Command  string `json:"command"`
-	Output   string `json:"output"`
-	Accepted bool   `json:"accepted,omitempty"`
+	Command string `json:"command"`
+	Output  string `json:"output"`
 }
 
 const maxChecksSinceEdit = 8
@@ -130,6 +129,7 @@ func (p *progressTracker) observe(call provider.ToolCall, value any, callErr err
 			p.verified = false
 			p.reviewed = false
 			p.checksSinceEdit = nil
+			p.verificationAdvised = false
 			p.formatVerified = false
 			p.fixPending = false
 			if path := stringArg(call.Arguments, "path"); path != "" {

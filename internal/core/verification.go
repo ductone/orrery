@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/ductone/orrey/internal/jev"
 	"github.com/ductone/orrey/internal/review"
 	"mvdan.cc/sh/v3/syntax"
 )
@@ -16,8 +15,7 @@ import (
 // Each entry is a command name followed by the arguments it needs. A plain
 // argument must match the next positional argument by prefix ("make lint"
 // matches "make lint/md"); a flag must appear anywhere. A successful command
-// outside this list can still count when a classifier judges it a meaningful
-// check of the change.
+// outside this list does not count: recognition is mechanical, with no judge.
 var verificationCommands = parseVerificationCommands(
 	// Build systems and task runners.
 	"go test", "go vet", "go build",
@@ -231,26 +229,9 @@ func shellLiteral(w *syntax.Word) (string, bool) {
 	return b.String(), true
 }
 
-// maxVerificationRejections bounds how often completion is refused for
-// missing verification: one reminder, after which the gate is waived and the
-// outcome records the change as unverified. Repeated refusals cost turns and
-// teach a model to manufacture a check (a new build target, a wrapper script)
-// rather than to run a real one, and independent review still runs.
-const maxVerificationRejections = 1
-
-// meaningfulCheck is the probability at which a classifier's judgement that a
-// command checked the change counts as verification.
-const meaningfulCheck = 0.6
-
 // proseExtensions are documents whose changes no command can meaningfully
 // verify beyond formatting.
 var proseExtensions = []string{".md", ".mdx", ".markdown", ".rst", ".txt", ".adoc", ".asciidoc", ".org", ".tex"}
-
-var checkQuestion = map[string]jev.Question{"meaningful_check": jev.Noul(
-	"Did this command meaningfully check the changed files for correctness?",
-	"It ran, and it would have failed or reported problems if the changed files were broken: a test, build, type check, linter, schema validation, or dry run covering them.",
-	"It only displayed, listed, searched, or inspected files, only checked formatting or style, or checked something unrelated to the changed files.",
-)}
 
 // changedPaths is what this run changed: the workspace delta when knowable,
 // plus every file edited through the edit tool.
@@ -305,6 +286,7 @@ func (e *Engine) syncWorkspaceChanges(ctx context.Context, sid, root string, pro
 	progress.verified = false
 	progress.reviewed = false
 	progress.checksSinceEdit = nil
+	progress.verificationAdvised = false
 	progress.formatVerified = false
 	progress.fixPending = false
 	if progress.editedPaths == nil {
@@ -348,9 +330,10 @@ func changesCode(paths []string) bool {
 	return false
 }
 
-// verificationSatisfied decides whether an edited run may complete without a
+// verificationSatisfied reports whether an edited run may complete without a
 // recognised verification command: when it changed only prose and assets, or
-// when the classifier judges a command it did run to be a meaningful check.
+// when a format check covers configuration changes. Verification is advice, not
+// a gate, so a false result only produces a note.
 func (e *Engine) verificationSatisfied(ctx context.Context, sid, root string, progress *progressTracker, emit EmitFunc) bool {
 	changed := e.changedPaths(ctx, sid, root, progress)
 	if !needsVerification(changed) {
@@ -361,30 +344,23 @@ func (e *Engine) verificationSatisfied(ctx context.Context, sid, root string, pr
 		e.emit(ctx, sid, "verification.accepted", map[string]any{"reason": "a format or style check covers configuration changes", "changed": changed}, emit)
 		return true
 	}
-	cfg, _, _, _, _ := e.runtimeSnapshot()
-	cfg.Jev = cfg.EffectiveJev()
-	if !cfg.Jev.Review || cfg.Jev.APIKey == "" || len(progress.checksSinceEdit) == 0 {
-		return false
-	}
-	client := jev.New(cfg.Jev.APIKey, cfg.Jev.BaseURL, cfg.Jev.Model, cfg.Jev.Timeout())
-	askCtx, cancel := context.WithTimeout(ctx, reviewPlanTimeout)
-	defer cancel()
-	scores := make([]float64, len(progress.checksSinceEdit))
-	accepted := -1
-	for i, check := range progress.checksSinceEdit {
-		resp, err := client.Ask(askCtx, map[string]any{"changed_files": changed, "command": check.Command, "output": check.Output}, checkQuestion)
-		if err != nil {
-			e.emit(ctx, sid, "verification.classifier_error", map[string]any{"error": err.Error()}, emit)
-			return false
-		}
-		if a := resp.Answers["meaningful_check"]; a.Noul != nil {
-			scores[i] = *a.Noul
-			progress.checksSinceEdit[i].Accepted = scores[i] >= meaningfulCheck
-			if progress.checksSinceEdit[i].Accepted {
-				accepted = i
-			}
-		}
-	}
-	e.emit(ctx, sid, "verification.judged", map[string]any{"changed": changed, "checks": progress.checksSinceEdit, "scores": scores, "accepted": accepted >= 0}, emit)
-	return accepted >= 0
+	return false
 }
+
+// verificationAdvice is the one note a run sees for an unverified change, and it
+// is advice: completion is not refused. It asks for a real check and says a run
+// may finish without one when nothing applies, so a model is not pushed to
+// invent a build target or wrapper script to satisfy a gate.
+
+// shouldAdviseVerification reports whether an unverified change still has
+// something a command could check. A run that made no edit, committed its
+// change, or touched only prose and assets gets no note. Outside git the
+// edit-tool paths stand in for the workspace delta, which is not knowable.
+func (e *Engine) shouldAdviseVerification(ctx context.Context, sid, root string, progress *progressTracker) bool {
+	if paths, _, ok := e.runChanges(ctx, sid, root); ok {
+		return len(paths) > 0 && needsVerification(paths)
+	}
+	return needsVerification(e.changedPaths(ctx, sid, root, progress))
+}
+
+const verificationAdvice = "Verification advice: you changed files a command could check, but no successful command checked them. Consider running the relevant test, build, type check, or linter for the files you changed and reporting what you ran. If no existing check applies to these changes, say so in your final result. Do not add or change build targets, scripts, CI, or configuration to create a check. You may finish without verification when none applies."

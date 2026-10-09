@@ -124,9 +124,22 @@ func routingStates(t *testing.T, e *Engine, sid string) []router.RoutingState {
 }
 
 func TestHarnessNudgesAreNotNewInstructions(t *testing.T) {
-	result, _, e, sid := gateRun(t, "main.go", "", -1)
-	if result.Outcome.CompletionRejects == 0 {
-		t.Fatal("the scenario must include harness rejections")
+	result, s, e, sid := gateRun(t, "main.go", "")
+	if result.Status != agentproto.Pass {
+		t.Fatalf("result = %+v", result)
+	}
+	var advised bool
+	for _, req := range s.requests {
+		for _, raw := range req["input"].([]any) {
+			m, _ := raw.(map[string]any)
+			c, _ := m["content"].(string)
+			if strings.Contains(c, "Verification advice") {
+				advised = true
+			}
+		}
+	}
+	if !advised {
+		t.Fatal("the scenario must include a verification note")
 	}
 	for _, s := range routingStates(t, e, sid) {
 		if s.NewInstruction || s.Phase == router.Plan && s.InstructionPhase != nil {

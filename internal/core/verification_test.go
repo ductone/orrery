@@ -2,9 +2,6 @@ package core
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -243,7 +240,7 @@ func TestCompactionGate(t *testing.T) {
 
 // gateRun drives a root session that edits one file and then keeps trying to
 // finish, optionally running one command in between.
-func gateRun(t *testing.T, file, command string, jevScore float64) (agentproto.TaskResult, *scriptedResponses, *Engine, string) {
+func gateRun(t *testing.T, file, command string) (agentproto.TaskResult, *scriptedResponses, *Engine, string) {
 	t.Helper()
 	e, st := testEngine(t)
 	workspace, git := gitRepo(t)
@@ -271,13 +268,6 @@ func gateRun(t *testing.T, file, command string, jevScore float64) (agentproto.T
 		WorkspaceRoot: workspace,
 		Providers:     map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: srv.URL}},
 		Router:        config.RouterConfig{DisableSwitch: true, DefaultModel: "openai/gpt-5.6-terra"},
-	}
-	if jevScore >= 0 {
-		jevSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			_ = json.NewEncoder(w).Encode(map[string]any{"answers": map[string]any{"meaningful_check": map[string]any{"type": "noul", "noul": jevScore}}})
-		}))
-		t.Cleanup(jevSrv.Close)
-		cfg.Jev = config.JevConfig{APIKey: "k", BaseURL: jevSrv.URL, Review: true}
 	}
 	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
 	req := agentproto.TaskRequest{Spec: "Write it", Budget: agentproto.Budget{MaxUSD: 5, MaxTokens: 1_000_000, MaxWallClock: time.Minute}, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"}}
@@ -309,25 +299,35 @@ func eventTypes(t *testing.T, e *Engine, sid string) []string {
 }
 
 func TestProseOnlyChangesNeedNoVerification(t *testing.T) {
-	result, _, e, sid := gateRun(t, "docs/rfcs/proposal.md", "", -1)
+	result, _, e, sid := gateRun(t, "docs/rfcs/proposal.md", "")
 	if result.Status != agentproto.Pass || result.Outcome.CompletionRejects != 0 {
 		t.Fatalf("result = %+v", result)
 	}
-	if !slices.Contains(eventTypes(t, e, sid), "verification.accepted") {
-		t.Fatal("the skipped gate must be recorded")
+	events := eventTypes(t, e, sid)
+	if !slices.Contains(events, "verification.accepted") {
+		t.Fatal("the acceptance must be recorded")
+	}
+	if slices.Contains(events, "verification.advised") {
+		t.Fatal("a prose-only change must not be advised to verify")
 	}
 }
 
-func TestUnverifiedCodeIsRejectedThenWaived(t *testing.T) {
-	result, s, e, sid := gateRun(t, "main.go", "", -1)
+func TestUnverifiedCodeIsAdvisedOnceWithoutRejecting(t *testing.T) {
+	result, s, e, sid := gateRun(t, "main.go", "")
 	if result.Status != agentproto.Pass || result.Outcome.Verified {
 		t.Fatalf("an unverifiable change completes, recorded as unverified: %+v", result)
 	}
-	if result.Outcome.CompletionRejects != maxVerificationRejections {
-		t.Fatalf("rejections = %d, want %d", result.Outcome.CompletionRejects, maxVerificationRejections)
+	if result.Outcome.CompletionRejects != 0 {
+		t.Fatalf("verification must not reject completion: %+v", result.Outcome)
 	}
-	if !slices.Contains(eventTypes(t, e, sid), "verification.waived") {
-		t.Fatal("the waiver must be recorded")
+	notes := 0
+	for _, typ := range eventTypes(t, e, sid) {
+		if typ == "verification.advised" {
+			notes++
+		}
+	}
+	if notes != 1 {
+		t.Fatalf("verification notes = %d, want one per set of changes", notes)
 	}
 	var nudge string
 	for _, req := range s.requests {
@@ -340,27 +340,23 @@ func TestUnverifiedCodeIsRejectedThenWaived(t *testing.T) {
 		}
 	}
 	if !strings.Contains(nudge, "say so in your final result") || !strings.Contains(nudge, "Do not add or change build targets") {
-		t.Fatalf("rejection message = %q", nudge)
+		t.Fatalf("advisory message = %q", nudge)
 	}
 	if !strings.Contains(s.requests[0]["instructions"].(string), "only to satisfy a harness check") {
 		t.Fatal("the system prompt must forbid manufacturing checks")
 	}
 }
 
-func TestJevAcceptsAnUnrecognisedMeaningfulCheck(t *testing.T) {
-	result, _, e, sid := gateRun(t, "main.go", "./check.sh main.go", 0.9)
-	if result.Status != agentproto.Pass || result.Outcome.CompletionRejects != 0 || !result.Outcome.Verified {
-		t.Fatalf("result = %+v", result)
+func TestUnrecognisedCheckOnlyAdvises(t *testing.T) {
+	result, _, e, sid := gateRun(t, "main.go", "./check.sh main.go")
+	if result.Status != agentproto.Pass || result.Outcome.Verified {
+		t.Fatalf("recognition is mechanical, so an unknown command cannot verify: %+v", result)
 	}
-	if !slices.Contains(eventTypes(t, e, sid), "verification.judged") {
-		t.Fatal("the classifier's judgement must be recorded")
+	if result.Outcome.CompletionRejects != 0 {
+		t.Fatalf("an unrecognised check must not reject completion: %+v", result.Outcome)
 	}
-}
-
-func TestJevRejectsACommandThatCheckedNothing(t *testing.T) {
-	result, _, _, _ := gateRun(t, "main.go", "./check.sh main.go", 0.1)
-	if result.Outcome.CompletionRejects == 0 || result.Outcome.Verified {
-		t.Fatalf("result = %+v", result)
+	if slices.Contains(eventTypes(t, e, sid), "verification.judged") {
+		t.Fatal("the Jev verification judge is removed")
 	}
 }
 
@@ -387,14 +383,14 @@ func TestVerificationKinds(t *testing.T) {
 }
 
 func TestFormatCheckDoesNotVerifyCode(t *testing.T) {
-	result, _, _, _ := gateRun(t, "main.go", "gofmt -l .", -1)
-	if result.Outcome.Verified || result.Outcome.CompletionRejects != maxVerificationRejections {
+	result, _, _, _ := gateRun(t, "main.go", "gofmt -l .")
+	if result.Outcome.Verified || result.Outcome.CompletionRejects != 0 {
 		t.Fatalf("a format check must not verify a code change: %+v", result.Outcome)
 	}
 }
 
 func TestFormatCheckVerifiesConfiguration(t *testing.T) {
-	result, _, e, sid := gateRun(t, "pipeline.yaml", "gofmt -l .", -1)
+	result, _, e, sid := gateRun(t, "pipeline.yaml", "gofmt -l .")
 	if result.Outcome.CompletionRejects != 0 {
 		t.Fatalf("a format check covers a configuration change: %+v", result.Outcome)
 	}

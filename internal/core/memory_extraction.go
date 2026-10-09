@@ -220,7 +220,7 @@ func (e *Engine) extractMemory(ctx context.Context, sid string) error {
 				useful = true
 			}
 			inputEvents = append(inputEvents, event)
-		case "session.terminal", "verification.accepted", "verification.judged":
+		case "session.terminal", "verification.accepted", "verification.advised":
 			inputEvents = append(inputEvents, event)
 		}
 		refs = append(refs, event.EventID)

@@ -66,7 +66,7 @@ func TestExecChangesRequireVerificationAndReview(t *testing.T) {
 			if reviews != want {
 				t.Fatalf("reviews = %d, want %d", reviews, want)
 			}
-			scopes, rejections := 0, 0
+			scopes, notes := 0, 0
 			events, err := st.EventsAfter(context.Background(), sid, 0)
 			if err != nil {
 				t.Fatal(err)
@@ -75,12 +75,12 @@ func TestExecChangesRequireVerificationAndReview(t *testing.T) {
 				if ev.Type == "review.scope" {
 					scopes++
 				}
-				if ev.Type == "completion.rejected" && strings.Contains(string(ev.Data), "workspace changed without verification") {
-					rejections++
+				if ev.Type == "verification.advised" {
+					notes++
 				}
 			}
-			if scopes != want || rejections != want {
-				t.Fatalf("review scopes = %d, verification rejections = %d, want %d each", scopes, rejections, want)
+			if scopes != want || notes != want {
+				t.Fatalf("review scopes = %d, verification notes = %d, want %d each", scopes, notes, want)
 			}
 		})
 	}

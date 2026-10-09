@@ -27,6 +27,7 @@ func TestFailedReviewRestoresToolsAndIsNotRepeated(t *testing.T) {
 	var afterRejection []map[string]any
 	rejected := false
 	refusals := 0
+	checkPending := false
 	s := &scriptedResponses{reply: func(n int, body map[string]any) map[string]any {
 		if strings.Contains(body["instructions"].(string), "Review this proposed workspace diff") {
 			reviews++
@@ -48,11 +49,16 @@ func TestFailedReviewRestoresToolsAndIsNotRepeated(t *testing.T) {
 		}
 		if rejected {
 			afterRejection = append(afterRejection, body)
+			if checkPending {
+				checkPending = false
+				return responsesCall("x"+strconv.Itoa(n), "exec", map[string]any{"command": "make test"})
+			}
 			refusals++
 			// Alternate an unchanged text-only completion with a fresh edit: the
 			// unchanged one must be refused without another review, and the
 			// fresh diff earns a new independent review until the cap is hit.
 			if refusals%2 == 0 {
+				checkPending = true
 				return responsesCall("e"+strconv.Itoa(n), "edit", map[string]any{"path": "main" + strconv.Itoa(n) + ".go", "hunks": []any{map[string]any{"anchor": "e3b0c442", "delete": 0, "insert": []any{"package main // " + strconv.Itoa(n)}}}})
 			}
 			return responsesText("The findings are not fixed.")
