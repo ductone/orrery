@@ -154,7 +154,7 @@ func TestSearchPrunesDependencyTrees(t *testing.T) {
 
 func TestCommandSummaryMarksOmittedLines(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "log")
-	lines := make([]string, 30)
+	lines := make([]string, 430)
 	for i := range lines {
 		lines[i] = fmt.Sprint(i)
 	}
@@ -165,7 +165,7 @@ func TestCommandSummaryMarksOmittedLines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(v.(map[string]any)["summary"].(string), "lines omitted") {
+	if !strings.Contains(v.(map[string]any)["summary"].(string), "lines 201-230 omitted; read path=") {
 		t.Fatalf("summary=%v", v)
 	}
 }

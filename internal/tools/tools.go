@@ -307,7 +307,7 @@ func (r *Registry) safe(path string) (string, error) {
 	path = filepath.Clean(path)
 	rel, err := filepath.Rel(r.root, path)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
-		return "", errors.New("path escapes workspace")
+		return "", errors.New("path escapes workspace; paths outside the workspace cannot be read or edited. Write scratch output under .orrery/ (for example .orrery/tmp/out.txt) and read it there")
 	}
 	return path, nil
 }
@@ -820,19 +820,76 @@ func (r *Registry) job(ctx context.Context, a map[string]any) (any, error) {
 		return nil, errors.New("invalid action")
 	}
 }
+
+const (
+	// commandSummaryMaxLines and commandSummaryMaxChars bound how much exec
+	// output is returned inline. Cutting every long result to 20 lines pushed
+	// agents into re-running the same command through head, cut, and sed
+	// instead of reading the log.
+	commandSummaryMaxLines = 400
+	commandSummaryMaxChars = 30000
+)
+
+// commandSummary renders a command log for the model. Output within the line
+// and character budgets comes back whole; longer output keeps a head and a
+// tail and names the read call that returns the omitted lines.
 func commandSummary(path string, runErr error) (any, error) {
 	b, _ := os.ReadFile(path)
-	lines := strings.Split(string(b), "\n")
-	summary := lines
-	if len(lines) > 20 {
-		summary = append(append(append([]string{}, lines[:10]...), fmt.Sprintf("... %d lines omitted; full output: %s ...", len(lines)-20, path)), lines[len(lines)-10:]...)
+	text := string(b)
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	summary := text
+	if len(lines) > commandSummaryMaxLines || len(text) > commandSummaryMaxChars {
+		head, tail := summaryWindow(lines, commandSummaryMaxLines/2, commandSummaryMaxChars/2)
+		if omitted := len(lines) - len(head) - len(tail); omitted > 0 && len(head) > 0 && len(tail) > 0 {
+			note := fmt.Sprintf("... lines %d-%d omitted; read path=%q start=%d limit=%d to see them ...",
+				len(head)+1, len(head)+omitted, path, len(head)+1, omitted)
+			summary = strings.Join(append(append(head, note), tail...), "\n")
+		} else {
+			summary = elideMiddle(text, commandSummaryMaxChars, path)
+		}
 	}
-	out := map[string]any{"ok": runErr == nil, "summary": strings.Join(summary, "\n"), "log": path}
+	out := map[string]any{"ok": runErr == nil, "summary": summary, "log": path}
 	if runErr != nil {
 		out["error"] = runErr.Error()
-		return out, fmt.Errorf("command failed: %v; summary: %s; log: %s", runErr, strings.Join(summary, "\n"), path)
+		return out, fmt.Errorf("command failed: %v; summary: %s; log: %s", runErr, summary, path)
 	}
 	return out, nil
+}
+
+// summaryWindow keeps whole lines from both ends of the output, spending at
+// most half the character budget on each end.
+func summaryWindow(lines []string, maxLines, maxChars int) (head, tail []string) {
+	chars := 0
+	for _, line := range lines {
+		if len(head) >= maxLines || chars+len(line)+1 > maxChars {
+			break
+		}
+		chars += len(line) + 1
+		head = append(head, line)
+	}
+	chars = 0
+	for i := len(lines) - 1; i >= len(head); i-- {
+		if len(tail) >= maxLines || chars+len(lines[i])+1 > maxChars {
+			break
+		}
+		chars += len(lines[i]) + 1
+		tail = append(tail, lines[i])
+	}
+	for i, j := 0, len(tail)-1; i < j; i, j = i+1, j-1 {
+		tail[i], tail[j] = tail[j], tail[i]
+	}
+	return head, tail
+}
+
+// elideMiddle keeps the head and tail of one oversized block of text, for
+// output whose lines are each too long for the line budget.
+func elideMiddle(text string, maxChars int, path string) string {
+	half := maxChars / 2
+	if len(text) <= maxChars {
+		return text
+	}
+	return fmt.Sprintf("%s\n... %d characters omitted; read path=%q start=1 limit=%d to see the full lines ...\n%s",
+		strings.ToValidUTF8(text[:half], "\uFFFD"), len(text)-2*half, path, len(strings.Split(strings.TrimSuffix(text, "\n"), "\n")), strings.ToValidUTF8(text[len(text)-half:], "\uFFFD"))
 }
 func schema(props map[string]any, required ...string) map[string]any {
 	return map[string]any{"type": "object", "properties": props, "required": required, "additionalProperties": false}
