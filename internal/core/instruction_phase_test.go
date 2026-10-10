@@ -124,22 +124,57 @@ func routingStates(t *testing.T, e *Engine, sid string) []router.RoutingState {
 }
 
 func TestHarnessNudgesAreNotNewInstructions(t *testing.T) {
-	result, s, e, sid := gateRun(t, "main.go", "")
-	if result.Status != agentproto.Pass {
-		t.Fatalf("result = %+v", result)
+	e, _ := testEngine(t)
+	workspace, git := gitRepo(t)
+	writeFile(t, workspace, "README.md", "base\n")
+	git("add", "-A")
+	git("commit", "-qm", "base")
+	reviews, turns := 0, 0
+	s := &scriptedResponses{reply: func(_ int, body map[string]any) map[string]any {
+		if strings.Contains(body["instructions"].(string), "Review this proposed workspace diff") {
+			reviews++
+			if reviews == 1 {
+				return verdictJSON(false, "main.go:1 writes the wrong content")
+			}
+			return verdictJSON(true)
+		}
+		turns++
+		switch turns {
+		case 1:
+			return responsesCall("w1", "exec", map[string]any{"command": "printf 'content\\n' > main.go"})
+		case 3:
+			return responsesCall("w2", "exec", map[string]any{"command": "printf 'fixed\\n' > main.go"})
+		}
+		return responsesText("Done: wrote main.go")
+	}}
+	srv := s.serve(t)
+	cfg := gateConfig(workspace, srv.URL)
+	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
+	req := agentproto.TaskRequest{Spec: "Write main.go", Budget: agentproto.Budget{MaxUSD: 5, MaxTokens: 1_000_000, MaxWallClock: time.Minute}, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"}}
+	sid, results, err := e.Start(context.Background(), req, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	var advised bool
+	select {
+	case result := <-results:
+		if result.Status != agentproto.Pass {
+			t.Fatalf("result = %+v", result)
+		}
+	case <-time.After(45 * time.Second):
+		t.Fatal("the run must end")
+	}
+	var nudged bool
 	for _, req := range s.requests {
 		for _, raw := range req["input"].([]any) {
 			m, _ := raw.(map[string]any)
 			c, _ := m["content"].(string)
-			if strings.Contains(c, "Verification advice") {
-				advised = true
+			if strings.Contains(c, "Independent review rejected completion") {
+				nudged = true
 			}
 		}
 	}
-	if !advised {
-		t.Fatal("the scenario must include a verification note")
+	if !nudged {
+		t.Fatal("the scenario must include a harness review rejection")
 	}
 	for _, s := range routingStates(t, e, sid) {
 		if s.NewInstruction || s.Phase == router.Plan && s.InstructionPhase != nil {

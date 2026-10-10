@@ -1237,20 +1237,6 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				}
 			}
 			e.syncWorkspaceChanges(ctx, sid, req.Workspace.Path, progress)
-			// Verification is advice, not a gate: the note appears once per set of
-			// changes and never refuses completion. A run with no edit, or whose
-			// changes no command could check, gets no note. The outcome still
-			// records whether the change was verified.
-			if progress.edited && !progress.verified && !progress.verificationAdvised {
-				if e.verificationSatisfied(ctx, sid, req.Workspace.Path, progress, emit) {
-					progress.verified = true
-				} else if e.shouldAdviseVerification(ctx, sid, req.Workspace.Path, progress) {
-					progress.verificationAdvised = true
-					e.emit(ctx, sid, "verification.advised", map[string]any{"changed": e.changedPaths(ctx, sid, req.Workspace.Path, progress)}, emit)
-					_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: verificationAdvice})
-					continue
-				}
-			}
 			if progress.edited && !progress.reviewed && req.Depth > 0 {
 				diffHash := e.reviewDiffHash(ctx, sid, req.Workspace.Path)
 				var passed bool

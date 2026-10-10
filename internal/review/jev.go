@@ -24,11 +24,13 @@ const (
 // JevClassifier answers review questions with Jev, one noul per item, which is
 // the pattern TypeSafe documents for comparable independent scores.
 type JevClassifier struct {
-	Client       *jev.Client
-	Verification *Verification
+	Client *jev.Client
+	// Evidence is the commands run since the last edit, with their output,
+	// which finding classification weighs.
+	Evidence []Verification
 }
 
-// Verification is the latest successful check of the current change.
+// Verification is one command run since the last edit and its output.
 type Verification struct {
 	Command string `json:"command"`
 	Output  string `json:"output"`
@@ -80,8 +82,8 @@ func (j JevClassifier) FileBugs(ctx context.Context, task string, files []File) 
 func (j JevClassifier) Findings(ctx context.Context, task string, findings []Finding) ([]float64, error) {
 	return j.each(ctx, len(findings), findingQuestion, "real_bug", func(i int) any {
 		state := map[string]any{"task": clip(task, 4_000), "finding": findings[i].Text, "patch": clip(findings[i].Patch, fileBugChars)}
-		if j.Verification != nil {
-			state["verification"] = j.Verification
+		if len(j.Evidence) > 0 {
+			state["commands_since_last_edit"] = j.Evidence
 		}
 		return state
 	})

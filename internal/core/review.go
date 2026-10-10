@@ -161,11 +161,8 @@ func (e *Engine) reviewClassifier(checks []commandRecord) review.Classifier {
 		return nil
 	}
 	classifier := review.JevClassifier{Client: jev.New(cfg.Jev.APIKey, cfg.Jev.BaseURL, cfg.Jev.Model, cfg.Jev.Timeout())}
-	for i := len(checks) - 1; i >= 0; i-- {
-		if verificationKind(checks[i].Command) == fullCheck {
-			classifier.Verification = &review.Verification{Command: checks[i].Command, Output: checks[i].Output}
-			break
-		}
+	for _, c := range checks {
+		classifier.Evidence = append(classifier.Evidence, review.Verification{Command: c.Command, Output: c.Output})
 	}
 	return classifier
 }

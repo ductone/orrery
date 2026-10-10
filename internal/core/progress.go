@@ -28,13 +28,10 @@ type progressTracker struct {
 	turnEdited, turnVerified      bool
 	// editedPaths are files changed by this run.
 	editedPaths map[string]bool
-	// checksSinceEdit holds successful commands since the last edit, including
-	// recognized verification, kept for the outcome and memory extraction.
+	// checksSinceEdit holds the commands run since the last edit with their
+	// output: the evidence reviewers weigh to judge whether the change was
+	// checked. No command list decides that.
 	checksSinceEdit []commandRecord
-	// verificationAdvised records that the one-time verification note has been
-	// added for the current set of changes. Verification is advice, not a gate:
-	// completion is not refused for missing verification.
-	verificationAdvised bool
 	// fixPending is set by a review rejection and cleared by the next edit.
 	fixPending bool
 	// workspaceHash tracks the last observed run changes, including exec writes.
@@ -57,9 +54,6 @@ type progressTracker struct {
 	// answerRejections counts completions refused for answering something
 	// other than the latest request.
 	answerRejections int
-	// formatVerified is set by a successful formatting or style check, which
-	// verifies only non-code changes.
-	formatVerified bool
 }
 
 // commandRecord is a command and the tail of its output.
@@ -129,8 +123,6 @@ func (p *progressTracker) observe(call provider.ToolCall, value any, callErr err
 			p.verified = false
 			p.reviewed = false
 			p.checksSinceEdit = nil
-			p.verificationAdvised = false
-			p.formatVerified = false
 			p.fixPending = false
 			if path := stringArg(call.Arguments, "path"); path != "" {
 				if p.editedPaths == nil {
@@ -139,19 +131,13 @@ func (p *progressTracker) observe(call provider.ToolCall, value any, callErr err
 				p.editedPaths[path] = true
 			}
 		case "exec":
-			command := stringArg(call.Arguments, "command")
-			switch verificationKind(command) {
-			case fullCheck:
+			// A command after an edit is progress and evidence; whether it
+			// checked the change is the reviewers' judgement, not a list's.
+			if p.edited {
+				command := stringArg(call.Arguments, "command")
 				p.turnProgress = true
 				p.turnVerified = true
 				p.verified = true
-			case formatCheck:
-				// Counts for prose and configuration, not for code; see
-				// verificationSatisfied.
-				p.turnProgress = true
-				p.formatVerified = true
-			}
-			if p.edited && verificationKind(command) != formatCheck {
 				p.checksSinceEdit = append(p.checksSinceEdit, commandRecord{Command: command, Output: outputTail(value)})
 				if len(p.checksSinceEdit) > maxChecksSinceEdit {
 					p.checksSinceEdit = p.checksSinceEdit[1:]

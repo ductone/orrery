@@ -10,7 +10,7 @@ import (
 	"github.com/ductone/orrey/internal/provider"
 )
 
-func TestExecChangesRequireVerificationAndReview(t *testing.T) {
+func TestExecChangesRequireReview(t *testing.T) {
 	for _, changed := range []bool{true, false} {
 		name := "unchanged"
 		if changed {
@@ -66,7 +66,7 @@ func TestExecChangesRequireVerificationAndReview(t *testing.T) {
 			if reviews != want {
 				t.Fatalf("reviews = %d, want %d", reviews, want)
 			}
-			scopes, notes := 0, 0
+			scopes := 0
 			events, err := st.EventsAfter(context.Background(), sid, 0)
 			if err != nil {
 				t.Fatal(err)
@@ -75,12 +75,9 @@ func TestExecChangesRequireVerificationAndReview(t *testing.T) {
 				if ev.Type == "review.scope" {
 					scopes++
 				}
-				if ev.Type == "verification.advised" {
-					notes++
-				}
 			}
-			if scopes != want || notes != want {
-				t.Fatalf("review scopes = %d, verification notes = %d, want %d each", scopes, notes, want)
+			if scopes != want {
+				t.Fatalf("review scopes = %d, want %d", scopes, want)
 			}
 		})
 	}
@@ -98,7 +95,7 @@ func TestWorkspaceChangesInvalidatePriorChecksAndReview(t *testing.T) {
 	e.syncWorkspaceChanges(ctx, "run", workspace, p)
 	writeFile(t, workspace, "main.go", "package main // first change\n")
 	e.syncWorkspaceChanges(ctx, "run", workspace, p)
-	p.verified, p.reviewed, p.formatVerified = true, true, true
+	p.verified, p.reviewed = true, true
 	p.checksSinceEdit = []commandRecord{{Command: "check"}}
 	e.syncWorkspaceChanges(ctx, "run", workspace, p)
 	if !p.verified || !p.reviewed {
@@ -106,7 +103,7 @@ func TestWorkspaceChangesInvalidatePriorChecksAndReview(t *testing.T) {
 	}
 	writeFile(t, workspace, "main.go", "package main // second change\n")
 	e.syncWorkspaceChanges(ctx, "run", workspace, p)
-	if p.verified || p.reviewed || p.formatVerified || len(p.checksSinceEdit) != 0 {
+	if p.verified || p.reviewed || len(p.checksSinceEdit) != 0 {
 		t.Fatal("new workspace contents must invalidate prior verification and review")
 	}
 	if !p.edited || !p.editedPaths["main.go"] {
