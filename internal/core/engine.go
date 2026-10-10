@@ -943,7 +943,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		// budget before they can return their findings.
 		// Once a worker is told to synthesise it stays told: re-opening its
 		// tools after a refused call would restart the gathering it just ended.
-		synthesizing = synthesizing || e.synthesisDue(ctx, sid, s.Spec, req, s.Turn, stored, emit)
+		synthesizing = synthesizing || e.synthesisDue(req, s.Turn)
 		forceSynthesis := synthesizing
 		forceAdvance := parentJob == "" && s.Phase == string(router.Explore) && progress.phaseTurns >= 8
 		forcePlanSynthesis := parentJob == "" && s.Phase == string(router.Plan) && (progress.delegated || progress.phaseTurns >= 4)

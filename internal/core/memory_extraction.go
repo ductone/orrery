@@ -316,7 +316,7 @@ func (e *Engine) extractMemory(ctx context.Context, sid string) error {
 				useful = true
 			}
 			inputEvents = append(inputEvents, event)
-		case "session.terminal", "verification.accepted", "verification.advised":
+		case "session.terminal":
 			inputEvents = append(inputEvents, event)
 		}
 		refs = append(refs, event.EventID)

@@ -427,46 +427,6 @@ func (r *Registry) CompleteOne(ctx context.Context, d router.Decision, build Req
 	return resp, err
 }
 func IsRetryable(err error) bool { return retryable(err) }
-func (r *Registry) Complete(ctx context.Context, d router.Decision, build RequestBuilder) (Response, model.ModelSpec, error) {
-	// Fall back to another route to the same model first, then to other
-	// models of the same tier.
-	chain := []model.ModelSpec{d.Model}
-	var others []model.ModelSpec
-	for _, m := range model.All() {
-		if m.ID == d.Model.ID || m.Tier != d.Model.Tier || !r.Available(m) {
-			continue
-		}
-		if d.Model.Model != "" && m.Model == d.Model.Model {
-			chain = append(chain, m)
-		} else {
-			others = append(others, m)
-		}
-	}
-	chain = append(chain, others...)
-	var errs []error
-	for _, m := range chain {
-		c, ok := r.clients[providerName(m.ID)]
-		if !ok {
-			continue
-		}
-		dd := d
-		dd.Model = m
-		dd.EditDialect = m.EditDialect
-		req, err := build(m, dd)
-		if err != nil {
-			return Response{}, m, err
-		}
-		resp, err := c.Complete(ctx, m, req)
-		if err == nil {
-			return resp, m, nil
-		}
-		errs = append(errs, fmt.Errorf("%s: %w", m.ID, err))
-		if !retryable(err) {
-			break
-		}
-	}
-	return Response{}, d.Model, errors.Join(errs...)
-}
 
 type HTTPError struct {
 	Status int

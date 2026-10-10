@@ -403,21 +403,3 @@ func (c failingClient) Complete(_ context.Context, m model.ModelSpec, _ Request)
 	*c.calls = append(*c.calls, m.ID)
 	return Response{}, ErrCredentialsBackoff
 }
-
-func TestCompleteFallsBackToTheSameModelFirst(t *testing.T) {
-	model.Install([]model.ModelSpec{
-		{ID: "ramp/grok-4.7", Model: "grok-4.7", Tier: model.Frontier},
-		{ID: "ramp/other-frontier", Model: "other-frontier", Tier: model.Frontier},
-		{ID: "xai/grok-4.7", Model: "grok-4.7", Tier: model.Frontier},
-	})
-	t.Cleanup(func() { model.Install(model.Catalog) })
-	var calls []string
-	r := &Registry{clients: map[string]Client{"ramp": failingClient{&calls}, "xai": failingClient{&calls}}}
-	first, _ := model.Get("ramp/grok-4.7")
-	_, _, err := r.Complete(context.Background(), router.Decision{Model: first}, func(model.ModelSpec, router.Decision) (Request, error) {
-		return Request{}, nil
-	})
-	if err == nil || len(calls) != 3 || calls[1] != "xai/grok-4.7" || calls[2] != "ramp/other-frontier" {
-		t.Fatalf("fallback order = %v (err %v)", calls, err)
-	}
-}

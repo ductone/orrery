@@ -319,11 +319,3 @@ func maskOldToolResultsCached(ctx context.Context, ask relevanceAsker, cache *sy
 	}
 	return changed, stats
 }
-
-func lostFact(ctx context.Context, client *jev.Client, state DurableState, fact string) bool {
-	if client == nil || strings.TrimSpace(fact) == "" {
-		return false
-	}
-	resp, err := client.Ask(ctx, map[string]any{"summary": truncate(store.JSON(state), 24_000), "fact": fact}, map[string]jev.Question{"preserved": jev.Noul("Does the summary preserve this fact?", "It preserves it.", "It drops it.")})
-	return err == nil && resp.Answers["preserved"].Noul != nil && *resp.Answers["preserved"].Noul < 0.3
-}

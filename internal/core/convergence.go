@@ -1,10 +1,7 @@
 package core
 
 import (
-	"context"
-
 	"github.com/ductone/orrey/internal/agentproto"
-	"github.com/ductone/orrey/internal/store"
 )
 
 // Read-only workers synthesise their result at a turn limit: the spawner's
@@ -22,6 +19,6 @@ func workerTurnLimit(req agentproto.TaskRequest) int {
 }
 
 // synthesisDue reports whether a read-only worker must synthesise on this turn.
-func (e *Engine) synthesisDue(ctx context.Context, sid, spec string, req agentproto.TaskRequest, turn int, stored []store.Message, emit EmitFunc) bool {
+func (e *Engine) synthesisDue(req agentproto.TaskRequest, turn int) bool {
 	return req.Workspace.Mode == "read" && turn >= workerTurnLimit(req)
 }
