@@ -75,7 +75,7 @@ func TestRoutingStateCarriesPerformanceFromStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	perf, ok := state.Performance[route]
-	if !ok || perf.Calls < 1 || perf.OutputTokensPerSecond <= 0 {
+	if !ok || perf.Calls < 1 || perf.LatencySeconds <= 0 {
 		t.Fatalf("performance=%+v state=%s", state.Performance, raw)
 	}
 	if perf.FailureRate <= 0 {

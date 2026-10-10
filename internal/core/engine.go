@@ -98,7 +98,9 @@ func (e *Engine) routePerformance(ctx context.Context) map[string]router.RoutePe
 	}
 	out := make(map[string]router.RoutePerformance, len(stats))
 	for _, st := range stats {
-		fail := st.Truncated + st.Empty + st.Malformed + st.ProviderErrors
+		// Truncation is a budget problem, not a failure: it is retried with
+		// more room, not elsewhere.
+		fail := st.Empty + st.Malformed + st.ProviderErrors
 		rate := 0.0
 		if st.Calls > 0 {
 			rate = float64(fail) / float64(st.Calls)
@@ -107,7 +109,7 @@ func (e *Engine) routePerformance(ctx context.Context) map[string]router.RoutePe
 		if st.InputTokens > 0 {
 			cache = float64(st.CacheReadTokens) / float64(st.InputTokens)
 		}
-		out[st.Route] = router.RoutePerformance{Calls: st.Calls, OutputTokensPerSecond: st.OutputTokensPerSecond, FailureRate: rate, LastSlowCall: st.LastSlowCall, LatencySeconds: st.LatencySeconds, OutputTokensPerCall: st.OutputTokensPerCall, CacheReadRatio: cache}
+		out[st.Route] = router.RoutePerformance{Calls: st.Calls, FailureRate: rate, LatencySeconds: st.LatencySeconds, OutputTokensPerCall: st.OutputTokensPerCall, CacheReadRatio: cache}
 	}
 	return out
 }
@@ -787,7 +789,6 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 	started := time.Now()
 	outcome := agentproto.Outcome{}
 	stall := router.StallSignals{}
-	stallEscalated := false
 	progress := newProgressTracker()
 	discovery, err := e.instructionDiscovery(sid, req.Workspace.Path, req.Spec)
 	if err != nil {
@@ -878,11 +879,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		stored, _ := e.store.Messages(ctx, sid)
 		inputTokens := estimate(s.Spec + s.DurableSummary + messagesText(stored))
 		point := router.TurnStart
-		stall.NoProgressTurns = progress.noProgressTurns
 		stall.ReviewRejected = progress.reviewRemediation
-		stall.PhaseTurns = progress.phaseTurns
-		stall.RepeatedReads = progress.repeatedReads
-		stall.RepeatedSearches = progress.repeatedSearch
 		// A compaction during the previous turn invalidated every warm prefix;
 		// clear current-model stickiness so routing picks by cost/quality fresh.
 		currentModel := s.Model
@@ -907,7 +904,6 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		state.ExcludeModels = append(state.ExcludeModels, progress.excluded...)
 		state.ExcludeModels = append(state.ExcludeModels, turnExcluded...)
 		applyHints(&state, req.Hints)
-		state.Stall.Deescalated = stallEscalated
 		decision, why, err := e.decideWaiting(ctx, sid, runtimePolicy, runtimeProviders, &state, emit)
 		// No model can hold the history: bound stored tool results, compact,
 		// and route again rather than failing with "no compatible models".
@@ -927,11 +923,6 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		}
 		if err != nil {
 			return e.routeFailureAfter(sid, parentJob, err, progress, outcome, emit)
-		}
-		if decision.Model.Tier == model.Frontier && (decision.StallBoost == "failed commands" || decision.StallBoost == "failing tests" || decision.StallBoost == "repeated edits") {
-			stallEscalated = true
-		} else if decision.Model.Tier != model.Frontier {
-			stallEscalated = false
 		}
 		outputCap := capFor(decision.Model.ID)
 		e.emit(ctx, sid, "routing.decision", map[string]any{"decision": decision, "explanation": why}, emit)
@@ -1185,7 +1176,6 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 					nudge = "Your last response was empty. Tool calls are disabled for this turn, so write the final result as text now, from the evidence already gathered."
 				}
 				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: nudge})
-				stall.HumanInterrupt = true
 				continue
 			}
 			// Partial text cut off at the limit is a genuine budget problem: give
@@ -1369,7 +1359,6 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			}
 			if callErr != nil {
 				outcome.ToolErrors++
-				stall.ToolErrorRate = float64(outcome.ToolErrors) / float64(outcome.ToolCalls)
 				if call.Name == "exec" {
 					stall.FailedCommands++
 					if strings.Contains(strings.ToLower(fmt.Sprint(call.Arguments["command"])), "test") {

@@ -270,7 +270,6 @@ type MCPConfig struct {
 }
 
 type RouterConfig struct {
-	LambdaCost          float64  `yaml:"lambda_cost"`
 	FrontierFloorPhases []string `yaml:"frontier_floor_phases"`
 	DisableSwitch       bool     `yaml:"disable_switch"`
 	DefaultModel        string   `yaml:"default_model"`
@@ -387,7 +386,7 @@ func Default() Config {
 		Listen: "127.0.0.1:7433", WorkspaceRoot: filepath.Join(home, "src"), Database: filepath.Join(Home(), "orrery.db"),
 		Providers: map[string]ProviderConfig{}, MCP: map[string]MCPConfig{},
 		LSP:    map[string]LSPConfig{},
-		Router: RouterConfig{LambdaCost: .35, FrontierFloorPhases: []string{"plan", "diagnose"}, TimeValue: TimeValue{Interactive: .25}},
+		Router: RouterConfig{FrontierFloorPhases: []string{"plan", "diagnose", "review"}, TimeValue: TimeValue{Interactive: .25}},
 		Budget: BudgetConfig{SessionUSD: 25, JobDefaultFraction: .2, MinReviewUSD: defaultMinReviewUSD},
 		Memory: MemoryConfig{Inject: true},
 	}
@@ -433,9 +432,6 @@ func load(path string, overrides map[string]string, secrets bool) (Config, error
 	base := filepath.Dir(path)
 	cfg.WorkspaceRoot = relativeTo(base, expandHome(cfg.WorkspaceRoot))
 	cfg.Database = relativeTo(base, expandHome(cfg.Database))
-	if cfg.Router.LambdaCost < 0 {
-		return cfg, errors.New("config: router.lambda_cost must be non-negative")
-	}
 	if cfg.Router.TimeValue.Interactive < 0 || cfg.Router.TimeValue.Background < 0 {
 		return cfg, errors.New("config: router.time_value_usd_per_minute must be non-negative")
 	}

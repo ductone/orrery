@@ -88,22 +88,19 @@ Supported kinds are `fact`, `command`, `decision`, `preference`, and `lesson`; p
 
 Most harnesses pick one model per session. Orrery re-decides at four points: the start of every turn (`turn`), when a worker job is spawned (`spawn`), when an independent reviewer is created (`review`), and when the loop escalates after a stall (`escalation`). Each decision is scored, recorded, and explained in one line, for example `stayed on <model>: phase implement, warm prefix 82K, estimated next-call cost $0.0141`.
 
-A decision runs in two stages: hard filters, then scoring.
+A decision runs in two stages: eligibility, then cost.
 
-**Filters** remove models that cannot or must not run the call. A candidate is rejected when the provider is not configured, the model was excluded after a provider failure, the request carries an image the model cannot read, input plus expected output exceeds the context window, its family is excluded, a tier pin does not match, switching is disabled, or the phase sits under the frontier floor (`plan`, `diagnose`, and `review` by default). Reviewers additionally reject the implementer's own family, but only after confirming some other family is actually usable, so single-provider deployments still get a review. If nothing survives, routing fails loudly rather than silently downgrading.
+**Eligibility** removes models that cannot or must not run the call. A candidate is rejected when the provider is not configured, the model was excluded after a provider failure, the request carries an image the model cannot read, input plus expected output exceeds the context window, its family is excluded, a tier pin does not match, or switching is disabled. Two floors follow: judgement work (the `frontier_floor_phases`, `plan`, `diagnose`, and `review` by default; independent reviewers; and fixing a failed review's findings) needs a frontier model, and tiny models are a last resort. A floor yields when nothing else is eligible. Reviewers additionally reject the implementer's own family, but only after confirming some other family is actually usable, so single-provider deployments still get a review.
 
-**Scoring** ranks whatever remains by `score = quality − lambda_cost × (work_cost + time_cost) − switch_penalty − performance_penalty`.
+**Cost** ranks whatever remains, cheapest first, in dollars:
 
-- *Quality* starts from the tier (frontier, efficient, tiny) and is then adjusted by phase. Judgement-heavy phases (`plan`, `diagnose`, `review`) reward frontier models and penalize the rest; throughput phases (`explore`, `implement`, `wrap-up`) give efficient models a bonus, since most agent turns are mechanical.
-- *Work cost* prices a unit of work, not one call: the next call at the session's actual cache warmth, then the further calls the model typically needs for the same work (`CallsPerTask` in the catalog, measured by pinned benchmark sweeps: a model that takes 2.7 steps where Claude takes one pays for re-sending the context each time), each at the route's recorded output per call and cache reuse from `model_stats`. Routes with few recorded calls lean on priors. `lambda_cost` is the dial that says how much quality a dollar is worth.
+- *Work cost* prices a unit of work, not one call: the next call at the session's actual cache warmth, then the further calls the model typically needs for the same work (`CallsPerTask` in the catalog, measured by pinned benchmark sweeps: a model that takes 2.7 steps where Claude takes one pays for re-sending the context each time), each at the route's recorded output per call and cache reuse from `model_stats`. Calls that fail and are retried (empty, malformed, provider errors) are priced as expected retries. Routes with few recorded calls lean on priors.
 - *Time cost* values the expected seconds of that work (steps × recorded latency) at `time_value_usd_per_minute`: `interactive` when someone is waiting (the default), `background` for runs marked `orrery run --background` and the jobs they spawn. With time free, the cheapest model wins; with it valued, a faster model that needs fewer steps can win despite a higher token price.
-- *Switch penalty* prices the cache you would throw away. Leaving a warm model mid-tool-chain costs more, and the penalty grows with conversation size. Critically, it only applies when the prefix is warm: right after compaction there is no cache to protect, so cost and quality decide freely.
+- *A $0.05 margin* applies only to switching away from a warm model mid tool chain, for what money does not capture: the new model lacks the incumbent's reasoning about the chain. Otherwise a switch's cold first call is already in the challenger's work cost.
 
-While the agent fixes findings from a failed independent review, its turns are routed to frontier models: a reviewer finding real bugs is a hard-failure signal, not mechanical work. That remediation ends a run after eight turns without an edit, or after four rejected reviews; a completion whose diff is unchanged since a failed review is refused with those findings instead of being reviewed again.
+While the agent fixes findings from a failed independent review, its turns need a frontier model. That remediation ends a run after eight turns without an edit, or after four rejected reviews; a completion whose diff is unchanged since a failed review is refused with those findings instead of being reviewed again.
 
-**Stall handling** is where routing earns its keep. Repeated failed commands, a test-failure streak, repeated edits, turns without progress, or a phase running long all mark the turn as stalled. Orrery then distinguishes two kinds of stuck. Hard failures look like a capability ceiling and push toward frontier models. But repeated reads or searches are a discipline problem, not a hard problem, so the largest bonus goes to *efficient* models: redundant exploration escalates to a cheaper, better-behaved model instead of burning frontier tokens re-reading the same files.
-
-Reasoning effort follows the same phase logic — high for planning, diagnosis, review, and repeated test failures; low for wrap-up; medium otherwise — clamped to what each model supports. The chosen model also fixes its edit dialect and whether the strict or portable toolset is used.
+Reasoning effort follows phase: high for planning, diagnosis, and review; low for wrap-up; each model's measured work effort (or medium) for exploration and implementation; one level higher while real failures persist (failed commands, failing tests, repeated edits, review findings to fix), clamped to what each model supports. The chosen model also fixes its edit dialect and whether the strict or portable toolset is used.
 
 Ties break deterministically: keep the current model, then prefer the configured default, then sort by ID. Identical state produces an identical decision, which is what makes replay evaluation meaningful.
 
@@ -111,7 +108,6 @@ Every decision — full input state, all candidates including rejected ones with
 
 ```yaml
 router:
-  lambda_cost: 0.35                            # higher = more cost-sensitive
   time_value_usd_per_minute:                   # what waiting is worth
     interactive: 0.25                          # someone is waiting (default)
     background: 0                              # orrery run --background and its jobs

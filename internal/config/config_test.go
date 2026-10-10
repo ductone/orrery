@@ -84,11 +84,6 @@ func TestBudgetDefaultsAndReviewFloor(t *testing.T) {
 	if d.Budget.SessionUSD != 25 {
 		t.Fatalf("default session budget = %v, want 25", d.Budget.SessionUSD)
 	}
-	for _, phase := range d.Router.FrontierFloorPhases {
-		if phase == "review" {
-			t.Fatal("review must not be in the default frontier_floor_phases")
-		}
-	}
 
 	// A config that sets other budget fields must not silently reset the
 	// review floor: it is the shape our own orrery.yaml uses.
@@ -104,8 +99,8 @@ func TestBudgetDefaultsAndReviewFloor(t *testing.T) {
 	if cfg.Budget.ReviewFloorUSD() != 2 {
 		t.Fatalf("review floor after partial budget override = %v, want 2", cfg.Budget.ReviewFloorUSD())
 	}
-	if len(cfg.Router.FrontierFloorPhases) != 2 {
-		t.Fatalf("frontier floor phases = %v, want the 2 defaults", cfg.Router.FrontierFloorPhases)
+	if len(cfg.Router.FrontierFloorPhases) != 3 {
+		t.Fatalf("frontier floor phases = %v, want the 3 defaults", cfg.Router.FrontierFloorPhases)
 	}
 	if cfg.Budget.SessionUSD != 5 {
 		t.Fatalf("session budget override lost: %v", cfg.Budget.SessionUSD)

@@ -175,13 +175,3 @@ func TestReviewChildBudget(t *testing.T) {
 	}
 }
 
-// A reviewer must not be floored to a frontier model by default: the review
-// phase was removed from the frontier floor precisely because a frontier turn
-// costs more than the reviewer's whole budget.
-func TestDefaultConfigDoesNotFloorReviewToFrontier(t *testing.T) {
-	for _, phase := range config.Default().Router.FrontierFloorPhases {
-		if phase == "review" {
-			t.Fatal("review must not be in the default frontier_floor_phases")
-		}
-	}
-}

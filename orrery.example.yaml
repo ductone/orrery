@@ -20,11 +20,10 @@ lsp:
     extensions: [".go"]
     language_id: "go"
 router:
-  lambda_cost: 0.35
   time_value_usd_per_minute:
     interactive: 0.25
     background: 0
-  frontier_floor_phases: [plan, diagnose]
+  frontier_floor_phases: [plan, diagnose, review]
   disable_switch: false
 budget:
   session_usd: 25

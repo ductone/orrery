@@ -88,12 +88,13 @@ func TestReviewDispute(t *testing.T) {
 			}
 			expectedCalls := 1
 			if mode == "unavailable" {
+				// Three empty completions drop a model; the job may try another.
 				expectedCalls = 3
-			} // Empty completions within the same worker.
+			}
 			if jobs, _ := st.Jobs(context.Background(), sid); len(jobs) != 2 {
 				t.Fatalf("one review and one adjudication job required, got %d", len(jobs))
 			}
-			if reviews != 1 || adjudications != expectedCalls {
+			if reviews != 1 || adjudications < expectedCalls || (mode != "unavailable" && adjudications != expectedCalls) {
 				t.Fatalf("reviews=%d adjudications=%d result=%+v", reviews, adjudications, result)
 			}
 			if !result.Outcome.ReviewDisputed {

@@ -38,23 +38,15 @@ const (
 	WrapUp    Phase = "wrap-up"
 )
 
+// StallSignals are the failure signals that raise reasoning effort, and the
+// review state that requires a frontier model.
 type StallSignals struct {
-	FailedCommands   int     `json:"failed_commands"`
-	RepeatedEdits    int     `json:"repeated_edits"`
-	TestFailStreak   int     `json:"test_fail_streak"`
-	ToolErrorRate    float64 `json:"tool_error_rate"`
-	HumanInterrupt   bool    `json:"human_interrupt"`
-	NoProgressTurns  int     `json:"no_progress_turns"`
-	PhaseTurns       int     `json:"phase_turns"`
-	RepeatedReads    int     `json:"repeated_reads"`
-	RepeatedSearches int     `json:"repeated_searches"`
+	FailedCommands int `json:"failed_commands"`
+	RepeatedEdits  int `json:"repeated_edits"`
+	TestFailStreak int `json:"test_fail_streak"`
 	// ReviewRejected is set while the agent is fixing findings from a failed
 	// independent review: correctness work that needs a frontier model.
 	ReviewRejected bool `json:"review_rejected,omitempty"`
-	// Deescalated drops the warm-cache penalty that keeps an incumbent. It is
-	// set once a stall boost has put a frontier model in place and the failure
-	// signals have since cleared, so a clean phase can return to efficient.
-	Deescalated bool `json:"deescalated,omitempty"`
 }
 type CacheEstimate struct {
 	WarmTokens      int     `json:"warm_tokens,omitempty"`
@@ -99,12 +91,9 @@ type RoutingState struct {
 // RoutePerformance summarizes a route's recorded calls for scoring.
 type RoutePerformance struct {
 	Calls int `json:"calls"`
-	// OutputTokensPerSecond is the route's recorded generation speed. It is the
-	// slowness signal the penalty scores; call latency is not, because it
-	// tracks how much a model writes rather than how fast it generates.
-	OutputTokensPerSecond float64   `json:"output_tokens_per_second,omitempty"`
-	FailureRate           float64   `json:"failure_rate"`
-	LastSlowCall          time.Time `json:"last_slow_call,omitzero"`
+	// FailureRate is the share of calls that failed and had to be retried
+	// (empty, malformed, provider errors); routing prices it as retries.
+	FailureRate float64 `json:"failure_rate"`
 	// LatencySeconds, OutputTokensPerCall and CacheReadRatio are the route's
 	// typical call, for estimating what a unit of work costs on it.
 	LatencySeconds      float64 `json:"latency_seconds,omitempty"`
@@ -126,21 +115,22 @@ type InstructionPhase struct {
 type Candidate struct {
 	Model   string       `json:"model"`
 	Effort  model.Effort `json:"effort"`
-	Quality float64      `json:"quality"`
 	CostUSD float64      `json:"cost_usd"`
 	// WorkCostUSD and WorkSeconds estimate a unit of work on this model: the
 	// next call plus the extra calls it typically needs (CallsPerTask), at its
 	// typical output and cache reuse. TimeCostUSD values WorkSeconds at the
 	// interactive or background rate.
-	WorkCostUSD   float64 `json:"work_cost_usd"`
-	WorkSeconds   float64 `json:"work_seconds"`
-	TimeCostUSD   float64 `json:"time_cost_usd"`
-	SwitchPenalty float64 `json:"switch_penalty"`
-	// PerformancePenalty is subtracted for recorded slowness and failures.
-	PerformancePenalty float64       `json:"performance_penalty"`
-	Score              float64       `json:"score"`
-	Cache              CacheEstimate `json:"cache"`
-	Rejected           string        `json:"rejected,omitempty"`
+	WorkCostUSD float64 `json:"work_cost_usd"`
+	WorkSeconds float64 `json:"work_seconds"`
+	TimeCostUSD float64 `json:"time_cost_usd"`
+	// SwitchUSD is the margin a challenger must clear to take over mid tool
+	// chain from a warm incumbent.
+	SwitchUSD float64 `json:"switch_usd"`
+	// Score is minus the candidate's total cost in dollars: work, time, and
+	// the switch margin. The highest score wins.
+	Score    float64       `json:"score"`
+	Cache    CacheEstimate `json:"cache"`
+	Rejected string        `json:"rejected,omitempty"`
 }
 type Decision struct {
 	Model          model.ModelSpec   `json:"model"`
@@ -148,11 +138,7 @@ type Decision struct {
 	EditDialect    model.EditDialect `json:"edit_dialect"`
 	ToolsetVariant string            `json:"toolset_variant"`
 	WasSwitch      bool              `json:"was_switch"`
-	// StallBoost records why the stall boost applied, so its effect is visible
-	// in routing.decision instead of only in quality values. Empty means the
-	// boost did not apply.
-	StallBoost string      `json:"stall_boost"`
-	Candidates []Candidate `json:"candidates"`
+	Candidates     []Candidate       `json:"candidates"`
 }
 type Explanation string
 type Policy interface {
@@ -195,108 +181,11 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 			incumbentWarm = entry.Valid(p.now())
 		}
 	}
-	var candidates []Candidate
-	for _, m := range p.catalog {
-		c := Candidate{Model: m.ID}
-		if s.ModelPin != "" && m.ID != s.ModelPin && m.Model != s.ModelPin {
-			c.Rejected = "model pinned"
-			candidates = append(candidates, c)
-			continue
-		}
-		if !defaultModelPinned && s.TierPin == "" && s.Point != ReviewCreation && slices.Contains(p.cfg.FrontierFloorPhases, string(s.Phase)) && m.Tier != model.Frontier {
-			c.Rejected = "phase has frontier floor"
-			candidates = append(candidates, c)
-			continue
-		}
-		if p.cfg.DisableSwitch && p.cfg.DefaultModel != "" && m.ID != p.cfg.DefaultModel {
-			c.Rejected = "default model pinned"
-			candidates = append(candidates, c)
-			continue
-		}
-		if s.AvailableModels != nil && !slices.Contains(s.AvailableModels, m.ID) {
-			c.Rejected = "provider not configured"
-			candidates = append(candidates, c)
-			continue
-		}
-		if !defaultModelPinned && s.TierPin == "" && s.Stall.ReviewRejected && (s.Point == TurnStart || s.Point == Escalation) && m.Tier != model.Frontier {
-			c.Rejected = "review findings need a frontier model"
-			candidates = append(candidates, c)
-			continue
-		}
-		if slices.Contains(s.ExcludeModels, m.ID) {
-			c.Rejected = "model excluded after provider failure"
-			candidates = append(candidates, c)
-			continue
-		}
-		if s.HasImage && !model.Supports(m, model.Image) {
-			c.Rejected = "image unsupported"
-			candidates = append(candidates, c)
-			continue
-		}
-		if s.InputTokens+s.EstimatedOutput > m.ContextWindow {
-			c.Rejected = "context does not fit"
-			candidates = append(candidates, c)
-			continue
-		}
-		if slices.Contains(s.ExcludeFamilies, m.Family) {
-			c.Rejected = "family excluded"
-			candidates = append(candidates, c)
-			continue
-		}
-		if reviewHasAlternate && m.Family == s.ImplementerFamily {
-			c.Rejected = "reviewer must use another family"
-			candidates = append(candidates, c)
-			continue
-		}
-		if s.TierPin != "" && m.Tier != s.TierPin {
-			c.Rejected = "tier pinned"
-			candidates = append(candidates, c)
-			continue
-		}
-		if p.cfg.DisableSwitch && s.CurrentModel != "" && m.ID != s.CurrentModel {
-			c.Rejected = "switching disabled"
-			candidates = append(candidates, c)
-			continue
-		}
-		entry, _ := p.ledger.Cache(ctx, s.SessionID, m.ID)
-		warm := entry.Valid(p.now())
-		warmTokens := 0
-		if warm {
-			warmTokens = min(entry.WarmPrefixTokens, s.InputTokens)
-		}
-		c.Cache = CacheEstimate{WarmTokens: warmTokens, FreshTokens: s.InputTokens - warmTokens, Warm: warm, CostUSD: m.Pricing.Estimate(s.InputTokens, s.EstimatedOutput, warmTokens)}
-		c.CostUSD = c.Cache.CostUSD
-		c.WorkCostUSD, c.WorkSeconds = workEstimate(m, s, warmTokens)
-		c.TimeCostUSD = c.WorkSeconds / 60 * p.cfg.TimeValue.For(s.Background)
-		for _, tr := range m.Pricing.Thresholds {
-			if tr.AboveTokens > s.InputTokens {
-				c.Cache.TokensToCliff = tr.AboveTokens - s.InputTokens
-				break
-			}
-		}
-		c.Quality = quality(m.Tier, s.Phase, s.Stall)
-		if m.Discovered {
-			// A model inferred from a provider listing has no track record
-			// here; its tier comes from its price. Built-in and
-			// config-vouched models win ties against it.
-			c.Quality -= discoveredQualityPenalty
-		}
-		// No generic switch penalty: each candidate's work cost already prices its
-		// next call at its actual cache warmth, so a switch's cold first call is in
-		// the estimate. Only a mid-tool-chain switch keeps a small margin, for what
-		// money doesn't capture: the new model lacks the incumbent's reasoning
-		// about the chain in progress. A de-escalation after a cleared stall is
-		// exempt so a frontier model a stall boost put in place can step down.
-		deescalate := s.Stall.Deescalated && !stalled(s.Stall) && !s.Stall.ReviewRejected && slices.Contains([]Phase{Explore, Implement, WrapUp}, s.Phase)
-		if s.ToolContinuation && m.ID != s.CurrentModel && incumbentWarm && !deescalate {
-			c.SwitchPenalty += toolContinuationSwitchPenalty
-		}
-		if perf, ok := s.Performance[m.ID]; ok {
-			c.PerformancePenalty = performancePenalty(perf, p.now())
-		}
-		c.Score = c.Quality - p.cfg.LambdaCost*(c.WorkCostUSD+c.TimeCostUSD) - c.SwitchPenalty - c.PerformancePenalty
-		c.Effort = effortFor(m, s)
-		candidates = append(candidates, c)
+	candidates := p.score(ctx, s, incumbentWarm, reviewHasAlternate, defaultModelPinned, false)
+	if !anyValid(candidates) {
+		// A floor (frontier for judgement phases, no tiny models) yields when
+		// nothing else is left rather than failing the turn.
+		candidates = p.score(ctx, s, incumbentWarm, reviewHasAlternate, defaultModelPinned, true)
 	}
 	valid := make([]Candidate, 0, len(candidates))
 	for _, c := range candidates {
@@ -330,13 +219,96 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 	chosen := valid[0]
 	span.SetAttributes(attribute.String("model", chosen.Model), attribute.Float64("estimated_cost_usd", chosen.CostUSD))
 	spec, _ := model.Get(chosen.Model)
-	d := Decision{Model: spec, Effort: chosen.Effort, EditDialect: spec.EditDialect, ToolsetVariant: toolset(spec), WasSwitch: s.CurrentModel != "" && s.CurrentModel != spec.ID, StallBoost: stallReason(s.Stall), Candidates: candidates}
+	d := Decision{Model: spec, Effort: chosen.Effort, EditDialect: spec.EditDialect, ToolsetVariant: toolset(spec), WasSwitch: s.CurrentModel != "" && s.CurrentModel != spec.ID, Candidates: candidates}
 	why := explain(s, chosen, d.WasSwitch)
 	rec := store.RoutingRecord{ID: uuid.NewString(), SessionID: s.SessionID, Turn: s.Turn, DecisionPoint: string(s.Point), StateJSON: store.JSON(s), CandidatesJSON: store.JSON(candidates), ChosenModel: spec.ID, ChosenEffort: string(chosen.Effort), WasSwitch: d.WasSwitch, CacheEstJSON: store.JSON(chosen.Cache), Explanation: string(why)}
 	if err := p.ledger.WriteRouting(ctx, rec); err != nil {
 		return Decision{}, "", fmt.Errorf("routing record: %w", err)
 	}
 	return d, why, nil
+}
+
+// score evaluates every catalog model for s. Eligibility is a set of hard
+// filters plus two floors: judgement phases (router.frontier_floor_phases, and
+// fixing review findings) need a frontier model, and tiny models are a last
+// resort. relaxFloors drops the floors when nothing else is eligible. Eligible
+// models are then ranked purely by cost: the dollars a unit of work costs,
+// the value of the time it takes, and a small margin for switching mid tool
+// chain.
+func (p *V1) score(ctx context.Context, s RoutingState, incumbentWarm, reviewHasAlternate, defaultModelPinned, relaxFloors bool) []Candidate {
+	floors := !relaxFloors && !defaultModelPinned && s.TierPin == ""
+	frontierFloor := floors && (slices.Contains(p.cfg.FrontierFloorPhases, string(s.Phase)) || s.Point == ReviewCreation ||
+		(s.Stall.ReviewRejected && (s.Point == TurnStart || s.Point == Escalation)))
+	var candidates []Candidate
+	for _, m := range p.catalog {
+		c := Candidate{Model: m.ID}
+		switch {
+		case s.ModelPin != "" && m.ID != s.ModelPin && m.Model != s.ModelPin:
+			c.Rejected = "model pinned"
+		case p.cfg.DisableSwitch && p.cfg.DefaultModel != "" && m.ID != p.cfg.DefaultModel:
+			c.Rejected = "default model pinned"
+		case s.AvailableModels != nil && !slices.Contains(s.AvailableModels, m.ID):
+			c.Rejected = "provider not configured"
+		case frontierFloor && m.Tier != model.Frontier:
+			c.Rejected = "needs a frontier model"
+		case floors && m.Tier == model.Tiny:
+			c.Rejected = "tiny models are a last resort"
+		case slices.Contains(s.ExcludeModels, m.ID):
+			c.Rejected = "model excluded after provider failure"
+		case s.HasImage && !model.Supports(m, model.Image):
+			c.Rejected = "image unsupported"
+		case s.InputTokens+s.EstimatedOutput > m.ContextWindow:
+			c.Rejected = "context does not fit"
+		case slices.Contains(s.ExcludeFamilies, m.Family):
+			c.Rejected = "family excluded"
+		case reviewHasAlternate && m.Family == s.ImplementerFamily:
+			c.Rejected = "reviewer must use another family"
+		case s.TierPin != "" && m.Tier != s.TierPin:
+			c.Rejected = "tier pinned"
+		case p.cfg.DisableSwitch && s.CurrentModel != "" && m.ID != s.CurrentModel:
+			c.Rejected = "switching disabled"
+		}
+		if c.Rejected != "" {
+			candidates = append(candidates, c)
+			continue
+		}
+		entry, _ := p.ledger.Cache(ctx, s.SessionID, m.ID)
+		warm := entry.Valid(p.now())
+		warmTokens := 0
+		if warm {
+			warmTokens = min(entry.WarmPrefixTokens, s.InputTokens)
+		}
+		c.Cache = CacheEstimate{WarmTokens: warmTokens, FreshTokens: s.InputTokens - warmTokens, Warm: warm, CostUSD: m.Pricing.Estimate(s.InputTokens, s.EstimatedOutput, warmTokens)}
+		c.CostUSD = c.Cache.CostUSD
+		for _, tr := range m.Pricing.Thresholds {
+			if tr.AboveTokens > s.InputTokens {
+				c.Cache.TokensToCliff = tr.AboveTokens - s.InputTokens
+				break
+			}
+		}
+		c.WorkCostUSD, c.WorkSeconds = workEstimate(m, s, warmTokens)
+		c.TimeCostUSD = c.WorkSeconds / 60 * p.cfg.TimeValue.For(s.Background)
+		// Each candidate's work cost already prices its next call at its actual
+		// cache warmth, so a switch's cold first call is in the estimate. Only a
+		// mid-tool-chain switch keeps a margin, for what money doesn't capture:
+		// the new model lacks the incumbent's reasoning about the chain.
+		if s.ToolContinuation && m.ID != s.CurrentModel && incumbentWarm {
+			c.SwitchUSD = toolContinuationSwitchUSD
+		}
+		c.Score = -(c.WorkCostUSD + c.TimeCostUSD + c.SwitchUSD)
+		c.Effort = effortFor(m, s)
+		candidates = append(candidates, c)
+	}
+	return candidates
+}
+
+func anyValid(cs []Candidate) bool {
+	for _, c := range cs {
+		if c.Rejected == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // reviewHasAlternateFamily keeps cross-family review as the default without
@@ -363,48 +335,16 @@ func (p *V1) reviewHasAlternateFamily(s RoutingState) bool {
 	return false
 }
 
-// Performance penalties keep slow or flaky routes from winning on price alone.
-// Throughput and reliability penalties are shrunk toward zero for routes with
-// calls (weight = calls/(calls+performanceShrinkCalls)); the cool-off is not.
-const (
-	performanceShrinkCalls            = 20
-	throughputBaselineTokensPerSecond = 40.0
-	throughputPenaltyPerToken         = .01
-	maxThroughputPenalty              = .3
-	maxReliabilityPenalty             = .2
-	slowCallCoolOffPenalty            = .2
-	slowCallCoolOff                   = 30 * time.Minute
-)
-
-// performancePenalty scores a route's recorded generation speed and reliability.
-// Routes with no stats get no penalty.
-func performancePenalty(perf RoutePerformance, now time.Time) float64 {
-	penalty := 0.0
-	if perf.Calls > 0 {
-		weight := float64(perf.Calls) / float64(perf.Calls+performanceShrinkCalls)
-		// Call latency tracks output length more than route speed, so score
-		// generation speed: a route that writes long answers fast is not slow.
-		// A missing rate means no call reported tokens, so score no throughput
-		// penalty rather than an implicit zero.
-		throughput := 0.0
-		if perf.OutputTokensPerSecond > 0 {
-			throughput = math.Min(maxThroughputPenalty, math.Max(0, throughputBaselineTokensPerSecond-perf.OutputTokensPerSecond)*throughputPenaltyPerToken)
-		}
-		reliability := maxReliabilityPenalty * math.Min(1, math.Max(0, perf.FailureRate))
-		penalty += weight * (throughput + reliability)
-	}
-	if !perf.LastSlowCall.IsZero() && now.Sub(perf.LastSlowCall) < slowCallCoolOff {
-		penalty += slowCallCoolOffPenalty
-	}
-	return penalty
-}
-
 // Priors for a route's typical call, used in proportion to how few calls it
-// has recorded (the same shrinkage as the performance penalty).
+// has recorded (weight = calls/(calls+performanceShrinkCalls)).
 const (
-	outputTokensPrior   = 1000
-	cacheReadRatioPrior = .7
-	latencySecondsPrior = 10
+	performanceShrinkCalls = 20
+	// toolContinuationSwitchUSD is the margin, in dollars, a challenger must
+	// clear to take over mid tool chain from a warm incumbent.
+	toolContinuationSwitchUSD = .05
+	outputTokensPrior         = 1000
+	cacheReadRatioPrior       = .7
+	latencySecondsPrior       = 10
 	// workHorizonCalls is the unit of work routing prices: the calls a
 	// reference model typically takes for a task (about 4 in the 2026-10-09
 	// sweep). A switch's cold first call is amortised over it.
@@ -439,73 +379,10 @@ func workEstimate(m model.ModelSpec, s RoutingState, warmTokens int) (float64, f
 	next := m.Pricing.Estimate(s.InputTokens, output, warmTokens)
 	steady := m.Pricing.Estimate(s.InputTokens, output, int(cacheRatio*float64(s.InputTokens)))
 	total := workHorizonCalls * calls
-	return next + (total-1)*steady, total * latency
+	// A failed call is retried: price the expected retries.
+	retries := 1 / (1 - math.Min(.5, weight*perf.FailureRate))
+	return (next + (total-1)*steady) * retries, total * latency * retries
 }
-
-// discoveredQualityPenalty offsets the efficient-tier bonus for models known
-// only from a provider listing, so price alone cannot make one outscore a
-// built-in model on the main loop.
-const discoveredQualityPenalty = .25
-
-// toolContinuationSwitchPenalty is the margin a challenger must clear to take
-// over mid tool chain from a warm incumbent.
-const toolContinuationSwitchPenalty = .05
-
-func quality(t model.Tier, p Phase, stall StallSignals) float64 {
-	q := map[model.Tier]float64{model.Frontier: .96, model.Efficient: .78, model.Tiny: .42}[t]
-	if slices.Contains([]Phase{Plan, Diagnose, Review}, p) {
-		if t == model.Frontier {
-			q += .2
-		} else {
-			q -= .15
-		}
-	}
-	if slices.Contains([]Phase{Explore, Implement, WrapUp}, p) && t == model.Efficient {
-		q += .20
-	}
-	if stalled(stall) {
-		readStall := stall.RepeatedReads >= 2 || stall.RepeatedSearches >= 2
-		switch {
-		case readStall && t == model.Efficient:
-			q += .25
-		case readStall && t == model.Frontier:
-			q += .10
-		case readStall:
-			q -= .2
-		case t == model.Frontier:
-			q += .25
-		default:
-			q -= .2
-		}
-	}
-	return q
-}
-
-// stallReason reports the failure signal that escalates quality toward
-// frontier. Phase length and turns without an edit are not failures: a long
-// implement phase does ordinary work, and treating it as stalled kept frontier
-// models in place. Read/search repetition is a stall too, but quality() handles
-// it separately so it favours an efficient model.
-func stallReason(s StallSignals) string {
-	if s.RepeatedReads >= 2 {
-		return "repeated reads"
-	}
-	if s.RepeatedSearches >= 2 {
-		return "repeated searches"
-	}
-	switch {
-	case s.FailedCommands >= 2:
-		return "failed commands"
-	case s.TestFailStreak >= 2:
-		return "failing tests"
-	case s.RepeatedEdits >= 3:
-		return "repeated edits"
-	default:
-		return ""
-	}
-}
-
-func stalled(s StallSignals) bool { return stallReason(s) != "" }
 
 // effortLadder orders reasoning levels from least to most.
 var effortLadder = []model.Effort{model.EffortNone, model.EffortLow, model.EffortMedium, model.EffortHigh, model.EffortXHigh}

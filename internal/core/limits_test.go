@@ -194,7 +194,7 @@ func TestMisbehavingModelIsSetAside(t *testing.T) {
 	srv := s.serve(t)
 	workspace := t.TempDir()
 	cfg := gateConfig(workspace, srv.URL)
-	cfg.Router = config.RouterConfig{LambdaCost: .35}
+	cfg.Router = config.RouterConfig{}
 	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
 	req := agentproto.TaskRequest{Spec: "answer", Budget: agentproto.Budget{MaxUSD: 5, MaxTokens: 1_000_000, MaxWallClock: time.Minute}, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"}}
 	_, results, err := e.Start(context.Background(), req, nil)

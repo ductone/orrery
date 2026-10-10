@@ -402,7 +402,7 @@ func TestRefusedModelIsRoutedAround(t *testing.T) {
 	cfg := config.Config{
 		WorkspaceRoot: workspace,
 		Providers:     map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: srv.URL}},
-		Router:        config.RouterConfig{LambdaCost: .35},
+		Router:        config.RouterConfig{},
 	}
 	providers := provider.New(cfg)
 	e.ReplaceRuntime(cfg, providers, nil)
@@ -456,7 +456,7 @@ func TestRejectedRequestIsRoutedAround(t *testing.T) {
 	cfg := config.Config{
 		WorkspaceRoot: workspace,
 		Providers:     map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: srv.URL}},
-		Router:        config.RouterConfig{LambdaCost: .35},
+		Router:        config.RouterConfig{},
 	}
 	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
 	req := agentproto.TaskRequest{Spec: "answer", Budget: agentproto.Budget{MaxUSD: 5, MaxTokens: 1_000_000, MaxWallClock: time.Minute}, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"}}
