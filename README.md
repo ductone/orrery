@@ -176,7 +176,7 @@ A turn that starts with a message a person sent has been routed as planning, whi
 
 When every configured credential is backed off after a rate limit or server error, routing waits for the earliest one to return (up to two minutes, honouring the provider's `Retry-After`) instead of failing the turn, worker, or review.
 
-Phase changes compact history only at real boundaries: not when the history is small, not within six turns of the last compaction, and not when a session returns to a phase it left a few turns earlier.
+History is compacted on context pressure alone, once a prompt passes 3/5 of the model's effective window; phase changes never compact, so verification context is not summarised away at a boundary.
 
 ## Independent review
 
@@ -211,7 +211,7 @@ Orrery implements LSP framing and lifecycle directly. Its initial surface is del
 
 ## Context recovery
 
-Automatic compaction runs at phase changes and at 75% of the selected model's context window. Orrery creates a restorable checkpoint before trimming, asks the active model for a structured durable state, retains four complete assistant turns, and invalidates cache warmth. The durable state preserves requirements, decisions, completed work, files, verification, open work, blockers, instructions, and worker results. If semantic summarization fails, a structured deterministic digest is used instead of risking the original history.
+Automatic compaction runs once a prompt passes 3/5 of the selected model's effective context window. Orrery creates a restorable checkpoint before trimming, asks the active model for a structured durable state, retains four complete assistant turns, and invalidates cache warmth. The durable state preserves requirements, decisions, completed work, files, verification, open work, blockers, instructions, and worker results. If semantic summarization fails, a structured deterministic digest is used instead of risking the original history.
 
 ## Workspace instructions and skills
 

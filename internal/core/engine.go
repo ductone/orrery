@@ -828,7 +828,6 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		return defaultOutputCap
 	}
 	synthesizing := false
-	var compactions compactionGate
 	if answer, ok := e.limitAnswer(ctx, sid); ok && answer.declined {
 		return e.finish(sid, agentproto.TaskResult{Status: agentproto.Cancelled, Outcome: outcome, Error: "stopped at the person's request"}, emit)
 	}
@@ -1467,16 +1466,9 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			}
 		}
 		e.scheduleMasking(ctx, sid, objective)
-		compactNow := inputTokens > effectiveContextWindow(decision.Model)*3/5
-		if current.Phase != s.Phase && !compactNow {
-			due, why := compactions.phaseChange(s.Phase, current.Phase, s.Turn, inputTokens, effectiveContextWindow(decision.Model))
-			if !due {
-				e.emit(ctx, sid, "compaction.skipped", map[string]any{"from": s.Phase, "to": current.Phase, "reason": why}, emit)
-			}
-			compactNow = due
-		}
-		if compactNow {
-			compactions.record(s.Turn)
+		// Compaction runs on context pressure alone: past 3/5 of the model's
+		// effective window. Phase changes no longer compact.
+		if inputTokens > effectiveContextWindow(decision.Model)*3/5 {
 			e.markCompacted(sid)
 			e.compact(ctx, sid, emit)
 		}
