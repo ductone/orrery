@@ -1078,6 +1078,11 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		e.emit(ctx, sid, "assistant.message", map[string]any{"message": resp.Message, "usage": resp.Usage, "cost_usd": cost, "model": decision.Model.ID, "stop_reason": resp.StopReason, "truncated": resp.Truncated, "output_kinds": resp.OutputKinds}, emit)
 		e.emit(ctx, sid, "usage.reported", map[string]any{"model": decision.Model.ID, "job_id": parentJob, "input_tokens": resp.Usage.InputTokens, "output_tokens": resp.Usage.OutputTokens, "cache_read_tokens": resp.Usage.CacheReadTokens, "cache_write_tokens": resp.Usage.CacheWriteTokens, "cost_usd": cost, "latency": resp.Latency, "effort": decision.Effort, "stop_reason": resp.StopReason, "truncated": resp.Truncated, "output_cap": min(outputCap, decision.Model.MaxOutput)}, emit)
 		_ = e.store.RecordModelCall(ctx, decision.Model.ID, resp.Latency, resp.Usage.OutputTokens, resp.Truncated, resp.Usage.InputTokens, resp.Usage.CacheReadTokens)
+		// Latency and output depend on effort, so they are also kept per
+		// effort: routing estimates a candidate at the effort it would run at.
+		if decision.Effort != "" {
+			_ = e.store.RecordModelCall(ctx, router.EffortStatsKey(decision.Model.ID, decision.Effort), resp.Latency, resp.Usage.OutputTokens, resp.Truncated, resp.Usage.InputTokens, resp.Usage.CacheReadTokens)
+		}
 		turnOutcome := map[string]any{"tokens": resp.Usage.InputTokens + resp.Usage.OutputTokens, "input_tokens": resp.Usage.InputTokens, "output_tokens": resp.Usage.OutputTokens, "cache_read_tokens": resp.Usage.CacheReadTokens, "cache_write_tokens": resp.Usage.CacheWriteTokens, "latency": resp.Latency, "cost_usd": cost, "model": decision.Model.ID}
 		if !(resp.Truncated && emptyFinalResponse(resp.Message)) {
 			turnExcluded = nil

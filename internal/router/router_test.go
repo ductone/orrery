@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -272,10 +273,10 @@ func TestTimeValueWeighsStepsAndLatency(t *testing.T) {
 func TestWorkEstimateCountsExtraCalls(t *testing.T) {
 	m := model.ModelSpec{ID: "x", CallsPerTask: 1, Pricing: model.Pricing{Input: 1, Output: 1, CacheRead: .1}}
 	s := RoutingState{InputTokens: 10_000, Performance: map[string]RoutePerformance{"x": {Calls: 1_000_000, LatencySeconds: 2, OutputTokensPerCall: 100, CacheReadRatio: .5}}}
-	one, oneSecs := workEstimate(m, s, 0)
+	one, oneSecs := workEstimate(m, s, 0, "")
 	m.CallsPerTask = 3
-	three, threeSecs := workEstimate(m, s, 0)
-	if three <= 2*one || threeSecs != 3*oneSecs {
+	three, threeSecs := workEstimate(m, s, 0, "")
+	if three <= 2*one || math.Abs(threeSecs-3*oneSecs) > .01 {
 		t.Fatalf("three-call model: cost %.5f vs %.5f, seconds %.1f vs %.1f", three, one, threeSecs, oneSecs)
 	}
 }
@@ -376,8 +377,8 @@ func TestUnmeasuredModelsAreNotAssumedEconomical(t *testing.T) {
 	s := RoutingState{InputTokens: 10_000}
 	measured := model.ModelSpec{ID: "a", CallsPerTask: 1, Pricing: model.Pricing{Input: 1, Output: 1}}
 	unknown := model.ModelSpec{ID: "b", Pricing: model.Pricing{Input: 1, Output: 1}}
-	_, a := workEstimate(measured, s, 0)
-	_, b := workEstimate(unknown, s, 0)
+	_, a := workEstimate(measured, s, 0, "")
+	_, b := workEstimate(unknown, s, 0, "")
 	if b != a*unmeasuredCallsPerTask {
 		t.Fatalf("unmeasured seconds %.0f, want %.0f", b, a*unmeasuredCallsPerTask)
 	}
@@ -410,9 +411,22 @@ func TestFailuresArePricedAsRetries(t *testing.T) {
 	m := model.ModelSpec{ID: "x", CallsPerTask: 1, Pricing: model.Pricing{Input: 1, Output: 1}}
 	clean := RoutingState{InputTokens: 10_000, Performance: map[string]RoutePerformance{"x": {Calls: 1_000_000, LatencySeconds: 2}}}
 	flaky := RoutingState{InputTokens: 10_000, Performance: map[string]RoutePerformance{"x": {Calls: 1_000_000, LatencySeconds: 2, FailureRate: .2}}}
-	c1, s1 := workEstimate(m, clean, 0)
-	c2, s2 := workEstimate(m, flaky, 0)
+	c1, s1 := workEstimate(m, clean, 0, "")
+	c2, s2 := workEstimate(m, flaky, 0, "")
 	if c2 <= c1*1.2 || s2 <= s1*1.2 {
 		t.Fatalf("a 20%% failure rate must cost ~25%% more: cost %.5f vs %.5f, seconds %.1f vs %.1f", c2, c1, s2, s1)
+	}
+}
+
+func TestWorkEstimateUsesTheEffortsOwnStats(t *testing.T) {
+	m := model.ModelSpec{ID: "x", CallsPerTask: 1, Pricing: model.Pricing{Input: 1, Output: 1}}
+	s := RoutingState{InputTokens: 10_000, Performance: map[string]RoutePerformance{
+		"x":                                  {Calls: 1_000_000, LatencySeconds: 30, OutputTokensPerCall: 3000},
+		EffortStatsKey("x", model.EffortLow): {Calls: 1_000_000, LatencySeconds: 2, OutputTokensPerCall: 200},
+	}}
+	_, low := workEstimate(m, s, 0, model.EffortLow)
+	_, high := workEstimate(m, s, 0, model.EffortHigh)
+	if math.Abs(low-2*workHorizonCalls) > .1 || math.Abs(high-30*workHorizonCalls) > .1 {
+		t.Fatalf("low %.0fs, high %.0fs: a call at low effort must use the low-effort latency", low, high)
 	}
 }

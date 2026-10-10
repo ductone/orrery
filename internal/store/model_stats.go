@@ -177,3 +177,60 @@ func (s *Store) backfillModelStats() error {
 	}
 	return tx.Commit()
 }
+
+// backfillEffortStats fills the per-effort rows (route@effort) from recorded
+// usage events the first time they are needed: usage events carry the
+// effort, so latency and output per effort need not start from nothing.
+func (s *Store) backfillEffortStats() error {
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var count int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM model_stats WHERE route LIKE '%@%'`).Scan(&count); err != nil {
+		return err
+	}
+	if count != 0 {
+		return tx.Commit()
+	}
+	rows, err := tx.Query(`SELECT data_json,created_at FROM events WHERE type='usage.reported' AND data_json LIKE '%"effort"%' ORDER BY id`)
+	if err != nil {
+		return err
+	}
+	type call struct{ data, stamp string }
+	var calls []call
+	for rows.Next() {
+		var c call
+		if err := rows.Scan(&c.data, &c.stamp); err != nil {
+			rows.Close()
+			return err
+		}
+		calls = append(calls, c)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, c := range calls {
+		var data struct {
+			Model           string         `json:"model"`
+			Effort          string         `json:"effort"`
+			Latency         *time.Duration `json:"latency"`
+			OutputTokens    int            `json:"output_tokens"`
+			InputTokens     int            `json:"input_tokens"`
+			CacheReadTokens int            `json:"cache_read_tokens"`
+			Truncated       bool           `json:"truncated"`
+		}
+		if json.Unmarshal([]byte(c.data), &data) != nil || data.Model == "" || data.Effort == "" || data.Latency == nil {
+			continue
+		}
+		at, _ := time.Parse(time.RFC3339Nano, c.stamp)
+		if err := recordModelCall(ctx, tx, data.Model+"@"+data.Effort, *data.Latency, data.OutputTokens, data.Truncated, data.InputTokens, data.CacheReadTokens, at); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}

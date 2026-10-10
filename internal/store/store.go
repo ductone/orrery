@@ -100,6 +100,9 @@ func (s *Store) migrate() error {
 	if err := s.backfillModelStats(); err != nil {
 		return err
 	}
+	if err := s.backfillEffortStats(); err != nil {
+		return err
+	}
 	return s.backfillModelOutcomes()
 }
 

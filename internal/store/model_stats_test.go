@@ -95,3 +95,33 @@ func TestModelStatsBackfill(t *testing.T) {
 		s.Close()
 	}
 }
+
+func TestEffortStatsBackfillFromUsageEvents(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "o.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := s.CreateSession(ctx, Session{ID: "a", BudgetUSD: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddEvent(ctx, "a", "usage.reported", map[string]any{"model": "ramp/x", "effort": "low", "latency": 2 * time.Second, "output_tokens": 100, "input_tokens": 1000}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.backfillEffortStats(); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := s.ModelStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, st := range stats {
+		if st.Route == "ramp/x@low" && st.Calls == 1 && st.LatencySeconds == 2 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("stats = %+v", stats)
+	}
+}

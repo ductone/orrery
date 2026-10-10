@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,7 +35,7 @@ func TestMainLoopRecordsModelStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stats) != 1 || stats[0].Route != "openai/gpt-5.6-terra" || stats[0].Calls != 1 || stats[0].LatencySeconds <= 0 || stats[0].OutputTokensPerSecond <= 0 {
+	if len(stats) != 2 || stats[0].Route != "openai/gpt-5.6-terra" || !strings.HasPrefix(stats[1].Route, "openai/gpt-5.6-terra@") || stats[0].Calls != 1 || stats[0].LatencySeconds <= 0 || stats[0].OutputTokensPerSecond <= 0 {
 		t.Fatalf("stats=%+v", stats)
 	}
 }

@@ -286,7 +286,8 @@ func (p *V1) score(ctx context.Context, s RoutingState, incumbentWarm, reviewHas
 				break
 			}
 		}
-		c.WorkCostUSD, c.WorkSeconds = workEstimate(m, s, warmTokens)
+		c.Effort = effortFor(m, s)
+		c.WorkCostUSD, c.WorkSeconds = workEstimate(m, s, warmTokens, c.Effort)
 		c.TimeCostUSD = c.WorkSeconds / 60 * p.cfg.TimeValue.For(s.Background)
 		// Each candidate's work cost already prices its next call at its actual
 		// cache warmth, so a switch's cold first call is in the estimate. Only a
@@ -296,10 +297,14 @@ func (p *V1) score(ctx context.Context, s RoutingState, incumbentWarm, reviewHas
 			c.SwitchUSD = toolContinuationSwitchUSD
 		}
 		c.Score = -(c.WorkCostUSD + c.TimeCostUSD + c.SwitchUSD)
-		c.Effort = effortFor(m, s)
 		candidates = append(candidates, c)
 	}
 	return candidates
+}
+
+// EffortStatsKey is the model_stats key for a route's calls at one effort.
+func EffortStatsKey(route string, effort model.Effort) string {
+	return route + "@" + string(effort)
 }
 
 func anyValid(cs []Candidate) bool {
@@ -345,10 +350,12 @@ const (
 	outputTokensPrior         = 1000
 	cacheReadRatioPrior       = .7
 	latencySecondsPrior       = 10
-	// workHorizonCalls is the unit of work routing prices: the calls a
-	// reference model typically takes for a task (about 4 in the 2026-10-09
-	// sweep). A switch's cold first call is amortised over it.
-	workHorizonCalls = 4
+	// workHorizonCalls is the unit of work routing prices, in calls of a
+	// reference model. A switch's cold first call is amortised over it, so it
+	// must be about as long as the work that follows a decision: with four
+	// calls a warm frontier model looked cheaper than a cold efficient one
+	// that costs half as much per task.
+	workHorizonCalls = 10
 	// unmeasuredCallsPerTask is assumed for a model no sweep has measured. The
 	// measured models other than Claude took 2-2.7 times Claude's calls, so an
 	// unknown model is not assumed to be as economical as the best one.
@@ -360,24 +367,32 @@ const (
 // then the rest of the calls m typically takes for that work, each at its
 // typical output and cache reuse. A model that needs more steps pays for
 // re-sending the context each time.
-func workEstimate(m model.ModelSpec, s RoutingState, warmTokens int) (float64, float64) {
+func workEstimate(m model.ModelSpec, s RoutingState, warmTokens int, effort model.Effort) (float64, float64) {
 	perf := s.Performance[m.ID]
 	weight := float64(perf.Calls) / float64(perf.Calls+performanceShrinkCalls)
-	blend := func(observed, prior float64) float64 {
+	blend := func(observed, prior float64, w float64) float64 {
 		if observed <= 0 {
 			return prior
 		}
-		return weight*observed + (1-weight)*prior
+		return w*observed + (1-w)*prior
 	}
-	output := int(blend(perf.OutputTokensPerCall, outputTokensPrior))
-	cacheRatio := blend(perf.CacheReadRatio, cacheReadRatioPrior)
-	latency := blend(perf.LatencySeconds, latencySecondsPrior)
+	// The route's own figures first, shrunk toward priors; then the figures
+	// for the effort the call would run at, shrunk toward the route's.
+	output := blend(perf.OutputTokensPerCall, outputTokensPrior, weight)
+	cacheRatio := blend(perf.CacheReadRatio, cacheReadRatioPrior, weight)
+	latency := blend(perf.LatencySeconds, latencySecondsPrior, weight)
+	if at, ok := s.Performance[EffortStatsKey(m.ID, effort)]; ok && effort != "" {
+		w := float64(at.Calls) / float64(at.Calls+performanceShrinkCalls)
+		output = blend(at.OutputTokensPerCall, output, w)
+		cacheRatio = blend(at.CacheReadRatio, cacheRatio, w)
+		latency = blend(at.LatencySeconds, latency, w)
+	}
 	calls := m.CallsPerTask
 	if calls <= 0 {
 		calls = unmeasuredCallsPerTask
 	}
-	next := m.Pricing.Estimate(s.InputTokens, output, warmTokens)
-	steady := m.Pricing.Estimate(s.InputTokens, output, int(cacheRatio*float64(s.InputTokens)))
+	next := m.Pricing.Estimate(s.InputTokens, int(output), warmTokens)
+	steady := m.Pricing.Estimate(s.InputTokens, int(output), int(cacheRatio*float64(s.InputTokens)))
 	total := workHorizonCalls * calls
 	// A failed call is retried: price the expected retries.
 	retries := 1 / (1 - math.Min(.5, weight*perf.FailureRate))
