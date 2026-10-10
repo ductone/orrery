@@ -363,7 +363,7 @@ func TestTurnRetriesThroughDroppedConnections(t *testing.T) {
 	retries := 0
 	es, _ := e.store.EventsAfter(context.Background(), sid, 0)
 	for _, ev := range es {
-		if ev.Type == "routing.retry" && strings.Contains(string(ev.Data), `"transport":true`) {
+		if ev.Type == "provider.error" && strings.Contains(string(ev.Data), `"class":"transport"`) && strings.Contains(string(ev.Data), `"action":"retry"`) {
 			retries++
 		}
 		if ev.Type == "limit.reached" {
@@ -418,7 +418,7 @@ func TestRefusedModelIsRoutedAround(t *testing.T) {
 	var refusedEvent bool
 	es, _ := e.store.EventsAfter(context.Background(), sid, 0)
 	for _, ev := range es {
-		refusedEvent = refusedEvent || ev.Type == "routing.model_refused" && strings.Contains(string(ev.Data), `"remembered":true`)
+		refusedEvent = refusedEvent || ev.Type == "provider.error" && strings.Contains(string(ev.Data), `"class":"refused"`) && strings.Contains(string(ev.Data), `"action":"reroute"`)
 	}
 	if !refusedEvent {
 		t.Fatal("the refusal must be recorded")
@@ -470,7 +470,7 @@ func TestRejectedRequestIsRoutedAround(t *testing.T) {
 	var rejectedEvent bool
 	es, _ := e.store.EventsAfter(context.Background(), sid, 0)
 	for _, ev := range es {
-		rejectedEvent = rejectedEvent || ev.Type == "routing.model_rejected"
+		rejectedEvent = rejectedEvent || ev.Type == "provider.error" && strings.Contains(string(ev.Data), `"class":"rejected"`)
 		if ev.Type == "limit.reached" {
 			t.Fatalf("a model rejecting the request must not ask the person: %s", ev.Data)
 		}

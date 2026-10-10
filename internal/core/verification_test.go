@@ -130,4 +130,3 @@ func TestReviewWithNoRunChangesPasses(t *testing.T) {
 		t.Fatalf("passed=%v text=%s err=%v", passed, text, err)
 	}
 }
-

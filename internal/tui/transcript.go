@@ -167,13 +167,6 @@ func (s *state) apply(ev Event) []block {
 			b.tone = toneWarn
 		}
 		return []block{b}
-	case "routing.retry":
-		var d struct {
-			Model   string
-			Attempt int
-		}
-		_ = json.Unmarshal(ev.Data, &d)
-		return []block{notice("↻", toneWarn, "retrying %s (attempt %d)", shortModel(d.Model), d.Attempt)}
 	case "assistant.message":
 		var d struct {
 			Message provider.Message `json:"message"`
@@ -356,10 +349,15 @@ func (s *state) apply(ev Event) []block {
 		return []block{notice("↩", toneWarn, "%s", text)}
 	case "provider.error":
 		var d struct {
-			Model string `json:"model"`
-			Error string `json:"error"`
+			Model   string `json:"model"`
+			Error   string `json:"error"`
+			Action  string `json:"action"`
+			Attempt int    `json:"attempt"`
 		}
 		_ = json.Unmarshal(ev.Data, &d)
+		if d.Action == "retry" {
+			return []block{notice("↻", toneWarn, "%s: %s; retrying (attempt %d)", shortModel(d.Model), d.Error, d.Attempt)}
+		}
 		if d.Model != "" {
 			return []block{notice("✗", toneError, "%s: %s", shortModel(d.Model), d.Error)}
 		}

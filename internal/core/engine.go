@@ -962,148 +962,93 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			return provider.Request{System: system, Memory: e.memoryForRequest(runtimeCfg, sid), DurableSpec: durableSpec(s), Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the durable summary.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: definitions, NoToolCalls: mode.noCalls, MaxOutput: min(outputCap, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
 		}
 		var resp provider.Response
-		failed := []string{}
-		modelAttempts := 0
-		malformedAttempts := 0
+		// A failed call is classified once and handled by its class's entry in
+		// failurePolicy: retry the same model (with a hint or backoff), or
+		// reroute, dropping or excluding the model as the class says.
+		strikes := map[string]int{}
 		credentialWaits := 0
 		// transportSince is when this turn's run of network failures began.
 		var transportSince time.Time
-		transportRetries := 0
 		for {
 			resp, err = runtimeProviders.CompleteOne(ctx, decision, build)
 			if err == nil {
 				break
 			}
-			e.emit(ctx, sid, "provider.error", map[string]any{"model": decision.Model.ID, "error": err.Error()}, emit)
-			_ = e.store.RecordModelFailure(ctx, decision.Model.ID, "provider_error")
-			_ = e.store.UpdateLatestTurnRoutingOutcome(ctx, sid, state.Turn, map[string]any{"provider_error": err.Error(), "model": decision.Model.ID})
-			// A malformed tool call is a recoverable model/protocol error, not a
-			// session failure: feed it back and let the same model retry with a
-			// smaller valid call. Only fail after repeated malformed responses.
-			if provider.IsMalformedToolArguments(err) {
-				malformedAttempts++
-				e.emit(ctx, sid, "completion.rejected", map[string]any{"model": decision.Model.ID, "reason": "malformed tool-call arguments", "attempt": malformedAttempts}, emit)
-				_ = e.store.RecordModelFailure(ctx, decision.Model.ID, "malformed")
-				if malformedAttempts >= 3 {
-					// This model keeps truncating its calls; another may not.
-					e.dropModel(ctx, sid, decision.Model.ID, "malformed tool-call arguments three times", progress, emit)
-					failed = append(failed, decision.Model.ID)
-					state.ExcludeModels = append(state.ExcludeModels, decision.Model.ID)
-					state.AvailableModels = runtimeProviders.AvailableIDs()
-					decision, why, err = runtimePolicy.Decide(ctx, state)
-					if err != nil {
-						return e.routeFailureAfter(sid, parentJob, err, progress, outcome, emit)
-					}
-					malformedAttempts, modelAttempts = 0, 0
-					e.emit(ctx, sid, "routing.fallback", map[string]any{"decision": decision, "explanation": why}, emit)
-					continue
-				}
-				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Your last tool call's arguments were not valid JSON (usually a truncated response). Do not retry the same large call. Issue one small, complete tool call at a time with valid JSON arguments."})
-				state.CurrentModel = decision.Model.ID
-				continue
-			}
-			// A provider refusing this model for the account (no access, a
-			// provider key the account lacks, an unknown model) says nothing
-			// about the task: route to another model. The registry has
-			// already taken the model out of routing. A provider rejecting
-			// this request for this model alone (a 400 over the history it
-			// was sent) is routed around too, for this turn only: another
-			// model usually serves the same history.
-			refused, persistent := provider.ModelRefusal(err)
-			rejected := !refused && modelRejected(err)
-			if refused || rejected {
-				failure := error(nil)
-				if refused {
-					e.emit(ctx, sid, "routing.model_refused", map[string]any{"model": decision.Model.ID, "remembered": persistent, "error": err.Error()}, emit)
-				} else {
-					e.emit(ctx, sid, "routing.model_rejected", map[string]any{"model": decision.Model.ID, "error": err.Error()}, emit)
-					// With nothing left, say why the model was set aside
-					// rather than that nothing is compatible.
-					failure = err
-				}
-				failed = append(failed, decision.Model.ID)
-				state.ExcludeModels = failed
-				state.AvailableModels = runtimeProviders.AvailableIDs()
-				state.CurrentModel = decision.Model.ID
-				decision, why, err = runtimePolicy.Decide(ctx, state)
-				if err != nil {
-					if failure == nil {
-						failure = err
-					}
-					return e.routeFailureAfter(sid, parentJob, failure, progress, outcome, emit)
-				}
-				modelAttempts = 0
-				e.emit(ctx, sid, "routing.fallback", map[string]any{"decision": decision, "explanation": why}, emit)
-				continue
-			}
-			if !provider.IsRetryable(err) {
-				return e.routeFailureAfter(sid, parentJob, err, progress, outcome, emit)
-			}
-			// A network failure says nothing about the model or the request:
-			// retry the same decision with backoff until the network has been
-			// failing for maxTransportWait, then reroute like any other
-			// retryable error (and ask once nothing is left).
-			if provider.IsTransportError(err) && ctx.Err() == nil {
+			class := classifyCallError(err, runtimeProviders, decision.Model)
+			policy := failurePolicy[class]
+			key := decision.Model.ID + "|" + string(class)
+			strikes[key]++
+			attempt := strikes[key]
+			retry := false
+			switch {
+			case class == failFatal:
+			case policy.window > 0:
 				if transportSince.IsZero() {
 					transportSince = time.Now()
 				}
-				if time.Since(transportSince) < maxTransportWait {
-					transportRetries++
-					e.emit(ctx, sid, "routing.retry", map[string]any{"model": decision.Model.ID, "attempt": transportRetries, "transport": true, "failing_for": time.Since(transportSince).Round(time.Second).String()}, emit)
+				retry = ctx.Err() == nil && time.Since(transportSince) < policy.window
+			default:
+				retry = attempt <= policy.retries
+			}
+			action := "reroute"
+			switch {
+			case class == failFatal:
+				action = "fail"
+			case retry:
+				action = "retry"
+			case policy.dropForRun:
+				action = "drop"
+			}
+			e.emit(ctx, sid, "provider.error", map[string]any{"model": decision.Model.ID, "error": err.Error(), "class": class, "action": action, "attempt": attempt}, emit)
+			kind := "provider_error"
+			if class == failMalformed {
+				kind = "malformed"
+			}
+			_ = e.store.RecordModelFailure(ctx, decision.Model.ID, kind)
+			_ = e.store.UpdateLatestTurnRoutingOutcome(ctx, sid, state.Turn, map[string]any{"provider_error": err.Error(), "model": decision.Model.ID})
+			if class == failFatal {
+				return e.routeFailureAfter(sid, parentJob, err, progress, outcome, emit)
+			}
+			state.CurrentModel = decision.Model.ID
+			if retry {
+				if policy.hint != "" {
+					_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: policy.hint})
+				}
+				if policy.backoff {
 					select {
 					case <-ctx.Done():
 						return e.finish(sid, agentproto.TaskResult{Status: agentproto.Cancelled, Outcome: outcome, Error: ctx.Err().Error()}, emit)
-					case <-time.After(retryDelay(transportRetries)):
+					case <-time.After(retryDelay(attempt)):
 					}
-					state.CurrentModel = decision.Model.ID
-					continue
 				}
+				continue
 			}
-			// A cooling route says nothing about sibling models on the key.
-			// Reroute immediately; if only cooling blocks compatibility, wait.
-			if errors.Is(err, provider.ErrCredentialsBackoff) || !runtimeProviders.ReadyAt(decision.Model).IsZero() {
-				state.AvailableModels = runtimeProviders.AvailableIDs()
-				state.CurrentModel = decision.Model.ID
-				decision, why, err = runtimePolicy.Decide(ctx, state)
-				if err != nil && credentialWaits < maxCredentialWaitsPerTurn {
-					credentialWaits++
-					decision, why, err = e.decideWaiting(ctx, sid, runtimePolicy, runtimeProviders, &state, emit)
-				}
-				if err != nil {
+			callErr := err
+			if policy.dropForRun {
+				e.dropModel(ctx, sid, decision.Model.ID, string(class)+" failures", progress, emit)
+			}
+			if class != failCooling {
+				state.ExcludeModels = append(state.ExcludeModels, decision.Model.ID)
+			}
+			state.AvailableModels = runtimeProviders.AvailableIDs()
+			decision, why, err = runtimePolicy.Decide(ctx, state)
+			if err != nil && policy.wait && credentialWaits < maxCredentialWaitsPerTurn {
+				credentialWaits++
+				decision, why, err = e.decideWaiting(ctx, sid, runtimePolicy, runtimeProviders, &state, emit)
+			}
+			if err != nil {
+				switch class {
+				case failRejected:
+					// With nothing left, say why the model was set aside rather
+					// than that nothing is compatible.
+					err = callErr
+				case failCooling:
 					if cooling := runtimeProviders.CoolingSummary(); cooling != "" {
 						err = fmt.Errorf("routes cooling down: %s (%w)", cooling, err)
 					}
-					return e.routeFailureAfter(sid, parentJob, err, progress, outcome, emit)
 				}
-				modelAttempts = 0
-				outputCap = capFor(decision.Model.ID)
-				e.emit(ctx, sid, "routing.fallback", map[string]any{"decision": decision, "explanation": why}, emit)
-				continue
-			}
-			// Retry the same model a bounded number of times with backoff before
-			// rerouting: a transient provider error does not mean the model is
-			// wrong. modelAttempts is per-model so a rerouted model gets a fresh
-			// budget.
-			modelAttempts++
-			select {
-			case <-ctx.Done():
-				return e.finish(sid, agentproto.TaskResult{Status: agentproto.Cancelled, Outcome: outcome, Error: ctx.Err().Error()}, emit)
-			case <-time.After(retryDelay(modelAttempts)):
-			}
-			if modelAttempts <= 2 {
-				state.CurrentModel = decision.Model.ID
-				e.emit(ctx, sid, "routing.retry", map[string]any{"model": decision.Model.ID, "attempt": modelAttempts}, emit)
-				continue
-			}
-			failed = append(failed, decision.Model.ID)
-			state.ExcludeModels = failed
-			state.AvailableModels = runtimeProviders.AvailableIDs()
-			state.CurrentModel = decision.Model.ID
-			decision, why, err = runtimePolicy.Decide(ctx, state)
-			if err != nil {
 				return e.routeFailureAfter(sid, parentJob, err, progress, outcome, emit)
 			}
-			modelAttempts = 0
 			outputCap = capFor(decision.Model.ID)
 			e.emit(ctx, sid, "routing.fallback", map[string]any{"decision": decision, "explanation": why}, emit)
 		}
