@@ -808,6 +808,9 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		e.drainHandoffs(context.Background(), sid)
 	}()
 	emptyCompletions := 0
+	// turnExcluded holds models that burned the whole output cap reasoning on
+	// the current turn; the retry routes around them until a turn completes.
+	var turnExcluded []string
 	// outputCap bounds each response. It rises when a response is cut off at
 	// the limit, since a truncated reply is a budget problem, not a model one.
 	// A raise is remembered per model for the rest of the run: a model that
@@ -902,6 +905,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			}
 		}
 		state.ExcludeModels = append(state.ExcludeModels, progress.excluded...)
+		state.ExcludeModels = append(state.ExcludeModels, turnExcluded...)
 		applyHints(&state, req.Hints)
 		state.Stall.Deescalated = stallEscalated
 		decision, why, err := e.decideWaiting(ctx, sid, runtimePolicy, runtimeProviders, &state, emit)
@@ -1185,11 +1189,30 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		e.emit(ctx, sid, "usage.reported", map[string]any{"model": decision.Model.ID, "job_id": parentJob, "input_tokens": resp.Usage.InputTokens, "output_tokens": resp.Usage.OutputTokens, "cache_read_tokens": resp.Usage.CacheReadTokens, "cache_write_tokens": resp.Usage.CacheWriteTokens, "cost_usd": cost, "latency": resp.Latency, "effort": decision.Effort, "stop_reason": resp.StopReason, "truncated": resp.Truncated, "output_cap": min(outputCap, decision.Model.MaxOutput)}, emit)
 		_ = e.store.RecordModelCall(ctx, decision.Model.ID, resp.Latency, resp.Usage.OutputTokens, resp.Truncated, resp.Usage.InputTokens, resp.Usage.CacheReadTokens)
 		turnOutcome := map[string]any{"tokens": resp.Usage.InputTokens + resp.Usage.OutputTokens, "input_tokens": resp.Usage.InputTokens, "output_tokens": resp.Usage.OutputTokens, "cache_read_tokens": resp.Usage.CacheReadTokens, "cache_write_tokens": resp.Usage.CacheWriteTokens, "latency": resp.Latency, "cost_usd": cost, "model": decision.Model.ID}
+		if !(resp.Truncated && emptyFinalResponse(resp.Message)) {
+			turnExcluded = nil
+		}
 		if len(resp.Message.ToolCalls) == 0 {
 			if emptyFinalResponse(resp.Message) {
-				// A reply cut off at the output limit ran out of room, usually in
-				// reasoning. Retry with more room rather than scolding the model;
-				// the nudge cannot help and the same limit would cut it off again.
+				// A reply cut off at the output limit is never answered with the
+				// empty-response nudge; the same limit would cut it off again.
+				// A reply that spent the whole cap reasoning, with no text and no
+				// call, says the turn is hard for this model, not that it needs
+				// more room: escalate to another model at the same cap. Only when
+				// no other model is available does the cap rise instead.
+				if resp.Truncated {
+					_ = e.store.RecordModelFailure(ctx, decision.Model.ID, "empty")
+					probe := state
+					probe.ExcludeModels = append(append([]string(nil), state.ExcludeModels...), decision.Model.ID)
+					probe.AvailableModels = runtimeProviders.AvailableIDs()
+					probe.CurrentModel = decision.Model.ID
+					if next, nextWhy, derr := runtimePolicy.Decide(ctx, probe); derr == nil && next.Model.ID != decision.Model.ID {
+						turnExcluded = append(turnExcluded, decision.Model.ID)
+						outputCaps[next.Model.ID] = max(capFor(next.Model.ID), outputCap)
+						e.emit(ctx, sid, "routing.escalated", map[string]any{"from": decision.Model.ID, "decision": next, "explanation": nextWhy, "reason": "reasoning-only truncation", "stop_reason": resp.StopReason, "output_cap": outputCap}, emit)
+						continue
+					}
+				}
 				if resp.Truncated && outputCap < maxOutputCap && outputCap < decision.Model.MaxOutput {
 					outputCap = min(outputCap*2, maxOutputCap)
 					outputCaps[decision.Model.ID] = outputCap
@@ -1198,7 +1221,9 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				}
 				emptyCompletions++
 				e.emit(ctx, sid, "completion.rejected", map[string]any{"model": decision.Model.ID, "reason": "empty assistant response", "attempt": emptyCompletions, "stop_reason": resp.StopReason, "truncated": resp.Truncated, "output_kinds": resp.OutputKinds}, emit)
-				_ = e.store.RecordModelFailure(ctx, decision.Model.ID, "empty")
+				if !resp.Truncated {
+					_ = e.store.RecordModelFailure(ctx, decision.Model.ID, "empty")
+				}
 				if emptyCompletions >= 3 {
 					e.dropModel(ctx, sid, decision.Model.ID, fmt.Sprintf("three empty final responses (last stop reason %q, output %v)", resp.StopReason, resp.OutputKinds), progress, emit)
 					emptyCompletions = 0
@@ -1209,6 +1234,14 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				}
 				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: nudge})
 				stall.HumanInterrupt = true
+				continue
+			}
+			// Partial text cut off at the limit is a genuine budget problem: give
+			// the same model more room rather than accepting a clipped result.
+			if resp.Truncated && outputCap < maxOutputCap && outputCap < decision.Model.MaxOutput {
+				outputCap = min(outputCap*2, maxOutputCap)
+				outputCaps[decision.Model.ID] = outputCap
+				e.emit(ctx, sid, "completion.rejected", map[string]any{"model": decision.Model.ID, "reason": "response truncated at the output limit", "stop_reason": resp.StopReason, "output_kinds": resp.OutputKinds, "output_cap": outputCap}, emit)
 				continue
 			}
 			// Before paying for verification or review, check that the answer
