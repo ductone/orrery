@@ -20,11 +20,10 @@ type Hunk struct {
 	Anchor string `json:"anchor"`
 	// Line is the anchor's line number as the latest read showed it. It is
 	// optional, and only consulted when the anchor matches more than one line.
-	Line                  int      `json:"line,omitempty"`
-	Offset                int      `json:"offset"`
-	Delete                int      `json:"delete"`
-	Insert                []string `json:"insert"`
-	AllowStructuralChange bool     `json:"allow_structural_change,omitempty"`
+	Line   int      `json:"line,omitempty"`
+	Offset int      `json:"offset"`
+	Delete int      `json:"delete"`
+	Insert []string `json:"insert"`
 }
 type Patch struct {
 	Path  string `json:"path"`
@@ -260,15 +259,6 @@ func ApplyWithMode(p Patch, mode AnchorMode) (*ApplyResult, error) {
 		// Exactly one valid target - use it (auto-rebase if needed)
 		at = validOccurrences[0]
 		at += h.Offset
-
-		if !h.AllowStructuralChange {
-			for _, deleted := range raw[at : at+h.Delete] {
-				decl := declarationKey(deleted)
-				if decl != "" && !containsDeclaration(h.Insert, decl) {
-					return nil, fmt.Errorf("hashline: refusing to delete declaration %q without preserving it; set allow_structural_change=true for intentional removal", decl)
-				}
-			}
-		}
 		loc = append(loc, located{at, h})
 	}
 	// Hunks resolve against the same snapshot, so their order in the patch
@@ -310,30 +300,6 @@ func ApplyWithMode(p Patch, mode AnchorMode) (*ApplyResult, error) {
 	}
 	newLines := hashes(raw, mode)
 	return &ApplyResult{Lines: newLines, Affected: affected}, nil
-}
-
-func declarationKey(line string) string {
-	fields := strings.Fields(strings.TrimSpace(line))
-	if len(fields) < 2 {
-		return ""
-	}
-	if fields[0] == "export" && len(fields) >= 3 {
-		fields = fields[1:]
-	}
-	switch fields[0] {
-	case "func", "type", "class", "interface", "const", "let", "var", "function":
-		return fields[0] + " " + strings.Trim(fields[1], "({[:=,")
-	}
-	return ""
-}
-
-func containsDeclaration(lines []string, key string) bool {
-	for _, line := range lines {
-		if declarationKey(line) == key {
-			return true
-		}
-	}
-	return false
 }
 func window(lines []Line, at int) []Line {
 	lo := max(0, at-2)

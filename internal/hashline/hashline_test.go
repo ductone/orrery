@@ -34,17 +34,13 @@ func TestApplyAndStale(t *testing.T) {
 	}
 }
 
-func TestApplyRejectsAccidentalDeclarationDeletion(t *testing.T) {
+func TestApplyAllowsDeclarationDeletion(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "x.ts")
 	if err := os.WriteFile(p, []byte("const theme = makeTheme()\nuse(theme)\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	ls, _ := Read(p)
-	_, err := Apply(Patch{Path: p, Hunks: []Hunk{{Anchor: ls[0].Hash, Delete: 1, Insert: []string{"use(theme)"}}}})
-	if err == nil || !strings.Contains(err.Error(), "refusing to delete declaration") {
-		t.Fatalf("error=%v", err)
-	}
-	if _, err := Apply(Patch{Path: p, Hunks: []Hunk{{Anchor: ls[0].Hash, Delete: 1, Insert: nil, AllowStructuralChange: true}}}); err != nil {
+	if _, err := Apply(Patch{Path: p, Hunks: []Hunk{{Anchor: ls[0].Hash, Delete: 1, Insert: []string{"use(theme)"}}}}); err != nil {
 		t.Fatal(err)
 	}
 }

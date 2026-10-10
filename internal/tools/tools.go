@@ -140,7 +140,7 @@ func editDescription(d anchorDialect) string {
 	if d == anchorText {
 		return "Apply exact-text anchor hunks. Copy the complete line text from the latest read into anchor; repeated identical lines are ambiguous. For a new file use an empty anchor with delete=0."
 	}
-	return "Apply content-anchored hashline hunks. You MUST read the exact target window immediately before editing and copy its latest 8-character hash into anchor. To create a new file, use anchor e3b0c442 with delete=0. Identical lines share a hash; when an anchor is ambiguous, also pass its line number from the read as line. Re-read after compaction or a stale error. Structural declaration deletion is rejected unless explicitly allowed."
+	return "Apply content-anchored hashline hunks. You MUST read the exact target window immediately before editing and copy its latest 8-character hash into anchor. To create a new file, use anchor e3b0c442 with delete=0. Identical lines share a hash; when an anchor is ambiguous, also pass its line number from the read as line. Re-read after compaction or a stale error."
 }
 
 func readDescription(d anchorDialect) string {
@@ -174,7 +174,7 @@ func NewWithStateDialect(root string, state *SessionState, dialect string) *Regi
 	if r.dialect == anchorText {
 		anchor = map[string]any{"type": "string", "description": "Complete exact line text copied from the latest read result. Never use a line number or placeholder."}
 	}
-	r.add("edit", editDescription(r.dialect), schema(map[string]any{"path": str(), "hunks": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"anchor": anchor, "line": map[string]any{"type": "integer", "description": "The anchor's line number from the latest read. Needed only when identical lines share a hash."}, "offset": num(), "delete": num(), "insert": map[string]any{"type": "array", "items": str()}, "allow_structural_change": boolean()}, "required": []string{"anchor", "delete", "insert"}, "additionalProperties": false}}}, "path", "hunks"), r.edit)
+	r.add("edit", editDescription(r.dialect), schema(map[string]any{"path": str(), "hunks": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"anchor": anchor, "line": map[string]any{"type": "integer", "description": "The anchor's line number from the latest read. Needed only when identical lines share a hash."}, "offset": num(), "delete": num(), "insert": map[string]any{"type": "array", "items": str()}}, "required": []string{"anchor", "delete", "insert"}, "additionalProperties": false}}}, "path", "hunks"), r.edit)
 	r.add("exec", "Run a shell command in the workspace. Use background=true for long jobs.", schema(map[string]any{"command": str(), "background": boolean(), "timeout_seconds": num()}, "command"), r.run)
 	r.add("job", "Wait for, cancel, or read logs from an exec command, or wait for (or check on) a worker job started by spawn. Accepts this session's cmd-… IDs, including the basename without .log from foreground exec log paths.", schema(map[string]any{"id": str(), "action": map[string]any{"type": "string", "enum": []string{"wait", "cancel", "logs"}}}, "id", "action"), r.job)
 	return r
