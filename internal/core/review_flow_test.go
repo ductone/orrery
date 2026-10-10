@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -223,7 +222,7 @@ func stateFile(state map[string]any) string {
 }
 func TestReviewClassifierSeesTheLatestRequestAndPlan(t *testing.T) {
 	h := newReviewHarness(t, true)
-	h.write("internal/feature.go", "package internal\n")
+	h.write("docs/export.md", "# Export\n\nHow the export works.\n")
 	ctx := context.Background()
 	if _, err := h.st.AcceptMessage(ctx, h.sid, "r1", "t1", "message", "h1", provider.Message{Role: "user", Content: "Rename the catalog export"}, nil); err != nil {
 		t.Fatal(err)
@@ -322,51 +321,6 @@ func TestReviewWithoutJevReviewsEverythingButAssets(t *testing.T) {
 	}
 	if h.jevCalls.Load() != 0 {
 		t.Fatal("no Jev calls without jev.review")
-	}
-}
-
-func TestReviewDowngradesFindingsThatAreNotBugs(t *testing.T) {
-	h := newReviewHarness(t, true)
-	h.write("internal/feature.go", "package internal\n\nfunc Feature(p *int) int { return *p }\n")
-	h.jev = func(state map[string]any, q string) float64 {
-		if q == "real_bug" {
-			if strings.Contains(fmt.Sprint(state["finding"]), "nil") {
-				return 0.9
-			}
-			return 0.05
-		}
-		return 0.3
-	}
-	h.reviewer = func(string, int) map[string]any {
-		return verdictJSON(false, "feature.go: Feature dereferences p without a nil check", "consider renaming p to ptr")
-	}
-	passed, text, err := h.run()
-	if err != nil || passed {
-		t.Fatalf("a real finding still fails the review: passed=%v err=%v", passed, err)
-	}
-	var out struct {
-		Findings []string `json:"findings"`
-		Notes    []string `json:"notes"`
-	}
-	_ = json.Unmarshal([]byte(text), &out)
-	if len(out.Findings) != 1 || !strings.Contains(out.Findings[0], "nil check") || len(out.Notes) != 1 || !strings.Contains(out.Notes[0], "renaming") {
-		t.Fatalf("review = %s", text)
-	}
-}
-
-func TestReviewPassesWhenEveryFindingIsNoise(t *testing.T) {
-	h := newReviewHarness(t, true)
-	h.write("internal/feature.go", "package internal\n")
-	h.jev = func(_ map[string]any, q string) float64 {
-		if q == "real_bug" {
-			return 0.02
-		}
-		return 0.3
-	}
-	h.reviewer = func(string, int) map[string]any { return verdictJSON(false, "add a doc comment") }
-	passed, text, err := h.run()
-	if err != nil || !passed || !strings.Contains(text, "downgraded finding") {
-		t.Fatalf("passed=%v text=%s err=%v", passed, text, err)
 	}
 }
 

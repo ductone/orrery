@@ -141,14 +141,9 @@ func TestClassify(t *testing.T) {
 
 // fakeClassifier answers from maps keyed by path or finding text.
 type fakeClassifier struct {
-	needs    map[string]float64
-	bug      float64
-	risk     float64
-	fileBugs map[string]float64
-	findings map[string]float64
-	err      error
-	riskErr  error
-	calls    atomic.Int32
+	needs map[string]float64
+	err   error
+	calls atomic.Int32
 }
 
 func (f *fakeClassifier) NeedsReview(_ context.Context, _ string, files []File) ([]float64, error) {
@@ -159,35 +154,6 @@ func (f *fakeClassifier) NeedsReview(_ context.Context, _ string, files []File) 
 	out := make([]float64, len(files))
 	for i, file := range files {
 		out[i] = f.needs[file.Path]
-	}
-	return out, nil
-}
-
-func (f *fakeClassifier) Risk(context.Context, string, []File) (float64, float64, error) {
-	if f.riskErr != nil {
-		return 0, 0, f.riskErr
-	}
-	return f.bug, f.risk, nil
-}
-
-func (f *fakeClassifier) FileBugs(_ context.Context, _ string, files []File) ([]float64, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	out := make([]float64, len(files))
-	for i, file := range files {
-		out[i] = f.fileBugs[file.Path]
-	}
-	return out, nil
-}
-
-func (f *fakeClassifier) Findings(_ context.Context, _ string, findings []Finding) ([]float64, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	out := make([]float64, len(findings))
-	for i, finding := range findings {
-		out[i] = f.findings[finding.Text]
 	}
 	return out, nil
 }
@@ -207,7 +173,7 @@ func decision(p Plan, path string) Decision {
 
 func TestBuildTriagesByClassAndClassifier(t *testing.T) {
 	files := []File{file("Makefile", 300), file("docs/rfc.md", 3000), file("ci/pipeline.yaml", 600), file("logo.svg", 9000), file("package-lock.json", 9000), {Path: "notes.txt", Status: Deleted, Patch: "-x\n"}}
-	c := &fakeClassifier{needs: map[string]float64{"docs/rfc.md": 0.05, "ci/pipeline.yaml": 0.8}, bug: 0.1, risk: 0.2}
+	c := &fakeClassifier{needs: map[string]float64{"docs/rfc.md": 0.05, "ci/pipeline.yaml": 0.8}}
 	plan := Build(context.Background(), files, "task", c, Options{})
 	if plan.Skip || len(plan.Shards) != 1 {
 		t.Fatalf("plan = %+v", plan)
@@ -224,8 +190,8 @@ func TestBuildTriagesByClassAndClassifier(t *testing.T) {
 	if c.calls.Load() != 1 {
 		t.Errorf("classifier calls = %d", c.calls.Load())
 	}
-	if plan.Turns != baseTurns || plan.Bug == nil || *plan.Bug != 0.1 {
-		t.Errorf("turns=%d bug=%v: risk is recorded but does not size the review", plan.Turns, plan.Bug)
+	if plan.Turns != baseTurns {
+		t.Errorf("turns=%d", plan.Turns)
 	}
 	spec := plan.Spec(0)
 	for _, want := range []string{"FILES IN THIS REVIEW", "- Makefile (modified, code", "ALSO CHANGED, NOT SHOWN", "logo.svg (modified, asset", "docs/rfc.md", "DIFF\ndiff --git a/Makefile"} {
@@ -243,13 +209,10 @@ func TestBuildWithoutClassifierReviewsEverythingNonTrivial(t *testing.T) {
 	if !decision(plan, "docs/rfc.md").Included || decision(plan, "logo.svg").Included {
 		t.Fatalf("plan = %+v", plan.Decisions)
 	}
-	if plan.Bug != nil {
-		t.Fatal("without a classifier there is no risk score")
-	}
 }
 
 func TestBuildFallsBackWhenTheClassifierFails(t *testing.T) {
-	c := &fakeClassifier{err: errors.New("jev: HTTP 529"), riskErr: errors.New("jev: HTTP 529")}
+	c := &fakeClassifier{err: errors.New("jev: HTTP 529")}
 	plan := Build(context.Background(), []File{file("docs/rfc.md", 300)}, "task", c, Options{})
 	if !decision(plan, "docs/rfc.md").Included || !strings.Contains(plan.ClassifierError, "529") {
 		t.Fatalf("plan = %+v", plan)
@@ -265,7 +228,7 @@ func TestBuildSkipsWhenNothingNeedsReview(t *testing.T) {
 }
 
 func TestBuildNeverSkipsCode(t *testing.T) {
-	c := &fakeClassifier{bug: 0.01, risk: 0}
+	c := &fakeClassifier{}
 	plan := Build(context.Background(), []File{file("main.go", 30)}, "task", c, Options{})
 	if plan.Skip || len(plan.Shards) != 1 {
 		t.Fatalf("plan = %+v", plan)
@@ -275,8 +238,8 @@ func TestBuildNeverSkipsCode(t *testing.T) {
 func TestReviewSizing(t *testing.T) {
 	// Turns follow the size of the reviewer's share; risk scores do not move
 	// them, since they predicted review outcomes worse than chance.
-	calm := Build(context.Background(), []File{file("a/big.go", 55_000)}, "task", &fakeClassifier{bug: 0.05, risk: 0}, Options{})
-	hot := Build(context.Background(), []File{file("a/big.go", 55_000)}, "task", &fakeClassifier{bug: 0.95, risk: 1}, Options{})
+	calm := Build(context.Background(), []File{file("a/big.go", 55_000)}, "task", &fakeClassifier{}, Options{})
+	hot := Build(context.Background(), []File{file("a/big.go", 55_000)}, "task", &fakeClassifier{}, Options{})
 	if calm.Turns != baseTurns+55_000/charsPerTurn || hot.Turns != calm.Turns {
 		t.Fatalf("turns calm=%d hot=%d", calm.Turns, hot.Turns)
 	}
@@ -366,40 +329,6 @@ func TestMerge(t *testing.T) {
 	}
 }
 
-func TestFilterFindings(t *testing.T) {
-	plan := Build(context.Background(), []File{file("auth/token.go", 300)}, "task", nil, Options{})
-	c := &fakeClassifier{findings: map[string]float64{"token.go: nil deref on refresh": 0.9, "rename variable x": 0.05}}
-	out := Outcome{Findings: []string{"token.go: nil deref on refresh", "rename variable x"}}
-	filtered, scores, err := FilterFindings(context.Background(), c, "task", plan, out)
-	if err != nil || len(scores) != 2 {
-		t.Fatal(err)
-	}
-	if filtered.Pass || len(filtered.Findings) != 1 || filtered.Findings[0] != "token.go: nil deref on refresh" || !strings.Contains(filtered.Notes[0], "rename variable x") {
-		t.Fatalf("filtered = %+v", filtered)
-	}
-	allNoise := Outcome{Findings: []string{"rename variable x"}}
-	if filtered, _, _ := FilterFindings(context.Background(), c, "task", plan, allNoise); !filtered.Pass || len(filtered.Findings) != 0 {
-		t.Fatalf("a review whose findings are all downgraded passes: %+v", filtered)
-	}
-	failing := &fakeClassifier{err: errors.New("down")}
-	if kept, _, err := FilterFindings(context.Background(), failing, "task", plan, out); err == nil || len(kept.Findings) != 2 {
-		t.Fatalf("a classifier error keeps every finding: %+v %v", kept, err)
-	}
-	if kept, _, _ := FilterFindings(context.Background(), nil, "task", plan, out); len(kept.Findings) != 2 {
-		t.Fatal("no classifier keeps every finding")
-	}
-}
-
-func TestPatchForPrefersNamedFiles(t *testing.T) {
-	plan := Build(context.Background(), []File{file("a/one.go", 300), file("b/two.go", 300)}, "task", nil, Options{})
-	if p := patchFor("bug in two.go", plan); !strings.Contains(p, "b/two.go") || strings.Contains(p, "a/one.go") {
-		t.Fatalf("patch = %q", p)
-	}
-	if p := patchFor("general concern", plan); !strings.Contains(p, "a/one.go") || !strings.Contains(p, "b/two.go") {
-		t.Fatal("an unattributed finding sees every included file")
-	}
-}
-
 func TestJevClassifierAsksOneQuestionPerItem(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -429,16 +358,8 @@ func TestJevClassifierAsksOneQuestionPerItem(t *testing.T) {
 	if err != nil || scores[0] != 0.2 || scores[1] != 0.9 {
 		t.Fatalf("needs review = %v %v", scores, err)
 	}
-	bug, risk, err := c.Risk(ctx, "task", []File{{Path: "a.go", Patch: "+x"}})
-	if err != nil || bug != 0.2 || risk != 0.5 {
-		t.Fatalf("risk = %v %v %v", bug, risk, err)
-	}
-	fs, err := c.Findings(ctx, "task", []Finding{{Text: "possible race"}, {Text: "naming"}})
-	if err != nil || fs[0] != 0.9 || fs[1] != 0.2 {
-		t.Fatalf("findings = %v %v", fs, err)
-	}
-	if calls.Load() != 5 {
-		t.Fatalf("calls = %d, want one per item plus one risk call", calls.Load())
+	if calls.Load() != 2 {
+		t.Fatalf("calls = %d, want one per item", calls.Load())
 	}
 }
 

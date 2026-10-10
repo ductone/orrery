@@ -56,7 +56,7 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 	if changed != nil {
 		e.emit(ctx, sid, "review.scope", map[string]any{"changed": changed}, emit)
 	}
-	classifier := e.reviewClassifier(checks)
+	classifier := e.reviewClassifier()
 	task := e.reviewTask(ctx, sid)
 	if passed, text, done := e.reviewCascade(ctx, sid, parent, req, task, diff, classifier, checks, emit); done {
 		return passed, text, nil
@@ -99,11 +99,6 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 	}
 
 	out := review.Merge(plan, verdicts)
-	if !out.Pass && !out.Inconclusive && classifier != nil {
-		filtered, scores, err := review.FilterFindings(ctx, classifier, task, plan, out)
-		e.emit(ctx, sid, "review.findings", map[string]any{"findings": out.Findings, "scores": scores, "kept": filtered.Findings, "classifier_error": errString(err)}, emit)
-		out = filtered
-	}
 	e.emit(ctx, sid, "review.outcome", map[string]any{"pass": out.Pass, "inconclusive": out.Inconclusive, "findings": out.Findings, "notes": out.Notes, "verdicts": out.Verdicts}, emit)
 	if out.Inconclusive {
 		var reasons []string
@@ -149,17 +144,13 @@ func (e *Engine) reviewTask(ctx context.Context, sid string) string {
 	return request + "\n\nCURRENT TODO PLAN\n" + strings.Join(plan, "\n")
 }
 
-func (e *Engine) reviewClassifier(checks []commandRecord) review.Classifier {
+func (e *Engine) reviewClassifier() review.Classifier {
 	cfg, _, _, _, _ := e.runtimeSnapshot()
 	cfg.Jev = cfg.EffectiveJev()
 	if !cfg.Jev.Review || cfg.Jev.APIKey == "" {
 		return nil
 	}
-	classifier := review.JevClassifier{Client: jev.New(cfg.Jev.APIKey, cfg.Jev.BaseURL, cfg.Jev.Model, cfg.Jev.Timeout())}
-	for _, c := range checks {
-		classifier.Evidence = append(classifier.Evidence, review.Verification{Command: c.Command, Output: c.Output})
-	}
-	return classifier
+	return review.JevClassifier{Client: jev.New(cfg.Jev.APIKey, cfg.Jev.BaseURL, cfg.Jev.Model, cfg.Jev.Timeout())}
 }
 
 // runReviewShards starts one reviewer per shard and waits for all of them. It
@@ -269,7 +260,7 @@ func planEvent(p review.Plan) map[string]any {
 		}
 		shards = append(shards, map[string]any{"files": files, "chars": s.Chars, "truncated": s.Truncated})
 	}
-	return map[string]any{"decisions": decisions, "shards": shards, "skip": p.Skip, "skip_reason": p.SkipReason, "bug": p.Bug, "risk": p.Risk, "turns": p.Turns, "classifier_error": p.ClassifierError, "question_version": review.QuestionVersion}
+	return map[string]any{"decisions": decisions, "shards": shards, "skip": p.Skip, "skip_reason": p.SkipReason, "turns": p.Turns, "classifier_error": p.ClassifierError, "question_version": review.QuestionVersion}
 }
 
 func errString(err error) string {

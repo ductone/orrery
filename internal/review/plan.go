@@ -3,7 +3,6 @@ package review
 import (
 	"context"
 	"fmt"
-	"path"
 	"slices"
 	"sort"
 	"strings"
@@ -17,20 +16,6 @@ type Classifier interface {
 	// NeedsReview scores whether each non-code file's change needs a
 	// correctness review, as opposed to prose, data, or assets.
 	NeedsReview(ctx context.Context, task string, files []File) ([]float64, error)
-	// Risk scores the change as a whole: the probability it introduces a bug,
-	// and its risk level in [0,1].
-	Risk(ctx context.Context, task string, files []File) (bug, risk float64, err error)
-	// FileBugs scores, per file, whether that file's change introduces a bug.
-	FileBugs(ctx context.Context, task string, files []File) ([]float64, error)
-	// Findings scores whether each reviewer finding is a real correctness bug
-	// introduced by the patch, given the patch text it concerns.
-	Findings(ctx context.Context, task string, findings []Finding) ([]float64, error)
-}
-
-// Finding is one reviewer finding with the patch text it most likely concerns.
-type Finding struct {
-	Text  string
-	Patch string
 }
 
 // Options tune a plan. Zero values select the defaults.
@@ -90,9 +75,6 @@ type Plan struct {
 	// Skip is set when nothing needs review; SkipReason says why.
 	Skip       bool   `json:"skip,omitempty"`
 	SkipReason string `json:"skip_reason,omitempty"`
-	// Bug and Risk are the classifier's view of the whole change, when known.
-	Bug  *float64 `json:"bug,omitempty"`
-	Risk *float64 `json:"risk,omitempty"`
 	// Turns bounds each reviewer.
 	Turns int `json:"turns"`
 	// ClassifierError records a classifier failure the plan fell back from.
@@ -180,20 +162,6 @@ func Build(ctx context.Context, files []File, task string, c Classifier, opts Op
 	for _, s := range plan.Shards {
 		chars = max(chars, s.Chars)
 	}
-	if c != nil {
-		bug, risk, err := c.Risk(ctx, task, plan.Included())
-		if err != nil {
-			if plan.ClassifierError == "" {
-				plan.ClassifierError = "risk: " + err.Error()
-			}
-		} else {
-			plan.Bug, plan.Risk = &bug, &risk
-		}
-	}
-	// The risk scores are recorded for calibration but drive nothing: in
-	// practice they predicted review outcomes worse than chance (low bug
-	// probability on changes reviews then rejected), so they no longer
-	// choose a cheaper reviewer, add turns, or accept inconclusive reviews.
 	plan.Turns = min(maxTurns, baseTurns+chars/charsPerTurn)
 	return plan
 }
@@ -380,59 +348,3 @@ func Merge(plan Plan, verdicts []Verdict) Outcome {
 // FindingNoteCutoff is the score under which a finding is downgraded to a
 // note: only when the classifier is fairly sure it is not a real bug.
 const FindingNoteCutoff = 0.2
-
-// FilterFindings splits a failing outcome's findings into those that stand and
-// those downgraded to notes. A review whose findings are all downgraded
-// passes. Without a classifier, or on error, every finding stands.
-func FilterFindings(ctx context.Context, c Classifier, task string, plan Plan, out Outcome) (Outcome, []float64, error) {
-	if c == nil || out.Pass || out.Inconclusive || len(out.Findings) == 0 {
-		return out, nil, nil
-	}
-	findings := make([]Finding, len(out.Findings))
-	for i, text := range out.Findings {
-		findings[i] = Finding{Text: text, Patch: patchFor(text, plan)}
-	}
-	scores, err := c.Findings(ctx, task, findings)
-	if err != nil {
-		return out, nil, err
-	}
-	var kept []string
-	for i, text := range out.Findings {
-		if scores[i] < FindingNoteCutoff {
-			out.Notes = append(out.Notes, fmt.Sprintf("downgraded finding (%.2f): %s", scores[i], text))
-		} else {
-			kept = append(kept, text)
-		}
-	}
-	out.Findings = kept
-	if len(kept) == 0 {
-		out.Pass = true
-		out.Findings = []string{}
-	}
-	return out, scores, nil
-}
-
-// patchFor finds the patch a finding refers to: the files it names, else the
-// whole shard its label points at, else every included file, bounded.
-func patchFor(finding string, plan Plan) string {
-	const limit = 20_000
-	var b strings.Builder
-	for _, f := range plan.Included() {
-		if strings.Contains(finding, f.Path) || strings.Contains(finding, path.Base(f.Path)) {
-			b.WriteString(f.Patch)
-		}
-	}
-	if b.Len() == 0 {
-		for _, f := range plan.Included() {
-			b.WriteString(f.Patch)
-			if b.Len() >= limit {
-				break
-			}
-		}
-	}
-	text := b.String()
-	if len(text) > limit {
-		text = text[:limit]
-	}
-	return text
-}
