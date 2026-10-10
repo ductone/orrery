@@ -294,51 +294,6 @@ func (l *warmLedger) Cache(_ context.Context, _ string, m string) (store.CacheEn
 	return store.CacheEntry{}, nil
 }
 
-func TestStickinessProtectsTheIncumbentNotOtherWarmModels(t *testing.T) {
-	candidate := func(d Decision, id string) Candidate {
-		for _, c := range d.Candidates {
-			if c.Model == id {
-				return c
-			}
-		}
-		t.Fatalf("no candidate %s", id)
-		return Candidate{}
-	}
-	state := RoutingState{SessionID: "s", Point: TurnStart, Phase: Implement, InputTokens: 50_000, ToolContinuation: true, CurrentModel: "ramp/deepseek-v4.1-flash",
-		AvailableModels: []string{"ramp/claude-sonnet-5-5", "ramp/deepseek-v4.1-flash"}}
-	// The incumbent is cold; Sonnet is warm from earlier in the session. A
-	// warm non-incumbent must not be penalised for being warm.
-	p := NewV1(config.RouterConfig{}, &warmLedger{warm: map[string]bool{"ramp/claude-sonnet-5-5": true}})
-	d, _, err := p.Decide(context.Background(), state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sw := candidate(d, "ramp/claude-sonnet-5-5").SwitchUSD; sw != 0 {
-		t.Fatalf("warm non-incumbent penalised %.2f", sw)
-	}
-	// A warm incumbent makes leaving it mid tool chain cost the small
-	// continuation margin, and nothing more.
-	p = NewV1(config.RouterConfig{}, &warmLedger{warm: map[string]bool{"ramp/deepseek-v4.1-flash": true}})
-	if d, _, err = p.Decide(context.Background(), state); err != nil {
-		t.Fatal(err)
-	}
-	if sw := candidate(d, "ramp/claude-sonnet-5-5").SwitchUSD; sw != toolContinuationSwitchUSD {
-		t.Fatalf("leaving a warm incumbent mid tool chain costs %.2f, want %.2f", sw, toolContinuationSwitchUSD)
-	}
-	if sw := candidate(d, "ramp/deepseek-v4.1-flash").SwitchUSD; sw != 0 {
-		t.Fatalf("the incumbent itself penalised %.2f", sw)
-	}
-	// Outside a tool chain there is no switch penalty at all: the work-cost
-	// estimate already prices the challenger's cold first call.
-	state.ToolContinuation = false
-	if d, _, err = p.Decide(context.Background(), state); err != nil {
-		t.Fatal(err)
-	}
-	if sw := candidate(d, "ramp/claude-sonnet-5-5").SwitchUSD; sw != 0 {
-		t.Fatalf("switch outside a tool chain penalised %.2f", sw)
-	}
-}
-
 // Replays session 1c4e2298 seq 61: a frontier model chosen at plan, warm on a
 // 37K prefix, must not be held through implement by a switch penalty when a
 // cheaper, faster efficient model repays its cold first call within the work
@@ -360,15 +315,6 @@ func TestWarmFrontierIncumbentLosesToEfficientModelInImplement(t *testing.T) {
 		}
 		if d.Model.ID != "ramp/claude-sonnet-5-5" {
 			t.Fatalf("tool continuation=%v: kept %s, want sonnet: %+v", chain, d.Model.ID, d.Candidates)
-		}
-		want := 0.0
-		if chain {
-			want = toolContinuationSwitchUSD
-		}
-		for _, c := range d.Candidates {
-			if c.Model == "ramp/claude-sonnet-5-5" && c.SwitchUSD != want {
-				t.Fatalf("tool continuation=%v: switch penalty %.2f, want %.2f", chain, c.SwitchUSD, want)
-			}
 		}
 	}
 }
@@ -428,5 +374,31 @@ func TestWorkEstimateUsesTheEffortsOwnStats(t *testing.T) {
 	_, high := workEstimate(m, s, 0, model.EffortHigh)
 	if math.Abs(low-2*workHorizonCalls) > .1 || math.Abs(high-30*workHorizonCalls) > .1 {
 		t.Fatalf("low %.0fs, high %.0fs: a call at low effort must use the low-effort latency", low, high)
+	}
+}
+
+func TestBackgroundWorkExploresUnmeasuredModels(t *testing.T) {
+	p := NewV1(config.RouterConfig{}, &ledger{})
+	measured := map[string]RoutePerformance{"ramp/claude-sonnet-5-5": {Calls: 1000, LatencySeconds: 2}}
+	explored, exploited := 0, 0
+	for turn := range 200 {
+		for _, background := range []bool{false, true} {
+			d, why, err := p.Decide(context.Background(), RoutingState{SessionID: "s", Turn: turn, Point: TurnStart, Phase: Implement, InputTokens: 1000, Background: background,
+				AvailableModels: []string{"ramp/claude-sonnet-5-5", "ramp/deepseek-v4.1-flash"}, Performance: measured})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.HasPrefix(string(why), "exploring") {
+				if !background || d.Model.ID != "ramp/deepseek-v4.1-flash" {
+					t.Fatalf("explored %s in background=%v", d.Model.ID, background)
+				}
+				explored++
+			} else if background {
+				exploited++
+			}
+		}
+	}
+	if explored == 0 || explored > 40 {
+		t.Fatalf("explored %d of 200 background decisions; want about one in %d", explored, exploreEvery)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"hash/fnv"
 	"math"
 	"slices"
 	"strings"
@@ -123,11 +124,8 @@ type Candidate struct {
 	WorkCostUSD float64 `json:"work_cost_usd"`
 	WorkSeconds float64 `json:"work_seconds"`
 	TimeCostUSD float64 `json:"time_cost_usd"`
-	// SwitchUSD is the margin a challenger must clear to take over mid tool
-	// chain from a warm incumbent.
-	SwitchUSD float64 `json:"switch_usd"`
-	// Score is minus the candidate's total cost in dollars: work, time, and
-	// the switch margin. The highest score wins.
+	// Score is minus the candidate's total cost in dollars, work and time.
+	// The highest score wins.
 	Score    float64       `json:"score"`
 	Cache    CacheEstimate `json:"cache"`
 	Rejected string        `json:"rejected,omitempty"`
@@ -172,20 +170,11 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 	}
 	reviewHasAlternate := p.reviewHasAlternateFamily(s)
 	defaultModelPinned := (p.cfg.DisableSwitch && p.cfg.DefaultModel != "") || s.ModelPin != ""
-	// Stickiness protects the incumbent's warm cache: leaving it means
-	// rebuilding a prefix. Whether other candidates happen to be warm is
-	// priced by their own work estimate, not penalised.
-	incumbentWarm := false
-	if s.CurrentModel != "" {
-		if entry, err := p.ledger.Cache(ctx, s.SessionID, s.CurrentModel); err == nil {
-			incumbentWarm = entry.Valid(p.now())
-		}
-	}
-	candidates := p.score(ctx, s, incumbentWarm, reviewHasAlternate, defaultModelPinned, false)
+	candidates := p.score(ctx, s, reviewHasAlternate, defaultModelPinned, false)
 	if !anyValid(candidates) {
 		// A floor (frontier for judgement phases, no tiny models) yields when
 		// nothing else is left rather than failing the turn.
-		candidates = p.score(ctx, s, incumbentWarm, reviewHasAlternate, defaultModelPinned, true)
+		candidates = p.score(ctx, s, reviewHasAlternate, defaultModelPinned, true)
 	}
 	valid := make([]Candidate, 0, len(candidates))
 	for _, c := range candidates {
@@ -217,10 +206,17 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 		return strings.Compare(a.Model, b.Model)
 	})
 	chosen := valid[0]
+	explored := false
+	if pick, ok := p.exploration(s, valid); ok {
+		chosen, explored = pick, true
+	}
 	span.SetAttributes(attribute.String("model", chosen.Model), attribute.Float64("estimated_cost_usd", chosen.CostUSD))
 	spec, _ := model.Get(chosen.Model)
 	d := Decision{Model: spec, Effort: chosen.Effort, EditDialect: spec.EditDialect, ToolsetVariant: toolset(spec), WasSwitch: s.CurrentModel != "" && s.CurrentModel != spec.ID, Candidates: candidates}
 	why := explain(s, chosen, d.WasSwitch)
+	if explored {
+		why = "exploring: " + why
+	}
 	rec := store.RoutingRecord{ID: uuid.NewString(), SessionID: s.SessionID, Turn: s.Turn, DecisionPoint: string(s.Point), StateJSON: store.JSON(s), CandidatesJSON: store.JSON(candidates), ChosenModel: spec.ID, ChosenEffort: string(chosen.Effort), WasSwitch: d.WasSwitch, CacheEstJSON: store.JSON(chosen.Cache), Explanation: string(why)}
 	if err := p.ledger.WriteRouting(ctx, rec); err != nil {
 		return Decision{}, "", fmt.Errorf("routing record: %w", err)
@@ -235,7 +231,7 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 // models are then ranked purely by cost: the dollars a unit of work costs,
 // the value of the time it takes, and a small margin for switching mid tool
 // chain.
-func (p *V1) score(ctx context.Context, s RoutingState, incumbentWarm, reviewHasAlternate, defaultModelPinned, relaxFloors bool) []Candidate {
+func (p *V1) score(ctx context.Context, s RoutingState, reviewHasAlternate, defaultModelPinned, relaxFloors bool) []Candidate {
 	floors := !relaxFloors && !defaultModelPinned && s.TierPin == ""
 	frontierFloor := floors && (slices.Contains(p.cfg.FrontierFloorPhases, string(s.Phase)) || s.Point == ReviewCreation ||
 		(s.Stall.ReviewRejected && (s.Point == TurnStart || s.Point == Escalation)))
@@ -289,14 +285,9 @@ func (p *V1) score(ctx context.Context, s RoutingState, incumbentWarm, reviewHas
 		c.Effort = effortFor(m, s)
 		c.WorkCostUSD, c.WorkSeconds = workEstimate(m, s, warmTokens, c.Effort)
 		c.TimeCostUSD = c.WorkSeconds / 60 * p.cfg.TimeValue.For(s.Background)
-		// Each candidate's work cost already prices its next call at its actual
-		// cache warmth, so a switch's cold first call is in the estimate. Only a
-		// mid-tool-chain switch keeps a margin, for what money doesn't capture:
-		// the new model lacks the incumbent's reasoning about the chain.
-		if s.ToolContinuation && m.ID != s.CurrentModel && incumbentWarm {
-			c.SwitchUSD = toolContinuationSwitchUSD
-		}
-		c.Score = -(c.WorkCostUSD + c.TimeCostUSD + c.SwitchUSD)
+		// Each candidate's work cost prices its next call at its actual cache
+		// warmth, so switching away from a warm model is already paid for.
+		c.Score = -(c.WorkCostUSD + c.TimeCostUSD)
 		candidates = append(candidates, c)
 	}
 	return candidates
@@ -305,6 +296,32 @@ func (p *V1) score(ctx context.Context, s RoutingState, incumbentWarm, reviewHas
 // EffortStatsKey is the model_stats key for a route's calls at one effort.
 func EffortStatsKey(route string, effort model.Effort) string {
 	return route + "@" + string(effort)
+}
+
+// exploration picks a route to measure instead of the best-scoring one: in
+// background work (time is not valued), on one decision in exploreEvery
+// (chosen deterministically from the session and turn so replays agree), the
+// cheapest eligible route that has recorded fewer than exploreCalls calls.
+func (p *V1) exploration(s RoutingState, valid []Candidate) (Candidate, bool) {
+	if !s.Background || s.ModelPin != "" || s.Point == ReviewCreation {
+		return Candidate{}, false
+	}
+	h := fnv.New32a()
+	_, _ = fmt.Fprintf(h, "%s/%d/%s", s.SessionID, s.Turn, s.Point)
+	if h.Sum32()%exploreEvery != 0 {
+		return Candidate{}, false
+	}
+	var pick Candidate
+	found := false
+	for _, c := range valid {
+		if s.Performance[c.Model].Calls >= exploreCalls {
+			continue
+		}
+		if !found || c.WorkCostUSD < pick.WorkCostUSD {
+			pick, found = c, true
+		}
+	}
+	return pick, found
 }
 
 func anyValid(cs []Candidate) bool {
@@ -344,12 +361,14 @@ func (p *V1) reviewHasAlternateFamily(s RoutingState) bool {
 // has recorded (weight = calls/(calls+performanceShrinkCalls)).
 const (
 	performanceShrinkCalls = 20
-	// toolContinuationSwitchUSD is the margin, in dollars, a challenger must
-	// clear to take over mid tool chain from a warm incumbent.
-	toolContinuationSwitchUSD = .05
-	outputTokensPrior         = 1000
-	cacheReadRatioPrior       = .7
-	latencySecondsPrior       = 10
+	// exploreEvery and exploreCalls: one background decision in exploreEvery
+	// goes to the cheapest eligible route with fewer than exploreCalls recorded
+	// calls, so unmeasured models build a history where nobody waits for it.
+	exploreEvery        = 10
+	exploreCalls        = 20
+	outputTokensPrior   = 1000
+	cacheReadRatioPrior = .7
+	latencySecondsPrior = 10
 	// workHorizonCalls is the unit of work routing prices, in calls of a
 	// reference model. A switch's cold first call is amortised over it, so it
 	// must be about as long as the work that follows a decision: with four

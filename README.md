@@ -96,7 +96,8 @@ A decision runs in two stages: eligibility, then cost.
 
 - *Work cost* prices a unit of work, not one call: the next call at the session's actual cache warmth, then the further calls the model typically needs for the same work (`CallsPerTask` in the catalog, measured by pinned benchmark sweeps: a model that takes 2.7 steps where Claude takes one pays for re-sending the context each time), each at the route's recorded output per call and cache reuse from `model_stats`. Calls that fail and are retried (empty, malformed, provider errors) are priced as expected retries. Routes with few recorded calls lean on priors.
 - *Time cost* values the expected seconds of that work (steps × recorded latency) at `time_value_usd_per_minute`: `interactive` when someone is waiting (the default), `background` for runs marked `orrery run --background` and the jobs they spawn. With time free, the cheapest model wins; with it valued, a faster model that needs fewer steps can win despite a higher token price.
-- *A $0.05 margin* applies only to switching away from a warm model mid tool chain, for what money does not capture: the new model lacks the incumbent's reasoning about the chain. Otherwise a switch's cold first call is already in the challenger's work cost.
+- *Switching* has no separate penalty: a challenger's cold first call is part of its work cost, and the model left behind stays warm for its cache lifetime.
+- *Exploration*: one background decision in ten (chosen deterministically from the session and turn) goes to the cheapest eligible route with fewer than 20 recorded calls, so unmeasured models build a history where nobody is waiting.
 
 While the agent fixes findings from a failed independent review, its turns need a frontier model. That remediation ends a run after eight turns without an edit, or after four rejected reviews; a completion whose diff is unchanged since a failed review is refused with those findings instead of being reviewed again.
 
