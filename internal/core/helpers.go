@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
@@ -75,7 +76,7 @@ func setPlanSnapshot(summary, plan string) string {
 }
 func parseResult(s string) map[string]any {
 	s = strings.TrimSpace(s)
-	s = strings.TrimPrefix(s, "```json")
+	s = strings.TrimPrefix(strings.TrimPrefix(s, "```json"), "```")
 	s = strings.TrimSuffix(s, "```")
 	var v map[string]any
 	if json.Unmarshal([]byte(strings.TrimSpace(s)), &v) == nil {
@@ -115,7 +116,11 @@ func validateSchema(schema, result map[string]any) error {
 	if err != nil {
 		return err
 	}
-	return compiled.Validate(result)
+	if err := compiled.Validate(result); err != nil {
+		parsed, _ := json.Marshal(result)
+		return fmt.Errorf("parsed result %s does not validate: %w", truncate(string(parsed), 500), err)
+	}
+	return nil
 }
 
 func (e *Engine) inferPhase(ctx context.Context, sid, toolName, command string, progress *progressTracker) {

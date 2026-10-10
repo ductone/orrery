@@ -203,3 +203,21 @@ func TestHistoryAlwaysOpensWithAUserTurn(t *testing.T) {
 		t.Fatalf("a history that opens with the person must be left alone: %+v", got)
 	}
 }
+
+func TestParseResultLenientExtraction(t *testing.T) {
+	schema := map[string]any{"type": "object", "required": []any{"pass", "findings"}}
+	for name, in := range map[string]string{
+		"plain":  `{"pass": false, "findings": []}`,
+		"fenced": "```json\n{\"pass\": false, \"findings\": []}\n```",
+		"bare":   "```\n{\"pass\": false, \"findings\": []}\n```",
+		"prose":  "Here is my verdict:\n{\"pass\": false, \"findings\": []}\nHope that helps.",
+	} {
+		if err := validateSchema(schema, parseResult(in)); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	err := validateSchema(schema, parseResult("not json"))
+	if err == nil || !strings.Contains(err.Error(), "not json") {
+		t.Fatalf("error should show parsed content: %v", err)
+	}
+}
