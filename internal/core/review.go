@@ -24,6 +24,19 @@ const reviewPlanTimeout = 30 * time.Second
 
 var reviewResultSchema = map[string]any{"type": "object", "properties": map[string]any{"pass": map[string]any{"type": "boolean"}, "findings": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "required": []string{"pass", "findings"}}
 
+// lightReviewSchema adds the light reviewer's third outcome: escalate to the
+// full review.
+var lightReviewSchema = map[string]any{"type": "object", "properties": map[string]any{
+	"pass":            map[string]any{"type": "boolean"},
+	"findings":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+	"escalate":        map[string]any{"type": "boolean"},
+	"escalate_reason": map[string]any{"type": "string"},
+}, "required": []string{"pass", "findings"}}
+
+// gateTimeout bounds the Jev gate; on timeout the change goes to the light
+// reviewer.
+const gateTimeout = 20 * time.Second
+
 // reviewWorkspace plans and runs the independent review of the workspace diff.
 //
 // The plan decides what reviewers read: code in full, assets, lockfiles, and
@@ -47,6 +60,9 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 	}
 	classifier := e.reviewClassifier(checks)
 	task := e.reviewTask(ctx, sid)
+	if passed, text, done := e.reviewCascade(ctx, sid, parent, req, task, diff, classifier, checks, emit); done {
+		return passed, text, nil
+	}
 	planCtx, cancel := context.WithTimeout(ctx, reviewPlanTimeout)
 	plan := review.Build(planCtx, review.ParseDiff(diff), task, classifier, review.Options{})
 	cancel()
@@ -166,9 +182,13 @@ func (e *Engine) runReviewShards(ctx context.Context, sid, parent string, req ag
 		if spec == "" {
 			spec = plan.Spec(i)
 		}
+		schema := reviewResultSchema
+		if opts.resultSchema != nil {
+			schema = opts.resultSchema
+		}
 		job, err := e.spawnWith(ctx, sid, parent, req, map[string]any{
 			"spec":            spec,
-			"result_schema":   reviewResultSchema,
+			"result_schema":   schema,
 			"budget_fraction": 0.10,
 			"workspace_mode":  "read",
 			"review":          true,
@@ -226,12 +246,15 @@ func verdictFromJob(j store.Job, shard int) review.Verdict {
 	}
 	v.Conclusive, v.Pass = true, passed
 	var result struct {
-		Findings []any `json:"findings"`
+		Findings       []any  `json:"findings"`
+		Escalate       bool   `json:"escalate"`
+		EscalateReason string `json:"escalate_reason"`
 	}
 	if json.Unmarshal([]byte(text), &result) == nil {
 		for _, f := range result.Findings {
 			v.Findings = append(v.Findings, fmt.Sprint(f))
 		}
+		v.Escalate, v.EscalateReason = result.Escalate, result.EscalateReason
 	}
 	return v
 }
@@ -304,4 +327,60 @@ func (e *Engine) reviewDiffHash(ctx context.Context, sid, root string) string {
 	}
 	sum := sha256.Sum256(diff)
 	return hex.EncodeToString(sum[:])
+}
+
+// reviewCascade runs the cheap review stages for a change small enough for
+// them. The Jev gate may approve it outright, unless it deletes or weakens
+// tests; otherwise a light reviewer approves, rejects a concrete bug, or
+// escalates. done is false when the full review must run: the change is
+// large, the light reviewer escalated, or it returned no verdict.
+func (e *Engine) reviewCascade(ctx context.Context, sid, parent string, req agentproto.TaskRequest, task string, diff []byte, classifier review.Classifier, checks []commandRecord, emit EmitFunc) (passed bool, text string, done bool) {
+	files := review.ParseDiff(diff)
+	for i := range files {
+		review.Classify(&files[i])
+	}
+	if review.Large(files) {
+		lines, count := review.ReviewedSize(files)
+		e.emit(ctx, sid, "review.escalated", map[string]any{"from": "size", "lines": lines, "files": count}, emit)
+		return false, "", false
+	}
+	evidence := make([]review.Verification, len(checks))
+	for i, c := range checks {
+		evidence[i] = review.Verification{Command: c.Command, Output: c.Output}
+	}
+	if gater, ok := classifier.(review.Gater); ok && !review.TouchesTests(files) {
+		gateCtx, cancel := context.WithTimeout(ctx, gateTimeout)
+		score, err := gater.Gate(gateCtx, task, files, evidence)
+		cancel()
+		approved := err == nil && score >= review.GateThreshold
+		e.emit(ctx, sid, "review.gate", map[string]any{"score": score, "threshold": review.GateThreshold, "approved": approved, "error": errString(err)}, emit)
+		if approved {
+			e.emit(ctx, sid, "review.outcome", map[string]any{"pass": true, "stage": "gate", "findings": []string{}}, emit)
+			return true, store.JSON(map[string]any{"pass": true, "findings": []string{}, "approved_by": "jev gate"}), true
+		}
+	}
+	verdicts, families := e.runReviewShards(ctx, sid, parent, req, review.Plan{}, []int{0}, spawnOptions{reviewSpec: review.LightSpec(task, files, evidence), resultSchema: lightReviewSchema, workerTurns: review.LightReviewTurns}, emit)
+	v := verdicts[0]
+	if !v.Conclusive || v.Escalate || (!v.Pass && len(v.Findings) == 0) {
+		reason := v.EscalateReason
+		if !v.Conclusive {
+			reason = "light review returned no verdict: " + v.Error
+		} else if reason == "" && !v.Escalate {
+			reason = "light review failed without a finding"
+		}
+		e.emit(ctx, sid, "review.escalated", map[string]any{"from": "light", "reason": reason}, emit)
+		return false, "", false
+	}
+	e.emit(ctx, sid, "review.outcome", map[string]any{"pass": v.Pass, "stage": "light", "findings": v.Findings, "verdicts": verdicts}, emit)
+	implementer := ""
+	if s, err := e.store.Session(ctx, sid); err == nil {
+		if m, ok := model.Get(s.Model); ok {
+			implementer = string(m.Family)
+		}
+	}
+	findings := v.Findings
+	if findings == nil {
+		findings = []string{}
+	}
+	return v.Pass, store.JSON(map[string]any{"pass": v.Pass, "findings": findings, "families": families, "implementer_family": implementer, "stage": "light"}), true
 }

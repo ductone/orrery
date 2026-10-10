@@ -457,3 +457,28 @@ func TestJevClassifierFailsTheWholeBatch(t *testing.T) {
 		t.Fatal("one failed call must fail the batch rather than score the file zero")
 	}
 }
+
+func TestCascadeSizeAndTestRules(t *testing.T) {
+	small := []File{{Path: "a.go", Added: 10, Removed: 2, Class: Code}, {Path: "go.sum", Added: 900, Class: Lockfile}}
+	if Large(small) {
+		t.Fatal("lockfile churn must not make a change large")
+	}
+	if !Large([]File{{Path: "a.go", Added: CascadeMaxLines + 1, Class: Code}}) {
+		t.Fatal("a change over the line limit is large")
+	}
+	cases := map[string]bool{
+		"pkg/a_test.go":         true,
+		"tests/test_api.py":     true,
+		"web/app.spec.ts":       true,
+		"pkg/a.go":              false,
+		"docs/testing-guide.md": false,
+	}
+	for p, want := range cases {
+		if got := TouchesTests([]File{{Path: p, Removed: 1}}); got != want {
+			t.Errorf("%s: got %v, want %v", p, got, want)
+		}
+	}
+	if TouchesTests([]File{{Path: "pkg/a_test.go", Added: 5}}) {
+		t.Fatal("only adding tests does not need a reviewer's judgement")
+	}
+}

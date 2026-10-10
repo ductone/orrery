@@ -335,7 +335,11 @@ type Verdict struct {
 	Findings   []string `json:"findings,omitempty"`
 	// Accepted marks an inconclusive shard accepted on classifier evidence.
 	Accepted string `json:"accepted,omitempty"`
-	Error    string `json:"error,omitempty"`
+	// Escalate is a light reviewer asking for the full review instead of
+	// deciding, with its reason.
+	Escalate       bool   `json:"escalate,omitempty"`
+	EscalateReason string `json:"escalate_reason,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 // Outcome merges shard verdicts. The review passes only when every shard

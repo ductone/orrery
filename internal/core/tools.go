@@ -273,6 +273,7 @@ type spawnOptions struct {
 	tierPin         string
 	workerTurns     int
 	reviewSpec      string
+	resultSchema    map[string]any
 	strictFamilies  bool
 	excludeFamilies []string
 }

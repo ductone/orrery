@@ -197,7 +197,14 @@ Phase changes compact history only at real boundaries: not when the history is s
 
 ## Independent review
 
-When a worker changes the workspace, Orrery plans an independent review before any reviewer runs. The diff is split into files and classified: code (by extension and well-known names such as `Makefile` and `Dockerfile`) is always shown in full; assets, lockfiles, generated files, and binaries are listed without their patch; everything else (prose, data, configuration) is shown in full unless Jev judges it not to need a correctness review. A diff with nothing left to review is not reviewed.
+When a worker changes the workspace, Orrery reviews the change in stages, cheapest first:
+
+1. **Size.** A change over 400 reviewed lines or 10 files (assets, lockfiles, generated and binary files don't count) goes straight to the full review below.
+2. **Jev gate.** Otherwise Jev sees the request, the diff, and every command run since the last edit with its output, and approves the change outright when it is simple and clearly correct (docs, configuration, small contained code changes the commands support). It may not approve a change that deletes or weakens tests; a reviewer judges those. Below its threshold, or without `jev.review`, the change goes on.
+3. **Light review.** One reviewer from another model family, with the same evidence and a few turns, approves, rejects a concrete bug (file, line, failing case), or escalates when it suspects a problem it cannot confirm.
+4. **Full review**, only for large changes and escalations, as follows.
+
+Each stage is recorded (`review.gate`, `review.escalated`, `review.outcome` with its `stage`). For the full review, Orrery plans before any reviewer runs. The diff is split into files and classified: code (by extension and well-known names such as `Makefile` and `Dockerfile`) is always shown in full; assets, lockfiles, generated files, and binaries are listed without their patch; everything else (prose, data, configuration) is shown in full unless Jev judges it not to need a correctness review. A diff with nothing left to review is not reviewed.
 
 The rest is packed by top-level directory into at most four parallel reviewers of about 60K characters each; oversized patches are truncated with a pointer to the file, and code is never dropped. Each reviewer's turn limit grows with its share of the diff. Every reviewer's spec lists the files it was not shown, so it can read one when a finding depends on it.
 

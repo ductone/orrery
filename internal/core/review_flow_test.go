@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,7 @@ import (
 	"github.com/ductone/orrey/internal/agentproto"
 	"github.com/ductone/orrey/internal/config"
 	"github.com/ductone/orrey/internal/provider"
+	"github.com/ductone/orrey/internal/review"
 	"github.com/ductone/orrey/internal/store"
 	"github.com/google/uuid"
 )
@@ -38,6 +40,11 @@ type reviewHarness struct {
 
 	jevCalls atomic.Int32
 	jev      func(state map[string]any, question string) float64
+	// gate answers the Jev gate's approve question; nil escalates.
+	gate func(state map[string]any) float64
+	// light answers the light reviewer; nil escalates to the full review.
+	light      func(spec string) map[string]any
+	lightSpecs []string
 }
 
 func newReviewHarness(t *testing.T, withJev bool) *reviewHarness {
@@ -62,6 +69,20 @@ func newReviewHarness(t *testing.T, withJev bool) *reviewHarness {
 		instructions, _ := body["instructions"].(string)
 		if !strings.Contains(instructions, "Review this proposed workspace diff") {
 			_ = json.NewEncoder(w).Encode(responsesText("Title"))
+			return
+		}
+		if strings.Contains(instructions, review.LightMarker) {
+			h.mu.Lock()
+			if !slices.Contains(h.lightSpecs, instructions) {
+				h.lightSpecs = append(h.lightSpecs, instructions)
+			}
+			light := h.light
+			h.mu.Unlock()
+			if light == nil {
+				_ = json.NewEncoder(w).Encode(escalateJSON("needs a closer look"))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(light(instructions))
 			return
 		}
 		h.mu.Lock()
@@ -97,6 +118,14 @@ func newReviewHarness(t *testing.T, withJev bool) *reviewHarness {
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			answers := map[string]any{}
 			for name := range req.Questions {
+				if name == "approve" {
+					score := 0.0
+					if h.gate != nil {
+						score = h.gate(req.State)
+					}
+					answers[name] = map[string]any{"type": "noul", "noul": score}
+					continue
+				}
 				if name == "risk" {
 					answers[name] = map[string]any{"type": "score", "score": 0.0, "legend": map[string]string{"0": "l", "1": "m", "2": "h"}}
 					continue
@@ -140,6 +169,18 @@ func (h *reviewHarness) run(checks ...commandRecord) (bool, string, error) {
 	return h.e.reviewWorkspace(ctx, h.sid, "", req, checks, nil)
 }
 
+// fullJobs are the full review's jobs, without the light reviewer's.
+func (h *reviewHarness) fullJobs() ([]store.Job, error) {
+	jobs, err := h.st.Jobs(context.Background(), h.sid)
+	var out []store.Job
+	for _, j := range jobs {
+		if !strings.Contains(j.Spec, review.LightMarker) {
+			out = append(out, j)
+		}
+	}
+	return out, err
+}
+
 func (h *reviewHarness) events(typ string) []map[string]any {
 	h.t.Helper()
 	es, err := h.st.EventsAfter(context.Background(), h.sid, 0)
@@ -162,6 +203,11 @@ func verdictJSON(pass bool, findings ...string) map[string]any {
 		findings = []string{}
 	}
 	b, _ := json.Marshal(map[string]any{"pass": pass, "findings": findings})
+	return responsesText(string(b))
+}
+
+func escalateJSON(reason string) map[string]any {
+	b, _ := json.Marshal(map[string]any{"pass": false, "findings": []string{}, "escalate": true, "escalate_reason": reason})
 	return responsesText(string(b))
 }
 
@@ -254,7 +300,7 @@ func TestReviewShowsCodeAndListsTriagedFiles(t *testing.T) {
 		}
 	}
 	// The reviewer's turn limit comes from the plan.
-	jobs, _ := h.st.Jobs(context.Background(), h.sid)
+	jobs, _ := h.fullJobs()
 	var hints agentproto.RoutingHints
 	_ = json.Unmarshal([]byte(jobs[0].HintsJSON), &hints)
 	if hints.WorkerTurns < 6 || !hints.Review {
@@ -340,7 +386,7 @@ func TestInconclusiveReviewIsRerunEvenWhenScoredLowRisk(t *testing.T) {
 		return verdictJSON(true)
 	}
 	passed, _, err := h.run()
-	if jobs, _ := h.st.Jobs(context.Background(), h.sid); len(jobs) != 2 {
+	if jobs, _ := h.fullJobs(); len(jobs) != 2 {
 		t.Fatalf("reviewers = %d, want a rerun (passed=%v err=%v)", len(jobs), passed, err)
 	}
 }
@@ -366,7 +412,7 @@ func TestInconclusiveRiskyReviewIsRerunWithMoreRoom(t *testing.T) {
 	if err != nil || !passed {
 		t.Fatalf("passed=%v err=%v", passed, err)
 	}
-	jobs, _ := h.st.Jobs(context.Background(), h.sid)
+	jobs, _ := h.fullJobs()
 	if len(jobs) != 2 {
 		t.Fatalf("reviewers = %d, want a retry", len(jobs))
 	}
@@ -395,7 +441,7 @@ func TestInconclusiveWithoutJevIsReportedAfterOneRetry(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "review inconclusive") {
 		t.Fatalf("err = %v", err)
 	}
-	if jobs, _ := h.st.Jobs(context.Background(), h.sid); len(jobs) != 2 {
+	if jobs, _ := h.fullJobs(); len(jobs) != 2 {
 		t.Fatalf("reviewers = %d, want the original and one retry", len(jobs))
 	}
 }
@@ -448,7 +494,7 @@ func TestReviewerWaitsOutARateLimit(t *testing.T) {
 	if err != nil || !passed {
 		t.Fatalf("passed=%v err=%v", passed, err)
 	}
-	if jobs, _ := h.st.Jobs(context.Background(), h.sid); len(jobs) != 1 {
+	if jobs, _ := h.fullJobs(); len(jobs) != 1 {
 		t.Fatalf("the first reviewer must finish; got %d reviewers", len(jobs))
 	}
 }
