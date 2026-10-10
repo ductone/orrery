@@ -356,7 +356,7 @@ func (e *Engine) reviewCascade(ctx context.Context, sid, parent string, req agen
 			return true, store.JSON(map[string]any{"pass": true, "findings": []string{}, "approved_by": "jev gate"}), true
 		}
 	}
-	verdicts, families := e.runReviewShards(ctx, sid, parent, req, review.Plan{}, []int{0}, spawnOptions{reviewSpec: review.LightSpec(task, files, evidence), resultSchema: lightReviewSchema, workerTurns: review.LightReviewTurns}, emit)
+	verdicts, families := e.runReviewShards(ctx, sid, parent, req, review.Plan{}, []int{0}, spawnOptions{reviewSpec: review.LightSpec(task, files, evidence), resultSchema: lightReviewSchema, workerTurns: review.LightReviewTurns, effort: review.LightReviewEffort}, emit)
 	v := verdicts[0]
 	if !v.Conclusive || v.Escalate || (!v.Pass && len(v.Findings) == 0) {
 		reason := v.EscalateReason

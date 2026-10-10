@@ -18,10 +18,13 @@ const (
 	CascadeMaxFiles = 10
 	// GateThreshold is the probability at or above which the Jev gate
 	// approves a change without a reviewer.
-	GateThreshold = 0.8
+	GateThreshold = 0.7
 	// LightReviewTurns bounds the light reviewer: enough to judge the inline
 	// diff and read a file or two for context.
 	LightReviewTurns = 3
+	// LightReviewEffort is the light reviewer's reasoning effort: a quick look
+	// at a small diff with its evidence, not the review phase's default high.
+	LightReviewEffort = "low"
 	// LightMarker opens the light reviewer's spec, so it is recognisable in
 	// events and tests.
 	LightMarker = "Review this proposed workspace diff (light review)."

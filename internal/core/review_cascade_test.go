@@ -1,10 +1,13 @@
 package core
 
 import (
+	"context"
+	"encoding/json"
 	"os/exec"
 	"strings"
 	"testing"
 
+	"github.com/ductone/orrey/internal/agentproto"
 	"github.com/ductone/orrey/internal/review"
 )
 
@@ -39,6 +42,11 @@ func TestLightReviewApprovesWhenTheGateEscalates(t *testing.T) {
 	passed, _, err := h.run(commandRecord{Command: "./scripts/check.sh", Output: "all 12 checks passed"})
 	if err != nil || !passed || len(h.lightSpecs) != 1 {
 		t.Fatalf("passed=%v err=%v light=%d", passed, err, len(h.lightSpecs))
+	}
+	jobs, _ := h.st.Jobs(context.Background(), h.sid)
+	var hints agentproto.RoutingHints
+	if len(jobs) != 1 || json.Unmarshal([]byte(jobs[0].HintsJSON), &hints) != nil || hints.Effort != review.LightReviewEffort || hints.WorkerTurns != review.LightReviewTurns {
+		t.Fatalf("light review job hints = %+v", hints)
 	}
 	spec := h.lightSpecs[0]
 	for _, want := range []string{"Add the feature", "COMMANDS RUN SINCE THE LAST EDIT", "./scripts/check.sh", "all 12 checks passed", "diff --git a/internal/feature.go"} {

@@ -274,6 +274,7 @@ type spawnOptions struct {
 	workerTurns     int
 	reviewSpec      string
 	resultSchema    map[string]any
+	effort          string
 	strictFamilies  bool
 	excludeFamilies []string
 }
@@ -339,6 +340,7 @@ func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq ag
 	child := agentproto.TaskRequest{Spec: spec, ResultSchema: schema, Budget: agentproto.Budget{MaxTokens: max(1000, int(float64(parentReq.Budget.MaxTokens)*fraction)), MaxUSD: childUSD, MaxWallClock: parentReq.Budget.MaxWallClock, MaxDepth: parentReq.Budget.MaxDepth}, Workspace: agentproto.Workspace{Path: parentReq.Workspace.Path, Mode: workspaceMode, Ownership: parentReq.Workspace.Ownership}, Depth: parentReq.Depth - 1}
 	child.Hints.Review = review
 	child.Hints.Background = parentReq.Hints.Background
+	child.Hints.Effort = opts.effort
 	if review {
 		if s, _ := e.store.Session(ctx, sid); s.Model != "" {
 			if m, ok := model.Get(s.Model); ok {
@@ -351,7 +353,7 @@ func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq ag
 		point = router.ReviewCreation
 	}
 	_, runtimeProviders, runtimePolicy, _, _ := e.runtimeSnapshot()
-	jobState := router.RoutingState{Background: child.Hints.Background, SessionID: sid, Turn: parentSession.Turn, Point: point, Phase: phase, InputTokens: estimate(spec), EstimatedOutput: 4000, AvailableModels: runtimeProviders.AvailableIDs(), ImplementerFamily: model.Family(child.Hints.ImplementerFamily), Performance: e.routePerformance(ctx)}
+	jobState := router.RoutingState{Background: child.Hints.Background, EffortPin: model.Effort(child.Hints.Effort), SessionID: sid, Turn: parentSession.Turn, Point: point, Phase: phase, InputTokens: estimate(spec), EstimatedOutput: 4000, AvailableModels: runtimeProviders.AvailableIDs(), ImplementerFamily: model.Family(child.Hints.ImplementerFamily), Performance: e.routePerformance(ctx)}
 	if opts.workerTurns > 0 {
 		child.Hints.WorkerTurns = opts.workerTurns
 	}
