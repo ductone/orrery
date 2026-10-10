@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ductone/orrey/internal/config"
@@ -381,6 +382,32 @@ func memoryInstruction(text string) bool {
 	return true
 }
 
+// memoryTriageConcurrency bounds parallel Jev calls when re-triaging records.
+var memoryTriageConcurrency = 16
+
+// triageMany scores every record concurrently, bounded by
+// memoryTriageConcurrency. oks[i] is false when record i got no valid score.
+func (e *Engine) triageMany(ctx context.Context, jcfg config.JevConfig, recs []store.MemoryRecord) ([]float64, []bool) {
+	scores, oks := make([]float64, len(recs)), make([]bool, len(recs))
+	sem := make(chan struct{}, max(1, memoryTriageConcurrency))
+	var wg sync.WaitGroup
+	for i, rec := range recs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-sem }()
+			scores[i], oks[i] = e.triageMemory(ctx, jcfg, MemoryCandidate{Kind: rec.Kind, Text: rec.Text})
+		}()
+	}
+	wg.Wait()
+	return scores, oks
+}
+
 // retriagePendingMemory applies the current triage to pending records in a
 // workspace: records at or above the activation score become active, those
 // below the discard score are forgotten, and the rest stay pending. It lets
@@ -392,9 +419,10 @@ func (e *Engine) retriagePendingMemory(ctx context.Context, sid string, w store.
 		return
 	}
 	changed := false
-	for _, rec := range pending {
-		score, ok := e.triageMemory(ctx, jcfg, MemoryCandidate{Kind: rec.Kind, Text: rec.Text})
-		if !ok {
+	scores, oks := e.triageMany(ctx, jcfg, pending)
+	for i, rec := range pending {
+		score := scores[i]
+		if !oks[i] {
 			continue
 		}
 		switch {

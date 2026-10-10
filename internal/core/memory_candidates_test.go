@@ -3,11 +3,13 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -396,5 +398,43 @@ func TestMemoryCleanupPending(t *testing.T) {
 	recs, _ := e.store.ListMemory(ctx, store.MemoryFilter{WorkspaceID: rw.ID})
 	if len(recs) != 1 || recs[0].Status != "active" || !strings.Contains(recs[0].Text, "orrey") {
 		t.Fatalf("cleanup result: %+v", recs)
+	}
+}
+
+func TestMemoryRetriageRunsConcurrentlyAndBounded(t *testing.T) {
+	ctx := context.Background()
+	e := memoryEngine(t, config.MemoryConfig{})
+	root := t.TempDir()
+	w, _ := e.ensureMemoryWorkspace(ctx, root)
+	for i := 0; i < 12; i++ {
+		if _, err := e.store.CommitMemory(ctx, store.MemoryRecord{WorkspaceID: w.ID, Kind: "fact", Text: fmt.Sprintf("Convention number %d for this repo", i), Provenance: "extracted", Confidence: 0.7, Status: "pending"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prev := memoryTriageConcurrency
+	memoryTriageConcurrency = 4
+	defer func() { memoryTriageConcurrency = prev }()
+	var cur, peak atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		n := cur.Add(1)
+		for {
+			p := peak.Load()
+			if n <= p || peak.CompareAndSwap(p, n) {
+				break
+			}
+		}
+		time.Sleep(30 * time.Millisecond)
+		cur.Add(-1)
+		_, _ = rw.Write([]byte(`{"answers":{"durable_memory":{"type":"noul","noul":0.9}}}`))
+	}))
+	defer srv.Close()
+	e.cfg.Jev.APIKey, e.cfg.Jev.BaseURL = "key", srv.URL
+	e.retriagePendingMemory(ctx, "s1", w, e.cfg.EffectiveJev(), false)
+	if p := peak.Load(); p < 2 || p > 4 {
+		t.Fatalf("peak concurrent calls = %d, want 2..4", p)
+	}
+	recs, err := e.store.ListMemory(ctx, store.MemoryFilter{WorkspaceID: w.ID, Status: "active"})
+	if err != nil || len(recs) != 12 {
+		t.Fatalf("active=%d err=%v", len(recs), err)
 	}
 }
