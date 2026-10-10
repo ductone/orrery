@@ -432,14 +432,16 @@ func effortFor(m model.ModelSpec, s RoutingState) model.Effort {
 		return s.EffortPin
 	}
 	want := model.EffortMedium
-	if m.WorkEffort != "" && slices.Contains([]Phase{Explore, Implement}, s.Phase) {
+	// The agent checking its own work is ordinary work: an independent
+	// reviewer checks it again, at high effort.
+	if m.WorkEffort != "" && (slices.Contains([]Phase{Explore, Implement}, s.Phase) || s.Phase == Review && s.Point != ReviewCreation) {
 		want = m.WorkEffort
 	}
 	if s.Phase == Plan {
 		// Planning starts at the model's own default; failures raise it.
 		want = model.EffortMedium
 	}
-	if slices.Contains([]Phase{Diagnose, Review}, s.Phase) {
+	if s.Phase == Diagnose || s.Point == ReviewCreation {
 		want = model.EffortHigh
 	}
 	if s.Phase == WrapUp {

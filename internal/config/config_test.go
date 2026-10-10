@@ -99,8 +99,8 @@ func TestBudgetDefaultsAndReviewFloor(t *testing.T) {
 	if cfg.Budget.ReviewFloorUSD() != 2 {
 		t.Fatalf("review floor after partial budget override = %v, want 2", cfg.Budget.ReviewFloorUSD())
 	}
-	if len(cfg.Router.FrontierFloorPhases) != 3 {
-		t.Fatalf("frontier floor phases = %v, want the 3 defaults", cfg.Router.FrontierFloorPhases)
+	if len(cfg.Router.FrontierFloorPhases) != 2 {
+		t.Fatalf("frontier floor phases = %v, want the 2 defaults", cfg.Router.FrontierFloorPhases)
 	}
 	if cfg.Budget.SessionUSD != 5 {
 		t.Fatalf("session budget override lost: %v", cfg.Budget.SessionUSD)

@@ -386,7 +386,7 @@ func Default() Config {
 		Listen: "127.0.0.1:7433", WorkspaceRoot: filepath.Join(home, "src"), Database: filepath.Join(Home(), "orrery.db"),
 		Providers: map[string]ProviderConfig{}, MCP: map[string]MCPConfig{},
 		LSP:    map[string]LSPConfig{},
-		Router: RouterConfig{FrontierFloorPhases: []string{"plan", "diagnose", "review"}, TimeValue: TimeValue{Interactive: .25}},
+		Router: RouterConfig{FrontierFloorPhases: []string{"plan", "diagnose"}, TimeValue: TimeValue{Interactive: .25}},
 		Budget: BudgetConfig{SessionUSD: 25, JobDefaultFraction: .2, MinReviewUSD: defaultMinReviewUSD},
 		Memory: MemoryConfig{Inject: true},
 	}

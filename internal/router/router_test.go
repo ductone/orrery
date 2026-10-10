@@ -218,7 +218,7 @@ func TestEffortLadder(t *testing.T) {
 		{"review findings escalate", RoutingState{Phase: Implement, Stall: StallSignals{ReviewRejected: true}}, model.EffortHigh},
 		{"wrap-up stays light", RoutingState{Phase: WrapUp}, model.EffortLow},
 		{"wrap-up failures raise one level", RoutingState{Phase: WrapUp, Stall: StallSignals{RepeatedEdits: 3}}, model.EffortMedium},
-		{"review is high and capped", RoutingState{Phase: Review, Stall: StallSignals{FailedCommands: 3}}, model.EffortHigh},
+		{"independent review is high and capped", RoutingState{Phase: Review, Point: ReviewCreation, Stall: StallSignals{FailedCommands: 3}}, model.EffortHigh},
 	}
 	for _, c := range cases {
 		if got := effortFor(m, c.state); got != c.want {
@@ -242,6 +242,12 @@ func TestWorkEffortDefault(t *testing.T) {
 	}
 	if got := effortFor(m, RoutingState{Phase: Plan}); got != model.EffortMedium {
 		t.Fatalf("plan got %s, want medium", got)
+	}
+	if got := effortFor(m, RoutingState{Phase: Review}); got != model.EffortLow {
+		t.Fatalf("self-review got %s, want the model's work effort", got)
+	}
+	if got := effortFor(m, RoutingState{Phase: Review, Point: ReviewCreation}); got != model.EffortHigh {
+		t.Fatalf("independent review got %s, want high", got)
 	}
 }
 

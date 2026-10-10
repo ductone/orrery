@@ -90,7 +90,7 @@ Most harnesses pick one model per session. Orrery re-decides at four points: the
 
 A decision runs in two stages: eligibility, then cost.
 
-**Eligibility** removes models that cannot or must not run the call. A candidate is rejected when the provider is not configured, the model was excluded after a provider failure, the request carries an image the model cannot read, input plus expected output exceeds the context window, its family is excluded, a tier pin does not match, or switching is disabled. Two floors follow: judgement work (the `frontier_floor_phases`, `plan`, `diagnose`, and `review` by default; independent reviewers; and fixing a failed review's findings) needs a frontier model, and tiny models are a last resort. A floor yields when nothing else is eligible. Reviewers additionally reject the implementer's own family, but only after confirming some other family is actually usable, so single-provider deployments still get a review.
+**Eligibility** removes models that cannot or must not run the call. A candidate is rejected when the provider is not configured, the model was excluded after a provider failure, the request carries an image the model cannot read, input plus expected output exceeds the context window, its family is excluded, a tier pin does not match, or switching is disabled. Two floors follow: judgement work (the `frontier_floor_phases`, `plan` and `diagnose` by default; independent reviewers; and fixing a failed review's findings) needs a frontier model, and tiny models are a last resort. A floor yields when nothing else is eligible. Reviewers additionally reject the implementer's own family, but only after confirming some other family is actually usable, so single-provider deployments still get a review.
 
 **Cost** ranks whatever remains, cheapest first, in dollars:
 
@@ -101,7 +101,7 @@ A decision runs in two stages: eligibility, then cost.
 
 While the agent fixes findings from a failed independent review, its turns need a frontier model. That remediation ends a run after eight turns without an edit, or after four rejected reviews; a completion whose diff is unchanged since a failed review is refused with those findings instead of being reviewed again.
 
-Reasoning effort follows phase: medium for planning, high for diagnosis and review; low for wrap-up; each model's measured work effort (or medium) for exploration and implementation; one level higher while real failures persist (failed commands, failing tests, repeated edits, review findings to fix), clamped to what each model supports. The chosen model also fixes its edit dialect and whether the strict or portable toolset is used.
+Reasoning effort follows phase: medium for planning, high for diagnosis and independent review; low for wrap-up; each model's measured work effort (or medium) for exploration, implementation and the agent checking its own work; one level higher while real failures persist (failed commands, failing tests, repeated edits, review findings to fix), clamped to what each model supports. The chosen model also fixes its edit dialect and whether the strict or portable toolset is used.
 
 Ties break deterministically: keep the current model, then prefer the configured default, then sort by ID. Identical state produces an identical decision, which is what makes replay evaluation meaningful.
 
@@ -112,7 +112,7 @@ router:
   time_value_usd_per_minute:                   # what waiting is worth
     interactive: 0.25                          # someone is waiting (default)
     background: 0                              # orrery run --background and its jobs
-  frontier_floor_phases: [plan, diagnose, review]
+  frontier_floor_phases: [plan, diagnose]
   disable_switch: false                        # true pins the session to one model
 ```
 
