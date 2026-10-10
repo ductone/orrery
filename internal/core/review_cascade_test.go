@@ -114,3 +114,20 @@ func TestLargeChangesGoStraightToTheFullReview(t *testing.T) {
 		t.Fatalf("escalations = %v", esc)
 	}
 }
+
+func TestReviewChangeReviewsAPreparedChangeWithItsEvidence(t *testing.T) {
+	h := newReviewHarness(t, true)
+	h.jev = func(map[string]any, string) float64 { return 0.1 }
+	h.reviewer = func(string, int) map[string]any { t.Fatal("no full reviewer should run"); return nil }
+	h.light = func(string) map[string]any { return verdictJSON(false, "feature.go:3 off by one") }
+	out, err := h.e.ReviewChange(context.Background(), h.workspace, "Add the feature", func() error {
+		h.write("internal/feature.go", "package internal\n\nfunc Feature() int { return 2 }\n")
+		return nil
+	}, []string{"echo evidence-ran", "false"})
+	if err != nil || out.Passed || out.Stage != "light" || len(out.Findings) != 1 || out.GateScore == nil {
+		t.Fatalf("out=%+v err=%v", out, err)
+	}
+	if spec := h.lightSpecs[0]; !strings.Contains(spec, "evidence-ran") || strings.Contains(spec, "$ false") {
+		t.Fatal("successful commands are evidence; failed ones are not")
+	}
+}

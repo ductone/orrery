@@ -23,11 +23,15 @@ import (
 const SchemaVersion = 1
 
 type Case struct {
-	Name         string         `json:"name"`
-	Spec         string         `json:"spec"`
-	Workspace    string         `json:"workspace,omitempty"`
-	Fixture      string         `json:"fixture,omitempty"`
-	Acceptance   string         `json:"acceptance"`
+	Name       string `json:"name"`
+	Spec       string `json:"spec"`
+	Workspace  string `json:"workspace,omitempty"`
+	Fixture    string `json:"fixture,omitempty"`
+	Acceptance string `json:"acceptance"`
+	// Hidden is a directory of files (usually tests) copied over the
+	// workspace after the run and before acceptance, so the agent never sees
+	// or edits what grades it.
+	Hidden       string         `json:"hidden,omitempty"`
 	ResultSchema map[string]any `json:"result_schema,omitempty"`
 	MaxUSD       float64        `json:"max_usd,omitempty"`
 	MaxTokens    int            `json:"max_tokens,omitempty"`
@@ -134,6 +138,9 @@ func Load(path string) ([]Case, error) {
 			}
 			c.Fixture = filepath.Clean(c.Fixture)
 		}
+		if c.Hidden != "" && !filepath.IsAbs(c.Hidden) {
+			c.Hidden = filepath.Clean(filepath.Join(base, c.Hidden))
+		}
 		if c.Workspace != "" && !filepath.IsAbs(c.Workspace) {
 			c.Workspace = filepath.Clean(filepath.Join(base, c.Workspace))
 		}
@@ -205,6 +212,12 @@ func runCase(parent context.Context, engine *core.Engine, policy string, c Case,
 		result.EditLandRate = 1 - float64(result.EditRetries)/float64(result.EditAttempts)
 	}
 	result.Passed = taskResult.Status == agentproto.Pass
+	if result.Passed && c.Hidden != "" {
+		if err := copyDir(c.Hidden, workspace); err != nil {
+			result.Passed = false
+			result.Error = "copy hidden acceptance files: " + err.Error()
+		}
+	}
 	if result.Passed {
 		cmd := exec.CommandContext(ctx, "sh", "-lc", c.Acceptance)
 		cmd.Dir = workspace

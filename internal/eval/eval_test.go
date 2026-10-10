@@ -97,3 +97,35 @@ func TestCaseWorkspaceIsACleanGitCheckout(t *testing.T) {
 		t.Fatalf("git log: %v %q", err, out)
 	}
 }
+
+func TestLoadResolvesHiddenAndReviewPaths(t *testing.T) {
+	dir := t.TempDir()
+	set := filepath.Join(dir, "cases.jsonl")
+	if err := os.WriteFile(set, []byte(`{"name":"a","spec":"s","fixture":"fixtures/a","hidden":"hidden/a","acceptance":"true"}`+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cases, err := Load(set)
+	if err != nil || cases[0].Hidden != filepath.Join(dir, "hidden/a") {
+		t.Fatalf("cases=%+v err=%v", cases, err)
+	}
+	review := filepath.Join(dir, "review.jsonl")
+	if err := os.WriteFile(review, []byte(`{"name":"r","task":"t","fixture":"fixtures/r","change":"changes/r","bug":true,"commands":["go test ./..."]}`+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rc, err := LoadReview(review)
+	if err != nil || rc[0].Fixture != filepath.Join(dir, "fixtures/r") || rc[0].Change != filepath.Join(dir, "changes/r") || !rc[0].Bug {
+		t.Fatalf("review cases=%+v err=%v", rc, err)
+	}
+}
+
+func TestSummarizeReviewCountsCatchesAndMisses(t *testing.T) {
+	s := summarizeReview([]ReviewResult{
+		{Name: "bug-caught", Bug: true, Approved: false, Correct: true, Stage: "light"},
+		{Name: "bug-missed", Bug: true, Approved: true, Stage: "gate"},
+		{Name: "clean-ok", Bug: false, Approved: true, Correct: true, Stage: "gate"},
+		{Name: "clean-rejected", Bug: false, Approved: false, Stage: "light"},
+	})
+	if s.Caught != 1 || s.BugCases != 2 || s.FalseRejects != 1 || s.MissedByStage["gate"] != 1 || s.CatchRate != .5 || s.FalseRejectRate != .5 {
+		t.Fatalf("summary = %+v", s)
+	}
+}

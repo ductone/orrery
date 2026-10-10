@@ -407,6 +407,7 @@ func evaluate(ctx context.Context, rt *runtime, args []string) int {
 	minPassRatio := fs.Float64("min-pass-ratio", .97, "minimum pass-rate ratio versus --baseline")
 	pinModel := fs.String("model", "", "pin each case's own model calls to this route or model name")
 	pinEffort := fs.String("effort", "", "pin each case's reasoning effort (low, medium, high, ...)")
+	reviewSet := fs.Bool("review", false, "--set is a review benchmark: prepared changes the review cascade should approve or reject")
 	if fs.Parse(args) != nil {
 		return 2
 	}
@@ -422,6 +423,27 @@ func evaluate(ctx context.Context, rt *runtime, args []string) int {
 	if *set == "" {
 		fmt.Fprintln(os.Stderr, "--set is required")
 		return 2
+	}
+	if *reviewSet {
+		cases, err := orreval.LoadReview(*set)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		report, err := orreval.RunReview(ctx, rt.engine, cases)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		encoded, _ := json.MarshalIndent(report, "", "  ")
+		if *output != "" {
+			if err := os.WriteFile(*output, append(encoded, '\n'), 0600); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+		}
+		fmt.Println(string(encoded))
+		return 0
 	}
 	cases, err := orreval.Load(*set)
 	if err != nil {
@@ -617,5 +639,6 @@ commands:
   models [--stats]              list the catalog startup would build
   shadow [--report] [--since]    emit or summarise Jev shadow observations
   eval --set tasks.jsonl         run a replay set
-  benchmark --set cases.jsonl    run isolated engineering cases and compare trends`)
+  benchmark --set cases.jsonl    run isolated engineering cases and compare trends
+  benchmark --review --set review/cases.jsonl  score the review cascade on prepared changes`)
 }
