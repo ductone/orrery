@@ -40,3 +40,21 @@ func (s *Store) ObserveMemory(ctx context.Context, id, sid string) (int, error) 
 	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_sightings WHERE memory_id=?`, id).Scan(&sessions)
 	return sessions, err
 }
+
+// MemoryWorkspaces lists every workspace that has memory records.
+func (s *Store) MemoryWorkspaces(ctx context.Context) ([]Workspace, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT w.workspace_id,w.identity_key FROM workspaces w JOIN memory_records m ON m.workspace_id=w.workspace_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Workspace
+	for rows.Next() {
+		var w Workspace
+		if err := rows.Scan(&w.ID, &w.IdentityKey); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}

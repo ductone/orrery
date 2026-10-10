@@ -61,7 +61,7 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 	}
 	if parentJob == "" {
 		memoryActions := []string{"propose", "confirm", "inspect", "correct", "forget"}
-		memoryDesc := "Control workspace memory. Propose evidence-backed candidates; explicitly confirm, inspect, correct, or forget records."
+		memoryDesc := "Control workspace memory. Propose evidence-backed candidates; inspect, correct, or forget records. Set contradicted=true to correct or forget a record this session showed to be wrong; otherwise correct and forget need user_confirmed."
 		if req.Workspace.Mode == "read" {
 			memoryActions = []string{"inspect"}
 			memoryDesc = "Inspect workspace memory. Read-only sessions cannot propose, confirm, correct, or forget records."
@@ -73,6 +73,7 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 			"text":           str(),
 			"evidence_refs":  map[string]any{"type": "array", "items": str()},
 			"user_confirmed": map[string]any{"type": "boolean"},
+			"contradicted":   map[string]any{"type": "boolean"},
 		}, "action"), func(ctx context.Context, a map[string]any) (any, error) {
 			action := fmt.Sprint(a["action"])
 			if req.Workspace.Mode == "read" && action != "inspect" {
