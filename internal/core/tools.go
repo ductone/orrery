@@ -15,7 +15,6 @@ import (
 	"strings"
 
 	"github.com/ductone/orrey/internal/agentproto"
-	"github.com/ductone/orrey/internal/jev"
 	"github.com/ductone/orrey/internal/lsp"
 	"github.com/ductone/orrey/internal/model"
 	"github.com/ductone/orrey/internal/provider"
@@ -83,8 +82,10 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		})
 	}
 	runtimeCfg.Jev = runtimeCfg.EffectiveJev()
-	if runtimeCfg.Jev.SearchRanking && runtimeCfg.Jev.APIKey != "" {
-		r.EnableSearchRanking(builtin.JevRanker{Client: jev.New(runtimeCfg.Jev.APIKey, runtimeCfg.Jev.BaseURL, runtimeCfg.Jev.Model, runtimeCfg.Jev.Timeout()), Concurrency: 16})
+	if runtimeCfg.Jev.SearchRanking {
+		if c := e.classifier(); c != nil {
+			r.EnableSearchRanking(builtin.JevRanker{Client: c, Concurrency: 16})
+		}
 	}
 	r.Add("ask", "Pause safely and request information that is genuinely required to continue. Do not use for permission or questions answerable from the workspace.", obj(map[string]any{"question": str(), "choices": map[string]any{"type": "array", "items": str()}, "allow_freeform": map[string]any{"type": "boolean"}}, "question"), func(ctx context.Context, a map[string]any) (any, error) {
 		var choices []string

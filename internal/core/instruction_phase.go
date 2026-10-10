@@ -18,10 +18,9 @@ import (
 // turn is planned, as before. The choice is stored as the session phase; from
 // the next turn the agent's own todo plan decides again.
 const (
-	instructionPhaseVersion    = "instruction-phase/v2"
-	previousAnswerChars        = 3_000
-	instructionPhaseConfidence = 0.8
-	instructionPhaseTimeout    = 3 * time.Second
+	instructionPhaseVersion = "instruction-phase/v3"
+	previousAnswerChars     = 3_000
+	instructionPhaseTimeout = 3 * time.Second
 )
 
 var instructionPhaseQuestion = map[string]jev.Question{"phase": jev.Choice(
@@ -55,7 +54,7 @@ func (e *Engine) instructionPhase(ctx context.Context, s store.Session, stored [
 	choice := &router.InstructionPhase{Phase: router.Plan, Source: "default", QuestionVersion: instructionPhaseVersion}
 	cfg, _, _, _, _ := e.runtimeSnapshot()
 	cfg.Jev = cfg.EffectiveJev()
-	if !cfg.Jev.Routing || cfg.Jev.APIKey == "" {
+	if !cfg.Jev.Routing || e.classifier() == nil {
 		return choice
 	}
 	todos, _ := e.store.Todos(ctx, s.ID)
@@ -72,15 +71,19 @@ func (e *Engine) instructionPhase(ctx context.Context, s store.Session, stored [
 	}
 	askCtx, cancel := context.WithTimeout(ctx, instructionPhaseTimeout)
 	defer cancel()
-	resp, err := jev.New(cfg.Jev.APIKey, cfg.Jev.BaseURL, cfg.Jev.Model, instructionPhaseTimeout).Ask(askCtx, state, instructionPhaseQuestion)
+	resp, err := e.classifier().Ask(askCtx, state, instructionPhaseQuestion)
 	if err != nil {
 		choice.Error = err.Error()
 	} else if a := resp.Answers["phase"]; a.Choice != "" {
+		// Take the classifier's choice unless it is no likelier than a uniform
+		// guess among the options: falling back to plan, the costliest phase,
+		// whenever confidence was merely moderate discarded most answers.
 		choice.Suggested = router.Phase(a.Choice)
-		if a.Confidence != nil {
+		choice.Confidence = a.Probabilities[a.Choice]
+		if choice.Confidence == 0 && a.Confidence != nil {
 			choice.Confidence = *a.Confidence
 		}
-		if choice.Confidence >= instructionPhaseConfidence {
+		if choice.Confidence > 1/float64(len(instructionPhaseQuestion["phase"].Criteria.(map[string]string))) {
 			choice.Phase, choice.Source = choice.Suggested, "jev"
 		}
 	}

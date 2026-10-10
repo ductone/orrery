@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/ductone/orrey/internal/classify"
 	"github.com/ductone/orrey/internal/jev"
 )
 
@@ -24,7 +25,7 @@ const (
 // JevClassifier answers review questions with Jev, one noul per item, which is
 // the pattern TypeSafe documents for comparable independent scores.
 type JevClassifier struct {
-	Client *jev.Client
+	Client classify.Classifier
 }
 
 // Verification is one command run since the last edit and its output.

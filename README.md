@@ -143,6 +143,8 @@ Overrides change only the fields they set. An entry whose id has no provider pre
 
 Several decisions use TypeSafe's [Jev](https://docs.typesafe.ai/) classifier: search ranking, review triage, the instruction phase, the answer check, tool-result relevance, and memory triage. Each is enabled under `jev:`; nothing is sent unless a site is enabled.
 
+Every one of these decisions asks through one interface, `classify.Classifier` (`internal/classify`): typed questions about a state (a calibrated yes/no probability, a choice, or a score) with typed answers. Jev is the implementation the config builds; another classifier can be plugged in with `Engine.UseClassifier`, and each decision is still enabled by its own `jev.*` switch.
+
 Jev uses the resolved `providers.ramp` key and base URL, which default to `https://api.router.com`, so no separate key is needed. Setting `jev.api_key` instead uses TypeSafe directly by default, and `jev.base_url` overrides the endpoint either way.
 
 ### Search ranking

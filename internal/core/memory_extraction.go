@@ -34,11 +34,13 @@ const memoryTriageQuestion = "Does this record state knowledge a future session 
 // triageMemory scores a candidate with Jev. It reports false when no valid
 // score is available, in which case the candidate is not recorded.
 func (e *Engine) triageMemory(ctx context.Context, jcfg config.JevConfig, candidate MemoryCandidate) (float64, bool) {
-	if jcfg.APIKey == "" {
+	if e.classifier() == nil {
 		return 0, false
 	}
 	q := jev.Noul(memoryTriageQuestion, "A convention, gotcha, workflow, command or preference not evident from the code", "A description of code behaviour or structure, session progress, speculation or task-specific detail")
-	response, err := jev.New(jcfg.APIKey, jcfg.BaseURL, jcfg.Model, jcfg.Timeout()).Ask(ctx, candidate, map[string]jev.Question{"durable_memory": q})
+	askCtx, cancel := context.WithTimeout(ctx, jcfg.Timeout())
+	defer cancel()
+	response, err := e.classifier().Ask(askCtx, candidate, map[string]jev.Question{"durable_memory": q})
 	if err != nil {
 		return 0, false
 	}
@@ -52,7 +54,7 @@ func (e *Engine) triageMemory(ctx context.Context, jcfg config.JevConfig, candid
 // conflictingMemory returns an active record of the same kind that the
 // candidate contradicts, or nil.
 func (e *Engine) conflictingMemory(ctx context.Context, jcfg config.JevConfig, candidate MemoryCandidate, records []store.MemoryRecord) *store.MemoryRecord {
-	if jcfg.APIKey == "" {
+	if e.classifier() == nil {
 		return nil
 	}
 	questions := map[string]jev.Question{}
@@ -68,7 +70,9 @@ func (e *Engine) conflictingMemory(ctx context.Context, jcfg config.JevConfig, c
 	if len(questions) == 0 {
 		return nil
 	}
-	response, err := jev.New(jcfg.APIKey, jcfg.BaseURL, jcfg.Model, jcfg.Timeout()).Ask(ctx, candidate, questions)
+	askCtx, cancel := context.WithTimeout(ctx, jcfg.Timeout())
+	defer cancel()
+	response, err := e.classifier().Ask(askCtx, candidate, questions)
 	if err != nil {
 		return nil
 	}

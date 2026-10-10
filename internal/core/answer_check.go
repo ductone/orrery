@@ -49,7 +49,7 @@ func (e *Engine) checkAnswer(ctx context.Context, sid string, s store.Session, l
 	if request == "" {
 		request = strings.TrimSpace(s.Spec)
 	}
-	if !cfg.Jev.Review || cfg.Jev.APIKey == "" || request == "" || strings.TrimSpace(result) == "" {
+	if !cfg.Jev.Review || e.classifier() == nil || request == "" || strings.TrimSpace(result) == "" {
 		return request, false, ""
 	}
 	state := map[string]any{"latest_request": truncate(request, answerCheckChars), "final_result": truncate(result, answerCheckChars)}
@@ -74,7 +74,7 @@ func (e *Engine) checkAnswer(ctx context.Context, sid string, s store.Session, l
 	}
 	askCtx, cancel := context.WithTimeout(ctx, answerCheckTimeout)
 	defer cancel()
-	resp, err := jev.New(cfg.Jev.APIKey, cfg.Jev.BaseURL, cfg.Jev.Model, answerCheckTimeout).Ask(askCtx, state, questions)
+	resp, err := e.classifier().Ask(askCtx, state, questions)
 	if err != nil {
 		e.emit(ctx, sid, "completion.answer_check", map[string]any{"error": err.Error()}, emit)
 		return request, false, ""

@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/ductone/orrey/internal/classify"
 )
 
 const (
@@ -20,49 +22,20 @@ const (
 	DefaultModel   = "jev-latest"
 )
 
-// Question is one named question. Criteria is {"true":..,"false":..} for a
-// noul, an option→description map for a choice, and an ordered []string of
-// level descriptions for a score.
-type Question struct {
-	Type         string `json:"type"`
-	Instructions string `json:"instructions"`
-	Criteria     any    `json:"criteria,omitempty"`
-}
+// The question and answer types are classify's, so a Client is a
+// classify.Classifier.
+type (
+	Question = classify.Question
+	Answer   = classify.Answer
+	Usage    = classify.Usage
+	Response = classify.Response
+)
 
-func Noul(instructions, whenTrue, whenFalse string) Question {
-	return Question{Type: "noul", Instructions: instructions, Criteria: map[string]string{"true": whenTrue, "false": whenFalse}}
-}
-
-func Choice(instructions string, options map[string]string) Question {
-	return Question{Type: "choice", Instructions: instructions, Criteria: options}
-}
-
-func Score(instructions string, levels ...string) Question {
-	return Question{Type: "score", Instructions: instructions, Criteria: levels}
-}
-
-// Answer is one typed answer. Noul answers carry only Noul; choice and score
-// answers carry Probabilities and Confidence.
-type Answer struct {
-	Type          string             `json:"type"`
-	Noul          *float64           `json:"noul,omitempty"`
-	Choice        string             `json:"choice,omitempty"`
-	Score         *float64           `json:"score,omitempty"`
-	Legend        map[string]string  `json:"legend,omitempty"`
-	Probabilities map[string]float64 `json:"probabilities,omitempty"`
-	Confidence    *float64           `json:"confidence,omitempty"`
-}
-
-type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-}
-
-type Response struct {
-	Model   string            `json:"model"`
-	Answers map[string]Answer `json:"answers"`
-	Usage   Usage             `json:"usage"`
-}
+var (
+	Noul   = classify.Noul
+	Choice = classify.Choice
+	Score  = classify.Score
+)
 
 type Client struct {
 	key, baseURL, model string
@@ -115,3 +88,5 @@ func (c *Client) Ask(ctx context.Context, state any, questions map[string]Questi
 	}
 	return out, nil
 }
+
+var _ classify.Classifier = (*Client)(nil)

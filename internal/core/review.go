@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/ductone/orrey/internal/agentproto"
-	"github.com/ductone/orrey/internal/jev"
 	"github.com/ductone/orrey/internal/model"
 	"github.com/ductone/orrey/internal/review"
 	"github.com/ductone/orrey/internal/store"
@@ -147,10 +146,14 @@ func (e *Engine) reviewTask(ctx context.Context, sid string) string {
 func (e *Engine) reviewClassifier() review.Classifier {
 	cfg, _, _, _, _ := e.runtimeSnapshot()
 	cfg.Jev = cfg.EffectiveJev()
-	if !cfg.Jev.Review || cfg.Jev.APIKey == "" {
+	if !cfg.Jev.Review {
 		return nil
 	}
-	return review.JevClassifier{Client: jev.New(cfg.Jev.APIKey, cfg.Jev.BaseURL, cfg.Jev.Model, cfg.Jev.Timeout())}
+	c := e.classifier()
+	if c == nil {
+		return nil
+	}
+	return review.JevClassifier{Client: c}
 }
 
 // runReviewShards starts one reviewer per shard and waits for all of them. It

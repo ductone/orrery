@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"github.com/ductone/orrey/internal/classify"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -86,7 +87,8 @@ func TestInstructionPhase(t *testing.T) {
 	}{
 		{"confident continuation", "implement", 0.92, 200, router.Implement, "jev"},
 		{"confident new request", "plan", 0.9, 200, router.Plan, "jev"},
-		{"unsure", "implement", 0.5, 200, router.Plan, "default"},
+		{"moderate", "implement", 0.5, 200, router.Implement, "jev"},
+		{"no better than chance", "implement", 0.15, 200, router.Plan, "default"},
 		{"classifier down", "", 0, 529, router.Plan, "default"},
 	} {
 		got := phaseEngine(t, tc.choice, tc.confidence, tc.status).instructionPhase(ctx, s, stored, nil)
@@ -94,8 +96,8 @@ func TestInstructionPhase(t *testing.T) {
 			t.Errorf("%s: %+v", tc.name, got)
 		}
 	}
-	unsure := phaseEngine(t, "implement", 0.5, 200).instructionPhase(ctx, s, stored, nil)
-	if unsure.Suggested != router.Implement || unsure.Confidence != 0.5 {
+	unsure := phaseEngine(t, "implement", 0.15, 200).instructionPhase(ctx, s, stored, nil)
+	if unsure.Suggested != router.Implement || unsure.Confidence != 0.15 {
 		t.Fatalf("a declined suggestion is still recorded: %+v", unsure)
 	}
 	e, _ := testEngine(t)
@@ -305,5 +307,19 @@ func TestInstructionPhaseStateCarriesFollowUpContext(t *testing.T) {
 	q, _ := json.Marshal(cap.req["questions"])
 	if !strings.Contains(string(q), "recommendation or explanation") {
 		t.Error("the explore criterion must cover questions, recommendations, and explanations")
+	}
+}
+
+func TestInstructionPhaseUsesThePluggedClassifier(t *testing.T) {
+	e, _ := testEngine(t)
+	e.ReplaceRuntime(config.Config{Jev: config.JevConfig{Routing: true}}, nil, nil)
+	fake := &classify.Fake{Answer: func(_ any, name string, _ classify.Question) (classify.Answer, error) {
+		return classify.Answer{Type: "choice", Choice: "diagnose", Probabilities: map[string]float64{"diagnose": .4, "plan": .3}}, nil
+	}}
+	e.UseClassifier(fake)
+	s := store.Session{ID: uuid.NewString(), Spec: "build the feature", Phase: "implement"}
+	got := e.instructionPhase(context.Background(), s, storedMessages(provider.Message{Role: "user", Content: "the tests fail now"}), nil)
+	if got.Phase != router.Diagnose || got.Confidence != .4 || len(fake.Calls) != 1 {
+		t.Fatalf("choice = %+v calls=%d", got, len(fake.Calls))
 	}
 }

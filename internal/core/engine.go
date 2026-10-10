@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/ductone/orrey/internal/agentproto"
+	"github.com/ductone/orrey/internal/classify"
 	"github.com/ductone/orrey/internal/config"
 	"github.com/ductone/orrey/internal/jev"
 	"github.com/ductone/orrey/internal/lsp"
@@ -36,23 +37,25 @@ import (
 type EmitFunc func(agentproto.AgentEvent)
 
 type Engine struct {
-	cfg               config.Config
-	store             *store.Store
-	providers         *provider.Registry
-	policy            router.Policy
-	mcp               *mcp.Manager
-	web               *webtools.Client
-	lsp               *lsp.Manager
-	runtimeMu         sync.RWMutex
-	boundary          func(context.Context) error
-	mu                sync.Mutex
-	cancels           map[string]context.CancelFunc
-	turnIDs           map[string]string
-	discovery         map[string]*instructionDiscovery
-	writers           map[string]string
-	compactedLastTurn map[string]bool
-	toolStates        map[string]*builtin.SessionState
-	baselines         map[string]workspaceBaseline
+	cfg       config.Config
+	store     *store.Store
+	providers *provider.Registry
+	policy    router.Policy
+	mcp       *mcp.Manager
+	web       *webtools.Client
+	lsp       *lsp.Manager
+	runtimeMu sync.RWMutex
+	boundary  func(context.Context) error
+	mu        sync.Mutex
+	// classifierOverride, when set, answers every classifier-backed decision.
+	classifierOverride classify.Classifier
+	cancels            map[string]context.CancelFunc
+	turnIDs            map[string]string
+	discovery          map[string]*instructionDiscovery
+	writers            map[string]string
+	compactedLastTurn  map[string]bool
+	toolStates         map[string]*builtin.SessionState
+	baselines          map[string]workspaceBaseline
 	// running counts in-flight runs per session; pendingHandoffs holds
 	// worker handoffs for sessions mid-turn; deliveredJobs are workers whose
 	// result reached the parent through job wait.
@@ -1515,13 +1518,39 @@ func currentRequest(s store.Session, latest string) string {
 	return text
 }
 
-func (e *Engine) relevanceClient() *jev.Client {
+func (e *Engine) relevanceClient() classify.Classifier {
 	cfg, _, _, _, _ := e.runtimeSnapshot()
-	cfg.Jev = cfg.EffectiveJev()
-	if !cfg.Jev.Review || cfg.Jev.APIKey == "" {
+	if !cfg.Jev.Review {
 		return nil
 	}
-	return jev.New(cfg.Jev.APIKey, cfg.Jev.BaseURL, cfg.Jev.Model, cfg.Jev.Timeout())
+	return e.classifier()
+}
+
+// UseClassifier makes every classifier-backed decision ask c instead of the
+// Jev client the config describes. Each decision is still enabled by its own
+// jev.* switch.
+func (e *Engine) UseClassifier(c classify.Classifier) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.classifierOverride = c
+}
+
+// classifier is the classifier decisions ask: the one set by UseClassifier,
+// else Jev from the config, or nil when no credentials are configured. Each
+// call site bounds its own call with a context deadline.
+func (e *Engine) classifier() classify.Classifier {
+	e.mu.Lock()
+	c := e.classifierOverride
+	e.mu.Unlock()
+	if c != nil {
+		return c
+	}
+	cfg, _, _, _, _ := e.runtimeSnapshot()
+	j := cfg.EffectiveJev()
+	if j.APIKey == "" {
+		return nil
+	}
+	return jev.New(j.APIKey, j.BaseURL, j.Model, j.Timeout())
 }
 
 func shouldBlockEditForInstructions(call provider.ToolCall, instructionBoundaryHit bool) bool {

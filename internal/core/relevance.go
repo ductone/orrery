@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ductone/orrey/internal/classify"
 	"github.com/ductone/orrey/internal/jev"
 	"github.com/ductone/orrey/internal/provider"
 	"github.com/ductone/orrey/internal/store"
@@ -22,7 +23,7 @@ var relevanceQuestion = map[string]jev.Question{"needed": jev.Noul(
 
 // relevanceAnswer asks Jev whether an old tool result is still needed. ok is
 // false when no answer was obtained, so callers must not cache the result.
-func relevanceAnswer(ctx context.Context, client *jev.Client, objective, tool, args, content string) (keep, ok bool) {
+func relevanceAnswer(ctx context.Context, client classify.Classifier, objective, tool, args, content string) (keep, ok bool) {
 	if client == nil {
 		return false, false
 	}
@@ -38,7 +39,7 @@ func relevanceAnswer(ctx context.Context, client *jev.Client, objective, tool, a
 // whether the answer is real and may be cached.
 type relevanceAsker func(ctx context.Context, objective, tool, args, content string) (keep, ok bool)
 
-func jevRelevanceAsker(client *jev.Client) relevanceAsker {
+func jevRelevanceAsker(client classify.Classifier) relevanceAsker {
 	if client == nil {
 		return nil
 	}

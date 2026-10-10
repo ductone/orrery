@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ductone/orrey/internal/classify"
 	"github.com/ductone/orrey/internal/jev"
 )
 
@@ -344,7 +345,7 @@ func SearchResultPaths(value any) []string {
 // TypeSafe documents for re-ranking: each call's state is the query paired with
 // one candidate, so scores are comparable across files.
 type JevRanker struct {
-	Client      *jev.Client
+	Client      classify.Classifier
 	Concurrency int
 }
 
