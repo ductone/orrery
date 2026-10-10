@@ -497,16 +497,60 @@ func TestStickinessProtectsTheIncumbentNotOtherWarmModels(t *testing.T) {
 	if sw := candidate(d, "ramp/claude-sonnet-5-5").SwitchPenalty; sw != 0 {
 		t.Fatalf("warm non-incumbent penalised %.2f", sw)
 	}
-	// A warm incumbent makes leaving it cost a switch penalty.
+	// A warm incumbent makes leaving it mid tool chain cost the small
+	// continuation margin, and nothing more.
 	p = NewV1(config.RouterConfig{LambdaCost: .35}, &warmLedger{warm: map[string]bool{"ramp/deepseek-v4.1-flash": true}})
 	if d, _, err = p.Decide(context.Background(), state); err != nil {
 		t.Fatal(err)
 	}
-	if sw := candidate(d, "ramp/claude-sonnet-5-5").SwitchPenalty; sw <= 0 {
-		t.Fatal("leaving a warm incumbent must cost a switch penalty")
+	if sw := candidate(d, "ramp/claude-sonnet-5-5").SwitchPenalty; sw != toolContinuationSwitchPenalty {
+		t.Fatalf("leaving a warm incumbent mid tool chain costs %.2f, want %.2f", sw, toolContinuationSwitchPenalty)
 	}
 	if sw := candidate(d, "ramp/deepseek-v4.1-flash").SwitchPenalty; sw != 0 {
 		t.Fatalf("the incumbent itself penalised %.2f", sw)
+	}
+	// Outside a tool chain there is no switch penalty at all: the work-cost
+	// estimate already prices the challenger's cold first call.
+	state.ToolContinuation = false
+	if d, _, err = p.Decide(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if sw := candidate(d, "ramp/claude-sonnet-5-5").SwitchPenalty; sw != 0 {
+		t.Fatalf("switch outside a tool chain penalised %.2f", sw)
+	}
+}
+
+// Replays session 1c4e2298 seq 61: a frontier model chosen at plan, warm on a
+// 37K prefix, must not be held through implement by a switch penalty when a
+// cheaper, faster efficient model repays its cold first call within the work
+// horizon. A mid-chain switch still needs only the small margin.
+func TestWarmFrontierIncumbentLosesToEfficientModelInImplement(t *testing.T) {
+	// Default router config: time is valued, as in the live session.
+	p := NewV1(config.RouterConfig{LambdaCost: .35, TimeValue: config.TimeValue{Interactive: .25}}, &warmLedger{warm: map[string]bool{"ramp/claude-opus-5-5": true}})
+	for _, chain := range []bool{false, true} {
+		state := RoutingState{SessionID: "s", Point: TurnStart, Phase: Implement, InputTokens: 37_000, ToolContinuation: chain, CurrentModel: "ramp/claude-opus-5-5",
+			AvailableModels: []string{"ramp/claude-opus-5-5", "ramp/claude-sonnet-5-5"},
+			// Recorded latencies give seq 61's ~43s (Opus) vs ~17s (Sonnet) of work.
+			Performance: map[string]RoutePerformance{
+				"ramp/claude-opus-5-5":   {Calls: 1000, LatencySeconds: 10.75},
+				"ramp/claude-sonnet-5-5": {Calls: 1000, LatencySeconds: 4.25},
+			}}
+		d, _, err := p.Decide(context.Background(), state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Model.ID != "ramp/claude-sonnet-5-5" {
+			t.Fatalf("tool continuation=%v: kept %s, want sonnet: %+v", chain, d.Model.ID, d.Candidates)
+		}
+		want := 0.0
+		if chain {
+			want = toolContinuationSwitchPenalty
+		}
+		for _, c := range d.Candidates {
+			if c.Model == "ramp/claude-sonnet-5-5" && c.SwitchPenalty != want {
+				t.Fatalf("tool continuation=%v: switch penalty %.2f, want %.2f", chain, c.SwitchPenalty, want)
+			}
+		}
 	}
 }
 

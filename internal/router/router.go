@@ -281,19 +281,15 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 			// config-vouched models win ties against it.
 			c.Quality -= discoveredQualityPenalty
 		}
-		// Cache stickiness: switching to a warm model costs latency/context; but
-		// when the prefix is cold (e.g. right after compaction) there is no cache
-		// to preserve, so drop stickiness and let cost/quality decide.
+		// No generic switch penalty: each candidate's work cost already prices its
+		// next call at its actual cache warmth, so a switch's cold first call is in
+		// the estimate. Only a mid-tool-chain switch keeps a small margin, for what
+		// money doesn't capture: the new model lacks the incumbent's reasoning
+		// about the chain in progress. A de-escalation after a cleared stall is
+		// exempt so a frontier model a stall boost put in place can step down.
 		deescalate := s.Stall.Deescalated && !stalled(s.Stall) && !s.Stall.ReviewRejected && slices.Contains([]Phase{Explore, Implement, WrapUp}, s.Phase)
 		if s.ToolContinuation && m.ID != s.CurrentModel && incumbentWarm && !deescalate {
-			c.SwitchPenalty += .18
-		}
-		// A warm prefix normally keeps the incumbent: rebuilding the cache costs
-		// more than a small score gap. That must not hold a frontier model a stall
-		// boost put in place once the failures have cleared, or a long clean
-		// implement phase never returns to the efficient tier.
-		if m.ID != s.CurrentModel && incumbentWarm && !deescalate {
-			c.SwitchPenalty += .08 + math.Min(.25, float64(s.InputTokens)/400000)
+			c.SwitchPenalty += toolContinuationSwitchPenalty
 		}
 		if perf, ok := s.Performance[m.ID]; ok {
 			c.PerformancePenalty = performancePenalty(perf, p.now())
@@ -450,6 +446,10 @@ func workEstimate(m model.ModelSpec, s RoutingState, warmTokens int) (float64, f
 // only from a provider listing, so price alone cannot make one outscore a
 // built-in model on the main loop.
 const discoveredQualityPenalty = .25
+
+// toolContinuationSwitchPenalty is the margin a challenger must clear to take
+// over mid tool chain from a warm incumbent.
+const toolContinuationSwitchPenalty = .05
 
 func quality(t model.Tier, p Phase, stall StallSignals) float64 {
 	q := map[model.Tier]float64{model.Frontier: .96, model.Efficient: .78, model.Tiny: .42}[t]

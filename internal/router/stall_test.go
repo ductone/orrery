@@ -67,13 +67,20 @@ func TestLongCleanPhaseAndStallRecovery(t *testing.T) {
 			state.CurrentModel = d.Model.ID
 			state.ToolContinuation = true
 			state.Stall.FailedCommands = 0
-			// Without recovery, cache stickiness alone keeps the frontier incumbent.
+			// Without recovery, only the small tool-continuation margin protects the
+			// frontier incumbent; the work-cost estimate decides, and the efficient
+			// model clears the margin.
 			d, _, err = p.Decide(context.Background(), state)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if d.Model.Tier != model.Frontier {
-				t.Fatalf("fixture needs a sticky frontier incumbent: %+v", d)
+			if d.Model.Tier != model.Efficient {
+				t.Fatalf("a warm frontier incumbent must not be kept by stickiness alone: %+v", d)
+			}
+			for _, c := range d.Candidates {
+				if c.Rejected == "" && c.Model != state.CurrentModel && c.SwitchPenalty != toolContinuationSwitchPenalty {
+					t.Fatalf("mid-chain switch penalty %.2f, want %.2f", c.SwitchPenalty, toolContinuationSwitchPenalty)
+				}
 			}
 			state.Stall.Deescalated = true
 			d, _, err = p.Decide(context.Background(), state)
