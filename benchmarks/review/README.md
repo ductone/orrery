@@ -1,10 +1,10 @@
 # Review benchmark set
 
 Measures whether Orrery's review cascade (Jev gate, light reviewer, full
-review) rejects buggy changes and approves clean ones. There are 14 cases:
-8 with a real correctness bug and 6 correct changes (docs-only, small feature,
+review) rejects buggy changes and approves clean ones. There are 18 cases:
+10 with a real correctness bug and 8 correct changes (docs-only, small feature,
 behaviour-preserving refactor, legitimate test rewrite, correct concurrency,
-tricky-but-correct boundary handling).
+tricky-but-correct boundary handling, and two non-code changes: a README and an example config). Two bugs are in non-code files a program depends on: a CI workflow and an embedded JSON schema.
 
 ## Layout
 

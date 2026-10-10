@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
@@ -11,10 +12,10 @@ import (
 	"github.com/ductone/orrey/internal/review"
 )
 
-func TestJevGateApprovesASmallChange(t *testing.T) {
+func TestJevGateApprovesAProseChange(t *testing.T) {
 	h := newReviewHarness(t, true)
-	h.write("internal/feature.go", "package internal\n\nfunc Feature() int { return 1 }\n")
-	h.jev = func(map[string]any, string) float64 { return 0.1 }
+	h.write("docs/guide.md", "# Guide\n\nHow to use the feature.\n")
+	h.jev = func(map[string]any, string) float64 { return 0.05 }
 	h.gate = func(state map[string]any) float64 {
 		if _, ok := state["commands_since_last_edit"]; !ok {
 			t.Error("the gate must see the commands run since the last edit")
@@ -23,7 +24,7 @@ func TestJevGateApprovesASmallChange(t *testing.T) {
 	}
 	h.reviewer = func(string, int) map[string]any { t.Fatal("no full reviewer should run"); return nil }
 	h.light = func(string) map[string]any { t.Fatal("no light reviewer should run"); return nil }
-	passed, text, err := h.run(commandRecord{Command: "go test ./...", Output: "ok"})
+	passed, text, err := h.run(commandRecord{Command: "markdownlint docs", Output: "ok"})
 	if err != nil || !passed || !strings.Contains(text, "jev gate") {
 		t.Fatalf("passed=%v text=%s err=%v", passed, text, err)
 	}
@@ -32,6 +33,36 @@ func TestJevGateApprovesASmallChange(t *testing.T) {
 	}
 }
 
+func TestJevGateNeverJudgesCode(t *testing.T) {
+	h := newReviewHarness(t, true)
+	h.write("internal/feature.go", "package internal\n\nfunc Feature() int { return 1 }\n")
+	h.jev = func(map[string]any, string) float64 { return 0.05 }
+	h.gate = func(map[string]any) float64 { t.Error("the gate must not be asked about code"); return 1 }
+	h.light = func(string) map[string]any { return verdictJSON(true) }
+	if passed, _, err := h.run(); err != nil || !passed || len(h.lightSpecs) != 1 {
+		t.Fatalf("passed=%v err=%v light=%d", passed, err, len(h.lightSpecs))
+	}
+	if g := h.events("review.gate"); len(g) != 1 || !strings.Contains(fmt.Sprint(g[0]["skipped"]), "code changed") {
+		t.Fatalf("gate events = %v", g)
+	}
+}
+
+func TestJevGateSkipsConfigurationJevCallsBehaviour(t *testing.T) {
+	h := newReviewHarness(t, true)
+	h.write("docs/guide.md", "# Guide\n")
+	h.write("ci/pipeline.yaml", "steps:\n  - run: make test\n")
+	h.jev = func(state map[string]any, q string) float64 {
+		if q == "needs_review" && stateFile(state) == "ci/pipeline.yaml" {
+			return 0.9
+		}
+		return 0.05
+	}
+	h.gate = func(map[string]any) float64 { t.Error("behavioural configuration must not reach the gate"); return 1 }
+	h.light = func(string) map[string]any { return verdictJSON(true) }
+	if passed, _, err := h.run(); err != nil || !passed || len(h.lightSpecs) != 1 {
+		t.Fatalf("passed=%v err=%v light=%d", passed, err, len(h.lightSpecs))
+	}
+}
 func TestLightReviewApprovesWhenTheGateEscalates(t *testing.T) {
 	h := newReviewHarness(t, true)
 	h.write("internal/feature.go", "package internal\n\nfunc Feature() int { return 1 }\n")
@@ -124,7 +155,7 @@ func TestReviewChangeReviewsAPreparedChangeWithItsEvidence(t *testing.T) {
 		h.write("internal/feature.go", "package internal\n\nfunc Feature() int { return 2 }\n")
 		return nil
 	}, []string{"echo evidence-ran", "false"})
-	if err != nil || out.Passed || out.Stage != "light" || len(out.Findings) != 1 || out.GateScore == nil {
+	if err != nil || out.Passed || out.Stage != "light" || len(out.Findings) != 1 {
 		t.Fatalf("out=%+v err=%v", out, err)
 	}
 	if spec := h.lightSpecs[0]; !strings.Contains(spec, "evidence-ran") || strings.Contains(spec, "$ false") {

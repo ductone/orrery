@@ -200,7 +200,7 @@ Phase changes compact history only at real boundaries: not when the history is s
 When a worker changes the workspace, Orrery reviews the change in stages, cheapest first:
 
 1. **Size.** A change over 400 reviewed lines or 10 files (assets, lockfiles, generated and binary files don't count) goes straight to the full review below.
-2. **Jev gate.** Otherwise Jev sees the request, the diff, and every command run since the last edit with its output, and approves the change outright (at a score of 0.7 or more) when it is simple and clearly correct (docs, configuration, small contained code changes the commands support). It may not approve a change that deletes or weakens tests; a reviewer judges those. Below its threshold, or without `jev.review`, the change goes on.
+2. **Jev gate, prose only.** A change that touches no code file (by name) and whose other files Jev judges prose rather than behaviour (docs and example text, not CI, schemas, or configuration a program reads) is offered to Jev, which sees the request, the diff, and every command run since the last edit, and approves it at a score of 0.7 or more. Code never reaches the gate: on a review benchmark Jev's scores barely separated buggy code changes from clean ones and it approved two of eight bugs, while the light reviewer caught every bug it saw. Changes that delete or weaken tests skip the gate too.
 3. **Light review.** One reviewer from another model family, at low effort with the same evidence and a few turns, approves, rejects a concrete bug (file, line, failing case), or escalates when it suspects a problem it cannot confirm.
 4. **Full review**, only for large changes and escalations, as follows.
 

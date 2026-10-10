@@ -152,3 +152,38 @@ func LightSpec(task string, files []File, evidence []Verification) string {
 	}
 	return b.String()
 }
+
+// ProseOnly reports whether every changed file is prose or an asset, so the
+// Jev gate may approve the change. A file classed as code by its name never
+// is; lockfiles, generated files, binaries and assets don't count; every other
+// file (docs, configuration, data) must be judged prose by c's needs-review
+// question, below the plan's cutoff. It returns the scores it asked for and
+// why the change is not prose-only, if it isn't.
+func ProseOnly(ctx context.Context, c Classifier, task string, files []File) (bool, map[string]float64, string) {
+	var other []File
+	for _, f := range files {
+		switch f.Class {
+		case Code:
+			return false, nil, "code changed: " + f.Path
+		case Asset, Lockfile, Generated, BinaryC:
+		default:
+			other = append(other, f)
+		}
+	}
+	if len(other) == 0 {
+		return true, nil, ""
+	}
+	scores, err := c.NeedsReview(ctx, task, other)
+	if err != nil {
+		return false, nil, "needs-review: " + err.Error()
+	}
+	byPath := make(map[string]float64, len(other))
+	why := ""
+	for i, f := range other {
+		byPath[f.Path] = scores[i]
+		if scores[i] >= defaultNeedsReviewCutoff && why == "" {
+			why = fmt.Sprintf("%s changes behaviour (%.2f)", f.Path, scores[i])
+		}
+	}
+	return why == "", byPath, why
+}

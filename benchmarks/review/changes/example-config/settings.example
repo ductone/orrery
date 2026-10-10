@@ -1,0 +1,4 @@
+# Example settings. Copy to settings and edit.
+endpoint = https://api.example.com
+# How many times to retry a failed request (default 3).
+retry_limit = 3

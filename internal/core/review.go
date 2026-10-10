@@ -346,14 +346,8 @@ func (e *Engine) reviewCascade(ctx context.Context, sid, parent string, req agen
 		evidence[i] = review.Verification{Command: c.Command, Output: c.Output}
 	}
 	if gater, ok := classifier.(review.Gater); ok && !review.TouchesTests(files) {
-		gateCtx, cancel := context.WithTimeout(ctx, gateTimeout)
-		score, err := gater.Gate(gateCtx, task, files, evidence)
-		cancel()
-		approved := err == nil && score >= review.GateThreshold
-		e.emit(ctx, sid, "review.gate", map[string]any{"score": score, "threshold": review.GateThreshold, "approved": approved, "error": errString(err)}, emit)
-		if approved {
-			e.emit(ctx, sid, "review.outcome", map[string]any{"pass": true, "stage": "gate", "findings": []string{}}, emit)
-			return true, store.JSON(map[string]any{"pass": true, "findings": []string{}, "approved_by": "jev gate"}), true
+		if approved, done := e.gateReview(ctx, sid, gater, classifier, task, files, evidence, emit); done {
+			return approved, store.JSON(map[string]any{"pass": true, "findings": []string{}, "approved_by": "jev gate"}), true
 		}
 	}
 	verdicts, families := e.runReviewShards(ctx, sid, parent, req, review.Plan{}, []int{0}, spawnOptions{reviewSpec: review.LightSpec(task, files, evidence), resultSchema: lightReviewSchema, workerTurns: review.LightReviewTurns, effort: review.LightReviewEffort}, emit)
@@ -380,4 +374,23 @@ func (e *Engine) reviewCascade(ctx context.Context, sid, parent string, req agen
 		findings = []string{}
 	}
 	return v.Pass, store.JSON(map[string]any{"pass": v.Pass, "findings": findings, "families": families, "implementer_family": implementer, "stage": "light"}), true
+}
+
+// gateReview offers a prose-only change to the Jev gate. done is true when the
+// gate approved it; otherwise the light reviewer decides.
+func (e *Engine) gateReview(ctx context.Context, sid string, gater review.Gater, classifier review.Classifier, task string, files []review.File, evidence []review.Verification, emit EmitFunc) (approved, done bool) {
+	gateCtx, cancel := context.WithTimeout(ctx, gateTimeout)
+	defer cancel()
+	prose, scores, why := review.ProseOnly(gateCtx, classifier, task, files)
+	if !prose {
+		e.emit(ctx, sid, "review.gate", map[string]any{"approved": false, "skipped": why, "needs_review": scores}, emit)
+		return false, false
+	}
+	score, err := gater.Gate(gateCtx, task, files, evidence)
+	approved = err == nil && score >= review.GateThreshold
+	e.emit(ctx, sid, "review.gate", map[string]any{"score": score, "threshold": review.GateThreshold, "approved": approved, "needs_review": scores, "error": errString(err)}, emit)
+	if approved {
+		e.emit(ctx, sid, "review.outcome", map[string]any{"pass": true, "stage": "gate", "findings": []string{}}, emit)
+	}
+	return approved, approved
 }

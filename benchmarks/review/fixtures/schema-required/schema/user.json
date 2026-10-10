@@ -1,0 +1,8 @@
+{
+  "required": ["id", "name", "email"],
+  "properties": {
+    "id": "string",
+    "name": "string",
+    "email": "string"
+  }
+}
