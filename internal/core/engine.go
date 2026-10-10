@@ -889,7 +889,9 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			currentModel = ""
 			delete(e.compactedLastTurn, sid)
 		}
-		newInstruction := endsWithUserInstruction(stored)
+		// The opening request is the session spec, not a stored message, so a
+		// root session's first turn is a new instruction too.
+		newInstruction := endsWithUserInstruction(stored) || (parentJob == "" && len(stored) == 0)
 		runtimeCfg, runtimeProviders, runtimePolicy, _, _ := e.runtimeSnapshot()
 		state := router.RoutingState{SessionID: sid, Turn: s.Turn + 1, Point: point, Phase: router.Phase(s.Phase), CurrentModel: currentModel, InputTokens: inputTokens, EstimatedOutput: 4000, HasImage: messagesHaveImages(stored), ToolContinuation: len(stored) > 0 && stored[len(stored)-1].Role == "tool", NewInstruction: newInstruction, Stall: stall, AvailableModels: runtimeProviders.AvailableIDs(), Performance: e.routePerformance(ctx)}
 		if newInstruction {

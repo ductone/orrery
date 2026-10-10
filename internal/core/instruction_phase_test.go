@@ -178,7 +178,10 @@ func TestHarnessNudgesAreNotNewInstructions(t *testing.T) {
 	if !nudged {
 		t.Fatal("the scenario must include a harness review rejection")
 	}
-	for _, s := range routingStates(t, e, sid) {
+	for i, s := range routingStates(t, e, sid) {
+		if i == 0 {
+			continue // the opening request is a new instruction
+		}
 		if s.NewInstruction || s.Phase == router.Plan && s.InstructionPhase != nil {
 			t.Fatalf("turn %d treated a harness nudge as a new instruction: %+v", s.Turn, s)
 		}

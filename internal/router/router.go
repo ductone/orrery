@@ -435,7 +435,11 @@ func effortFor(m model.ModelSpec, s RoutingState) model.Effort {
 	if m.WorkEffort != "" && slices.Contains([]Phase{Explore, Implement}, s.Phase) {
 		want = m.WorkEffort
 	}
-	if slices.Contains([]Phase{Plan, Diagnose, Review}, s.Phase) {
+	if s.Phase == Plan {
+		// Planning starts at the model's own default; failures raise it.
+		want = model.EffortMedium
+	}
+	if slices.Contains([]Phase{Diagnose, Review}, s.Phase) {
 		want = model.EffortHigh
 	}
 	if s.Phase == WrapUp {

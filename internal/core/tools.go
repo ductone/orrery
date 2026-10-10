@@ -175,6 +175,12 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 	// entirely for read-only sessions so the capability is both filesystem-safe
 	// and non-escalating.
 	if req.Workspace.Mode != "read" {
+		r.Add("consult", consultDescription, obj(map[string]any{"question": str()}, "question"), func(ctx context.Context, a map[string]any) (any, error) {
+			q, _ := a["question"].(string)
+			return e.consult(ctx, sid, q, emit)
+		})
+	}
+	if req.Workspace.Mode != "read" {
 		r.Add("spawn", "Create an in-process worker with isolated session state and a hard budget slice. Read workers run asynchronously. Shared-write workers run synchronously so the parent cannot mutate the checkout at the same time.", obj(map[string]any{"spec": str(), "result_schema": map[string]any{"type": "object"}, "budget_fraction": map[string]any{"type": "number"}, "review": map[string]any{"type": "boolean"}, "phase": map[string]any{"type": "string", "enum": []string{"explore", "plan", "implement", "diagnose", "review", "wrap-up"}}, "workspace_mode": map[string]any{"type": "string", "enum": []string{"read", "shared-write"}}}, "spec"), func(ctx context.Context, a map[string]any) (any, error) {
 			if req.Depth == 0 {
 				return nil, errors.New("spawn forbidden at depth 0")

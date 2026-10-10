@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/ductone/orrey/internal/jev"
@@ -63,7 +64,7 @@ func (e *Engine) instructionPhase(ctx context.Context, s store.Session, stored [
 		plan = append(plan, map[string]string{"text": t.Text, "phase": t.Phase, "status": t.Status})
 	}
 	state := map[string]any{
-		"message":         truncate(lastUserText(stored), instructionTextChars),
+		"message":         truncate(firstNonEmpty(lastUserText(stored), s.Spec), instructionTextChars),
 		"first_request":   truncate(s.Spec, instructionTextChars),
 		"current_phase":   s.Phase,
 		"previous_plan":   plan,
@@ -89,4 +90,14 @@ func (e *Engine) instructionPhase(ctx context.Context, s store.Session, stored [
 	}
 	e.emit(ctx, s.ID, "routing.instruction_phase", choice, emit)
 	return choice
+}
+
+// firstNonEmpty returns the first of values that is not blank.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }

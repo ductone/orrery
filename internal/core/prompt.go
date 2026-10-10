@@ -100,6 +100,13 @@ func systemPrompt(p promptContext) string {
 		schema,
 	)
 
+	if has("consult") {
+		section("HARD DECISIONS",
+			"Plan as you go: read, act, check, and adjust. Most tasks need no separate plan.",
+			"When a decision is genuinely hard (an ambiguous or conflicting requirement, a design that would be costly to reverse, contradictory evidence, or an approach that has failed twice), call consult with the specific question before committing to an answer.",
+		)
+	}
+
 	if has("spawn") {
 		explore := ""
 		if !p.efficientWorker {

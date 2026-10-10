@@ -240,8 +240,8 @@ func TestWorkEffortDefault(t *testing.T) {
 	if got := effortFor(m, RoutingState{Phase: Implement, Stall: StallSignals{FailedCommands: 2}}); got != model.EffortMedium {
 		t.Fatalf("failures got %s, want one level above the work effort", got)
 	}
-	if got := effortFor(m, RoutingState{Phase: Plan}); got != model.EffortHigh {
-		t.Fatalf("plan got %s, want high", got)
+	if got := effortFor(m, RoutingState{Phase: Plan}); got != model.EffortMedium {
+		t.Fatalf("plan got %s, want medium", got)
 	}
 }
 
