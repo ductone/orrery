@@ -11,7 +11,6 @@ import (
 
 	"github.com/ductone/orrey/internal/agentproto"
 	"github.com/ductone/orrey/internal/config"
-	"github.com/ductone/orrey/internal/shadow"
 	"github.com/ductone/orrey/internal/store"
 )
 
@@ -155,7 +154,6 @@ func (e *Engine) refreshMemory(ctx context.Context, sid, workspacePath, query, p
 	}
 	selected := rankMemory(records, query, cfg.Memory.Records(), cfg.Memory.Tokens(), cfg.Memory.RecordBytes())
 	boundaryID := fmt.Sprintf("%s:%s:%d", sid, phase, turn)
-	e.maybeShadowMemorySelect(ctx, sid, turn, records, query)
 	ep := &memoryEpoch{boundaryID: boundaryID, workspaceID: w.ID, phase: phase, records: selected}
 	if cfg.Memory.Inject {
 		ep.rendered = renderMemory(selected)
@@ -308,55 +306,6 @@ func (e *Engine) emitMemoryRetrieved(ctx context.Context, sid string, cfg config
 		"cache_boundary_id": boundaryID,
 		"outcome":           outcome,
 	}, emit)
-}
-
-// maybeShadowMemorySelect asks Jev, in shadow only, whether each candidate is
-// relevant. The bounded state contains only candidate IDs/metadata and a
-// short excerpt derived from the record text itself (no workspace identity),
-// and the answer is never read back into selection: it is purely an
-// observation compared against the deterministic ranking after the fact.
-func (e *Engine) maybeShadowMemorySelect(ctx context.Context, sid string, turn int, records []store.MemoryRecord, query string) {
-	cfg, _, _, _, _ := e.runtimeSnapshot()
-	if !cfg.Memory.Jev.Selection || cfg.EffectiveJev().APIKey == "" {
-		return
-	}
-	max := cfg.Memory.Jev.MaxCandidatesLimit()
-	if len(records) > max {
-		records = records[:max]
-	}
-	if len(records) == 0 {
-		return
-	}
-	now := time.Now()
-	candidates := make([]shadow.MemoryCandidate, 0, len(records))
-	for _, r := range records {
-		candidates = append(candidates, shadow.MemoryCandidate{
-			ID:         r.ID,
-			Kind:       r.Kind,
-			Scope:      r.Scope,
-			Confidence: r.Confidence,
-			AgeDays:    int(now.Sub(r.UpdatedAt).Hours() / 24),
-		})
-	}
-	state := map[string]any{"query_terms": queryTerms(query), "candidates": candidates}
-	questions := shadow.MemorySelectQuestions(candidates)
-	e.shadowAsk(ctx, sid, shadow.MemorySelect, shadow.MemorySelectVersion, turn, state, questions, nil)
-}
-
-// maybeShadowCompactionBenefit asks Jev, in shadow only, whether compacting
-// now looks worthwhile. It never decides anything: the deterministic gate in
-// compaction_gate.go and the token-pressure path remain authoritative.
-func (e *Engine) maybeShadowCompactionBenefit(ctx context.Context, sid string, turn, inputTokens, contextWindow int) {
-	cfg, _, _, _, _ := e.runtimeSnapshot()
-	if !cfg.Memory.Jev.CompactionBenefit || cfg.EffectiveJev().APIKey == "" {
-		return
-	}
-	state := map[string]any{
-		"input_tokens":       inputTokens,
-		"context_window":     contextWindow,
-		"remaining_fraction": 1 - float64(inputTokens)/float64(max(contextWindow, 1)),
-	}
-	e.shadowAsk(ctx, sid, shadow.CompactionBenefit, shadow.CompactionBenefitVersion, turn, state, shadow.CompactionBenefitQuestions(), nil)
 }
 
 const memoryLifecycleEventVersion = 1

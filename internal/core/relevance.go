@@ -146,9 +146,9 @@ func (e *Engine) scheduleMasking(ctx context.Context, sid, objective string) {
 		return
 	}
 	ask := e.maskingAsker()
-	e.shadowWG.Add(1)
+	e.backgroundWG.Add(1)
 	go func() {
-		defer e.shadowWG.Done()
+		defer e.backgroundWG.Done()
 		defer r.running.Store(false)
 		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 		defer cancel()

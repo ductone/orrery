@@ -96,7 +96,7 @@ func TestMemoryCompletionAndCatchUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.catchUpMemory(ctx)
-	e.waitShadows()
+	e.waitBackground()
 	watermark, err := e.store.MemoryWatermark(ctx, "s1")
 	if err != nil || watermark != terminal.Seq {
 		t.Fatalf("watermark=%d want=%d err=%v", watermark, terminal.Seq, err)
@@ -110,7 +110,7 @@ func TestMemoryCompletionAndCatchUp(t *testing.T) {
 		t.Fatalf("records=%+v err=%v", records, err)
 	}
 	e.catchUpMemory(ctx)
-	e.waitShadows()
+	e.waitBackground()
 	if calls.Load() != 1 {
 		t.Fatalf("extraction repeated: %d calls", calls.Load())
 	}

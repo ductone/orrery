@@ -143,26 +143,11 @@ Models Ramp serves only through upstreams that need the account's own provider k
 
 Overrides change only the fields they set. An entry whose id has no provider prefix names a model, and applies to every route serving it; one that names no served model is reported as a warning. An entry for a route that is not in the catalog adds it when it gives `family`, `tier`, `context_window`, `max_output`, and input and output pricing; otherwise it is reported as a warning and skipped, since the model may just not have been listed this time.
 
-## Jev shadow observations
+## Jev
 
-Orrery can ask TypeSafe's [Jev](https://docs.typesafe.ai/) classifier the same questions its own heuristics answer, and record the answers without acting on them. Enable sites under `jev.shadow`; nothing is sent unless a site is listed.
+Several decisions use TypeSafe's [Jev](https://docs.typesafe.ai/) classifier: search ranking, review triage, the instruction phase, the answer check, tool-result relevance, and memory triage. Each is enabled under `jev:`; nothing is sent unless a site is enabled.
 
 Jev uses the resolved `providers.ramp` key and base URL, which default to `https://api.router.com`, so no separate key is needed. Setting `jev.api_key` instead uses TypeSafe directly by default, and `jev.base_url` overrides the endpoint either way.
-
-| Site | Asked when | Compared with |
-|---|---|---|
-| `phase` | every turn, after routing | the phase the router used (review workers excluded, since their phase is fixed) |
-| `review` | before each independent review (bug risk of the diff) and after an inconclusive one (reading the reviewer's output) | the review verdict, and the next conclusive review attempt |
-
-Calls run asynchronously on their own timeout, failures are recorded rather than surfaced, and shadow spend is not charged to the session budget. Observations live in the `shadow_observations` table with their question version, so changed wording never mixes with earlier data.
-
-```sh
-./orrery shadow --report                     # volume, latency, agreement by classifier certainty
-./orrery shadow --since 72h --site turn      # JSONL with per-record checks
-./orrery shadow --include-state | jq 'select(.checks[]?.agree == false)'   # disagreements to label by hand
-```
-
-`--include-state` adds the exact state sent to Jev, which contains source content; it is omitted by default.
 
 ### Search ranking
 

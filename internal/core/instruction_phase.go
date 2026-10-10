@@ -64,8 +64,8 @@ func (e *Engine) instructionPhase(ctx context.Context, s store.Session, stored [
 		plan = append(plan, map[string]string{"text": t.Text, "phase": t.Phase, "status": t.Status})
 	}
 	state := map[string]any{
-		"message":         truncate(lastUserText(stored), shadowSpecChars),
-		"first_request":   truncate(s.Spec, shadowSpecChars),
+		"message":         truncate(lastUserText(stored), instructionTextChars),
+		"first_request":   truncate(s.Spec, instructionTextChars),
 		"current_phase":   s.Phase,
 		"previous_plan":   plan,
 		"previous_answer": truncate(lastAssistantText(stored), previousAnswerChars),

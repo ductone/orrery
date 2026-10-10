@@ -11,7 +11,7 @@ import (
 )
 
 func TestClosestCommand(t *testing.T) {
-	for typo, want := range map[string]string{"serv": "serve", "tiu": "tui", "shadwo": "shadow", "deploy": ""} {
+	for typo, want := range map[string]string{"serv": "serve", "tiu": "tui", "modles": "models", "deploy": ""} {
 		if got := closestCommand(typo); got != want {
 			t.Errorf("closestCommand(%q) = %q, want %q", typo, got, want)
 		}

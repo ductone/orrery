@@ -85,7 +85,7 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(shadowSchema + modelStatsSchema + modelOutcomesSchema)
+	_, err = s.db.Exec(modelStatsSchema + modelOutcomesSchema)
 	if err != nil {
 		return err
 	}
@@ -347,7 +347,7 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"request_receipts", "events", "messages", "todos", "work_items", "continuation", "cache_ledger", "jobs", "routing_records", "checkpoints", "pending_inputs", "queued_messages", "shadow_observations"} {
+	for _, table := range []string{"request_receipts", "events", "messages", "todos", "work_items", "continuation", "cache_ledger", "jobs", "routing_records", "checkpoints", "pending_inputs", "queued_messages"} {
 		if _, err = tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE session_id=?`, id); err != nil {
 			return err
 		}

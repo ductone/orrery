@@ -170,7 +170,7 @@ func TestScheduledMaskingWarmsCacheForNextTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.scheduleMasking(ctx, s.ID, "obj")
-	e.shadowWG.Wait()
+	e.backgroundWG.Wait()
 	msgs, err := st.Messages(ctx, s.ID)
 	if err != nil {
 		t.Fatal(err)

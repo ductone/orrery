@@ -41,14 +41,12 @@ budget:
 #     tier: efficient
 #   - id: ramp/some-flaky-model
 #     disabled: true
-# Shadow observations from TypeSafe's Jev classifier. Answers are recorded next
-# to the harness's own decision and never change behaviour. Each listed site
-# sends session content (task text, plan, tool calls, diffs) to TypeSafe.
+# TypeSafe's Jev classifier. Each enabled site sends session content (task
+# text, plan, tool calls, diffs) to TypeSafe.
 # jev:
 #   # Uses the providers.ramp key and base URL (default https://api.router.com).
 #   # Optional direct override: set api_key (uses TypeSafe directly) and/or base_url.
 #   # api_key: "!env TYPESAFE_API_KEY"
-#   shadow: [phase, difficulty, review]
 #   # Adds an intent parameter to search; broad matches are ranked by relevance.
 #   # Sends each matching file's path and sampled matching lines to TypeSafe.
 #   search_ranking: true
@@ -73,14 +71,6 @@ budget:
 #   max_tokens: 1200
 #   max_record_bytes: 2048
 #   retain_days: 0 # 0 means records never expire automatically
-#   # Bounded Jev policy signals for memory selection and compaction-benefit
-#   # estimation. Credentials, base_url, and model are reused from jev above;
-#   # this does not add a separate credential path.
-#   jev:
-#     selection: false
-#     compaction_benefit: false
-#     timeout: 250ms
-#     max_candidates: 12
 telemetry:
   otlp_endpoint: "http://localhost:4318"
 web_search:

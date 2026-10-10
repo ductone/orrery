@@ -59,7 +59,7 @@ type Engine struct {
 	running         map[string]int
 	pendingHandoffs map[string][]handoff
 	deliveredJobs   map[string]bool
-	shadowWG        sync.WaitGroup
+	backgroundWG    sync.WaitGroup
 	// memoryEpochs tracks the pinned memory set (and cache-boundary ID) per
 	// session, refreshed only at a declared cache-safe boundary: session
 	// start, phase transition, or compaction. It is never re-retrieved every
@@ -113,7 +113,7 @@ func (e *Engine) routePerformance(ctx context.Context) map[string]router.RoutePe
 }
 func (e *Engine) Store() *store.Store { return e.store }
 func (e *Engine) Close() error {
-	e.waitShadows()
+	e.waitBackground()
 	if e.lsp != nil {
 		return e.lsp.Close()
 	}
@@ -935,7 +935,6 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		}
 		outputCap := capFor(decision.Model.ID)
 		e.emit(ctx, sid, "routing.decision", map[string]any{"decision": decision, "explanation": why}, emit)
-		e.shadowTurn(ctx, s, stored, state, decision)
 		reg := e.toolRegistry(sid, parentJob, req, decision.EditDialect, discovery, emit)
 		efficientWorker := e.hasEfficientWorker()
 		// Read-only workers have a deliberately small budget. Reserve their last
@@ -1524,7 +1523,6 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		}
 		e.scheduleMasking(ctx, sid, objective)
 		compactNow := inputTokens > effectiveContextWindow(decision.Model)*3/5
-		e.maybeShadowCompactionBenefit(ctx, sid, s.Turn, inputTokens, decision.Model.ContextWindow)
 		if current.Phase != s.Phase && !compactNow {
 			due, why := compactions.phaseChange(s.Phase, current.Phase, s.Turn, inputTokens, effectiveContextWindow(decision.Model))
 			if !due {

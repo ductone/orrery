@@ -124,7 +124,7 @@ func TestRemovedInterventionsBlockStillLoads(t *testing.T) {
 	}
 }
 
-func TestJevShadowConfig(t *testing.T) {
+func TestJevConfig(t *testing.T) {
 	dir := t.TempDir()
 	write := func(body string) (Config, error) {
 		path := filepath.Join(dir, "c.yaml")
@@ -133,21 +133,15 @@ func TestJevShadowConfig(t *testing.T) {
 		}
 		return Load(path)
 	}
-	if d := Default(); d.Jev.Shadows("phase") {
-		t.Fatal("shadowing must be off by default")
-	}
-	if _, err := write("jev:\n  api_key: k\n  shadow: [phaze]\n"); err == nil {
-		t.Fatal("an unknown shadow site must be rejected")
-	}
-	if _, err := write("jev:\n  shadow: [phase]\n"); err == nil {
-		t.Fatal("shadow sites without an api key must be rejected")
+	if _, err := write("jev:\n  api_key: k\n  shadow: [phase]\n"); err == nil {
+		t.Fatal("the removed jev.shadow field must be rejected")
 	}
 	t.Setenv("ORRERY_TEST_JEV_KEY", " secret ")
-	cfg, err := write("jev:\n  api_key: '!env ORRERY_TEST_JEV_KEY'\n  shadow: [stall_judge, phase, review]\n")
+	cfg, err := write("jev:\n  api_key: '!env ORRERY_TEST_JEV_KEY'\n  review: true\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Jev.APIKey != "secret" || !cfg.Jev.Shadows("phase") || !cfg.Jev.Shadows("review") || !cfg.Jev.Shadows("stall_judge") {
+	if cfg.Jev.APIKey != "secret" || !cfg.Jev.Review {
 		t.Fatalf("jev = %+v", cfg.Jev)
 	}
 	if _, err := write("jev:\n  routing: true\n"); err == nil {
@@ -193,7 +187,7 @@ func TestEffectiveJev(t *testing.T) {
 			if j.APIKey != tt.key || j.BaseURL != tt.baseURL || j.Review != tt.review {
 				t.Fatalf("effective Jev = %+v", j)
 			}
-			if j.Routing || j.SearchRanking || j.Shadows("phase") {
+			if j.Routing || j.SearchRanking {
 				t.Fatal("fallback must not enable feature switches")
 			}
 		})
@@ -303,7 +297,7 @@ func TestModelOverrides(t *testing.T) {
 func TestLoadUnresolvedNeedsNoSecrets(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "c.yaml")
-	body := "listen: '127.0.0.1:1'\ndatabase: 'x.db'\nproviders:\n  ramp: {api_key: '!env ORRERY_TEST_UNSET_KEY'}\njev:\n  api_key: '!cmd exit 1'\n  shadow: [phase]\n"
+	body := "listen: '127.0.0.1:1'\ndatabase: 'x.db'\nproviders:\n  ramp: {api_key: '!env ORRERY_TEST_UNSET_KEY'}\njev:\n  api_key: '!cmd exit 1'\n  review: true\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -342,15 +336,6 @@ func TestMemoryDefaults(t *testing.T) {
 	if d.Memory.ExpiresAfterDays() != 0 {
 		t.Fatalf("default retain_days = %d, want 0 (no expiry)", d.Memory.ExpiresAfterDays())
 	}
-	if d.Memory.Jev.Selection || d.Memory.Jev.CompactionBenefit {
-		t.Fatal("memory.jev.selection and memory.jev.compaction_benefit must default to false")
-	}
-	if d.Memory.Jev.CallTimeout() != 250*time.Millisecond {
-		t.Fatalf("default memory.jev.timeout = %v, want 250ms", d.Memory.Jev.CallTimeout())
-	}
-	if d.Memory.Jev.MaxCandidatesLimit() != 12 {
-		t.Fatalf("default memory.jev.max_candidates = %d, want 12", d.Memory.Jev.MaxCandidatesLimit())
-	}
 }
 
 func TestMemoryStrictDecodeAndValidation(t *testing.T) {
@@ -379,28 +364,13 @@ func TestMemoryStrictDecodeAndValidation(t *testing.T) {
 	if _, err := write("memory:\n  bogus_field: true\n"); err == nil {
 		t.Fatal("an unknown memory field must be rejected")
 	}
-	if _, err := write("memory:\n  jev:\n    bogus_field: true\n"); err == nil {
-		t.Fatal("an unknown memory.jev field must be rejected")
+	if _, err := write("memory:\n  jev:\n    selection: true\n"); err == nil {
+		t.Fatal("the removed memory.jev block must be rejected")
 	}
 	if _, err := write("memory:\n  retain_days: -1\n"); err == nil {
 		t.Fatal("negative retain_days must be rejected")
 	}
-	if _, err := write("memory:\n  jev:\n    timeout: -1s\n"); err == nil {
-		t.Fatal("negative memory.jev.timeout must be rejected")
-	}
-	// Missing jev.api_key with memory.jev.selection/compaction_benefit enabled
-	// is not a validation error: per
-	// docs/proposals/memory.md, missing credentials must fall back to
-	// deterministic lexical/recency ranking and the current compaction policy
-	// at runtime rather than block startup.
-	if _, err := write("memory:\n  jev:\n    selection: true\n"); err != nil {
-		t.Fatalf("memory.jev.selection without jev.api_key must fall back cleanly, not fail to load: %v", err)
-	}
-	if _, err := write("memory:\n  jev:\n    compaction_benefit: true\n"); err != nil {
-		t.Fatalf("memory.jev.compaction_benefit without jev.api_key must fall back cleanly, not fail to load: %v", err)
-	}
-
-	cfg, err := write("jev:\n  api_key: k\nmemory:\n  inject: false\n  auto_commit: true\n  max_records: 20\n  jev:\n    selection: true\n    compaction_benefit: true\n    timeout: 500ms\n    max_candidates: 30\n")
+	cfg, err := write("jev:\n  api_key: k\nmemory:\n  inject: false\n  auto_commit: true\n  max_records: 20\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,15 +379,6 @@ func TestMemoryStrictDecodeAndValidation(t *testing.T) {
 	}
 	if cfg.Memory.Records() != 20 {
 		t.Fatalf("max_records override lost: %d", cfg.Memory.Records())
-	}
-	if !cfg.Memory.Jev.Selection || !cfg.Memory.Jev.CompactionBenefit {
-		t.Fatalf("memory.jev overrides lost: %+v", cfg.Memory.Jev)
-	}
-	if cfg.Memory.Jev.CallTimeout() != 500*time.Millisecond {
-		t.Fatalf("memory.jev.timeout override lost: %v", cfg.Memory.Jev.CallTimeout())
-	}
-	if cfg.Memory.Jev.MaxCandidatesLimit() != 30 {
-		t.Fatalf("memory.jev.max_candidates override lost: %d", cfg.Memory.Jev.MaxCandidatesLimit())
 	}
 }
 
@@ -454,13 +415,4 @@ func TestMemoryClamping(t *testing.T) {
 		t.Fatalf("negative max_record_bytes = %d, want default %d", got, defaultMemoryMaxRecordBytes)
 	}
 
-	jc := MemoryJevConfig{MaxCandidates: 1_000}
-	if got := jc.MaxCandidatesLimit(); got != maxMemoryMaxCandidates {
-		t.Fatalf("max_candidates clamp = %d, want %d", got, maxMemoryMaxCandidates)
-	}
-	overLong := 999 * time.Second
-	jc2 := MemoryJevConfig{Timeout: &overLong}
-	if got := jc2.CallTimeout(); got != maxMemoryJevTimeout {
-		t.Fatalf("jev timeout clamp = %v, want %v", got, maxMemoryJevTimeout)
-	}
 }

@@ -224,9 +224,9 @@ func (e *Engine) persistMemoryCandidates(ctx context.Context, sid, path string, 
 }
 
 func (e *Engine) scheduleMemoryExtraction(ctx context.Context, sid string) {
-	e.shadowWG.Add(1)
+	e.backgroundWG.Add(1)
 	go func() {
-		defer e.shadowWG.Done()
+		defer e.backgroundWG.Done()
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 		defer cancel()
 		if err := e.extractMemory(ctx, sid); err != nil {
@@ -236,9 +236,9 @@ func (e *Engine) scheduleMemoryExtraction(ctx context.Context, sid string) {
 }
 
 func (e *Engine) catchUpMemory(ctx context.Context) {
-	e.shadowWG.Add(1)
+	e.backgroundWG.Add(1)
 	go func() {
-		defer e.shadowWG.Done()
+		defer e.backgroundWG.Done()
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 		defer cancel()
 		e.cleanupPendingMemory(ctx)

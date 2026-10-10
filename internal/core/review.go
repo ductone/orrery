@@ -14,9 +14,7 @@ import (
 	"github.com/ductone/orrey/internal/jev"
 	"github.com/ductone/orrey/internal/model"
 	"github.com/ductone/orrey/internal/review"
-	"github.com/ductone/orrey/internal/shadow"
 	"github.com/ductone/orrey/internal/store"
-	"github.com/google/uuid"
 )
 
 // reviewPlanTimeout bounds the classifier calls that plan a review.
@@ -67,9 +65,7 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 	plan := review.Build(planCtx, review.ParseDiff(diff), task, classifier, review.Options{})
 	cancel()
 	e.emit(ctx, sid, "review.plan", planEvent(plan), emit)
-	riskRecord := e.recordReviewRisk(ctx, sid, plan)
 	if plan.Skip {
-		e.shadowUpdate(riskRecord, e.store.SetShadowOutcome, map[string]any{"skipped": true})
 		return true, store.JSON(map[string]any{"pass": true, "findings": []string{}, "skipped": plan.SkipReason}), nil
 	}
 
@@ -109,7 +105,6 @@ func (e *Engine) reviewWorkspace(ctx context.Context, sid, parent string, req ag
 		out = filtered
 	}
 	e.emit(ctx, sid, "review.outcome", map[string]any{"pass": out.Pass, "inconclusive": out.Inconclusive, "findings": out.Findings, "notes": out.Notes, "verdicts": out.Verdicts}, emit)
-	e.shadowUpdate(riskRecord, e.store.SetShadowOutcome, reviewRiskOutcome(out))
 	if out.Inconclusive {
 		var reasons []string
 		for _, v := range out.Verdicts {
@@ -275,37 +270,6 @@ func planEvent(p review.Plan) map[string]any {
 		shards = append(shards, map[string]any{"files": files, "chars": s.Chars, "truncated": s.Truncated})
 	}
 	return map[string]any{"decisions": decisions, "shards": shards, "skip": p.Skip, "skip_reason": p.SkipReason, "bug": p.Bug, "risk": p.Risk, "turns": p.Turns, "classifier_error": p.ClassifierError, "question_version": review.QuestionVersion}
-}
-
-// recordReviewRisk stores the plan's risk score as a review_risk observation
-// when review calibration is being recorded, so the shadow report can compare
-// it with the review's outcome. It makes no classifier call of its own.
-func (e *Engine) recordReviewRisk(ctx context.Context, sid string, p review.Plan) string {
-	cfg, _, _, _, _ := e.runtimeSnapshot()
-	if !cfg.EffectiveJev().Shadows("review") || p.Bug == nil {
-		return ""
-	}
-	files := make([]string, 0, len(p.Decisions))
-	for _, d := range p.Decisions {
-		if d.Included {
-			files = append(files, d.File.Summary())
-		}
-	}
-	id := uuid.NewString()
-	obs := store.ShadowObservation{ID: id, SessionID: sid, TurnID: e.currentTurnID(ctx, sid), Site: shadow.ReviewRisk, QuestionVersion: review.QuestionVersion, Questions: "live review plan risk", State: map[string]any{"files": files}}
-	if e.store.CreateShadow(context.WithoutCancel(ctx), obs) != nil {
-		return ""
-	}
-	answers := map[string]jev.Answer{"introduces_bug": {Type: "noul", Noul: p.Bug}}
-	_ = e.store.CompleteShadow(context.Background(), id, "", answers, nil, 0, nil)
-	return id
-}
-
-func reviewRiskOutcome(out review.Outcome) map[string]any {
-	if out.Inconclusive {
-		return map[string]any{"inconclusive": true}
-	}
-	return map[string]any{"pass": out.Pass}
 }
 
 func errString(err error) string {

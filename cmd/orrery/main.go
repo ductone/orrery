@@ -15,7 +15,6 @@ import (
 	"github.com/ductone/orrey/internal/model"
 	"github.com/ductone/orrey/internal/provider"
 	rpcserver "github.com/ductone/orrey/internal/rpc"
-	"github.com/ductone/orrey/internal/shadow"
 	"github.com/ductone/orrey/internal/store"
 	"github.com/ductone/orrey/internal/telemetry"
 	"github.com/ductone/orrey/internal/web"
@@ -102,7 +101,7 @@ func realMain() int {
 		usage()
 		return 0
 	}
-	skipDiscovery = cmd == "export" || cmd == "shadow" || cmd == "models"
+	skipDiscovery = cmd == "export" || cmd == "models"
 	cfgPath, found, searched, err := config.Resolve(*configFlag)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -114,7 +113,7 @@ func realMain() int {
 	if cmd == "tui" {
 		return runTUI(ctx, ref, args)
 	}
-	if cmd == "export" || cmd == "shadow" || cmd == "models" {
+	if cmd == "export" || cmd == "models" {
 		return readOnly(ctx, cmd, cfgPath, args)
 	}
 	rt, err := openRuntime(ctx, cfgPath)
@@ -122,7 +121,7 @@ func realMain() int {
 		slog.Error("startup", "error", err)
 		return 2
 	}
-	if cmd != "export" && cmd != "shadow" {
+	if cmd != "export" {
 		if err := ref.requireProviders(rt.cfg); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -143,8 +142,6 @@ func realMain() int {
 		return run(ctx, rt, args)
 	case "export":
 		return export(ctx, rt, args)
-	case "shadow":
-		return exportShadow(ctx, rt, args)
 	case "eval", "benchmark":
 		return evaluate(ctx, rt, args)
 	case "rpc":
@@ -357,45 +354,6 @@ func export(ctx context.Context, rt *runtime, args []string) int {
 	return 0
 }
 
-// exportShadow emits shadow observations as JSONL, each with the checks it
-// supports, or summarises them. Recorded state carries source content, so it
-// is withheld unless asked for.
-func exportShadow(ctx context.Context, rt *runtime, args []string) int {
-	fs := flag.NewFlagSet("shadow", flag.ContinueOnError)
-	sinceArg := fs.String("since", "0", "RFC3339 timestamp or duration such as 24h")
-	site := fs.String("site", "", "only this site: turn, spawn, review_risk, or review_verdict")
-	includeState := fs.Bool("include-state", false, "include the state sent to Jev (contains source content)")
-	report := fs.Bool("report", false, "print an agreement and calibration summary instead of JSONL")
-	if fs.Parse(args) != nil {
-		return 2
-	}
-	since, err := parseSince(*sinceArg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
-	}
-	records, err := rt.store.ShadowRecords(ctx, since, *site, *includeState && !*report)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	if *report {
-		shadow.WriteReport(os.Stdout, records)
-		return 0
-	}
-	enc := json.NewEncoder(os.Stdout)
-	for _, r := range records {
-		row := struct {
-			store.ShadowRecord
-			Checks []shadow.Check `json:"checks"`
-		}{r, shadow.Checks(r)}
-		if err := enc.Encode(row); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-	}
-	return 0
-}
 func evaluate(ctx context.Context, rt *runtime, args []string) int {
 	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
 	set := fs.String("set", "", "replay set JSONL")
@@ -492,7 +450,7 @@ func parseSince(v string) (time.Time, error) {
 }
 
 // commands lists every subcommand, for dispatch and typo suggestions.
-var commands = []string{"serve", "run", "tui", "rpc", "acp", "export", "shadow", "models", "eval", "benchmark", "help", "-h", "--help"}
+var commands = []string{"serve", "run", "tui", "rpc", "acp", "export", "models", "eval", "benchmark", "help", "-h", "--help"}
 
 // configRef records where the configuration came from, so startup errors can
 // say where Orrery looked.
@@ -533,9 +491,6 @@ func readOnly(ctx context.Context, cmd, cfgPath string, args []string) int {
 	}
 	defer s.Close()
 	rt := &runtime{cfg: cfg, configPath: cfgPath, store: s}
-	if cmd == "shadow" {
-		return exportShadow(ctx, rt, args)
-	}
 	if cmd == "models" {
 		return listModels(ctx, rt, args)
 	}
@@ -637,7 +592,6 @@ commands:
   acp                            serve ACP v1 over stdio
   export [--since 24h]           emit routing records as JSONL
   models [--stats]              list the catalog startup would build
-  shadow [--report] [--since]    emit or summarise Jev shadow observations
   eval --set tasks.jsonl         run a replay set
   benchmark --set cases.jsonl    run isolated engineering cases and compare trends
   benchmark --review --set review/cases.jsonl  score the review cascade on prepared changes`)
