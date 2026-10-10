@@ -184,12 +184,6 @@ func TestScheduledMaskingWarmsCacheForNextTurn(t *testing.T) {
 	}
 }
 
-func TestRelevanceFailsOpenWithoutClient(t *testing.T) {
-	if relevanceKeeps(t.Context(), nil, "objective", "read", "{}", "content") {
-		t.Fatal("disabled Jev relevance must not retain")
-	}
-}
-
 // dropAllAsker always answers that a tool result can be cleared.
 func dropAllAsker(_ context.Context, _, _, _, _ string) (bool, bool) { return false, true }
 

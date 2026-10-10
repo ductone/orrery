@@ -442,14 +442,6 @@ func classifyReviewJob(j store.Job) (bool, string, error) {
 // reviewer budget.
 const maxReviewDiff = 4 << 20
 
-func workspaceHasReviewableChanges(ctx context.Context, workspace string) (bool, error) {
-	if !isGitWorkspace(ctx, workspace) {
-		return false, nil
-	}
-	diff, err := collectWorkspaceDiff(ctx, workspace)
-	return len(diff) > 0, err
-}
-
 func collectWorkspaceDiff(ctx context.Context, workspace string) ([]byte, error) {
 	if workspace == "" {
 		return nil, nil

@@ -83,53 +83,6 @@ func TestBoundedPhaseTransitions(t *testing.T) {
 	if workerTurnLimit(agentproto.TaskRequest{}) != 4 {
 		t.Fatal("read-only worker synthesis boundary is not enforced")
 	}
-	p := newProgressTracker()
-	p.phaseTurns = 5
-	if p.shouldForcePlanExecution() {
-		t.Fatal("plan execution was forced too early")
-	}
-	p.phaseTurns = 6
-	if !p.shouldForcePlanExecution() {
-		t.Fatal("plan execution was not forced at the phase limit")
-	}
-	p.phaseTurns = 1
-	p.repeatedTodos = 2
-	if !p.shouldForcePlanExecution() {
-		t.Fatal("repeated todo updates did not force plan execution")
-	}
-	if shouldForceFinalResolution("review", 8) || !shouldForceFinalResolution("review", 9) {
-		t.Fatal("review final-resolution boundary is not enforced")
-	}
-	if shouldForceFinalResolution("implement", 12) {
-		t.Fatal("implementation phase must not force final resolution")
-	}
-}
-
-func TestVerifiedCompletionIsForcedAfterReviewWithoutEdits(t *testing.T) {
-	p := newProgressTracker()
-	p.phase = "review"
-	p.verified = true
-	p.turnsSinceEdit = 2
-	if p.shouldForceVerifiedCompletion() {
-		t.Fatal("verified completion was forced too early")
-	}
-	p.turnsSinceEdit = 3
-	if !p.shouldForceVerifiedCompletion() {
-		t.Fatal("verified completion was not forced after three review turns without edits")
-	}
-	p.phase = "diagnose"
-	if !p.shouldForceVerifiedCompletion() {
-		t.Fatal("verified completion was not forced during diagnosis")
-	}
-	p.phase = "implement"
-	if p.shouldForceVerifiedCompletion() {
-		t.Fatal("verified completion must not be forced during implementation")
-	}
-	p.phase = "review"
-	p.verified = false
-	if p.shouldForceVerifiedCompletion() {
-		t.Fatal("unverified review must not force completion")
-	}
 }
 
 func TestIndependentReviewRejectionCapSurvivesPhaseChanges(t *testing.T) {
@@ -192,9 +145,6 @@ func TestUnchangedSubmissionsDoNotCountAsRejections(t *testing.T) {
 	}
 	if p.reviewRejections != 1 {
 		t.Fatalf("unchanged submissions counted as reviews: %d", p.reviewRejections)
-	}
-	if !p.awaitingFix() {
-		t.Fatal("an unchanged refusal still awaits a fix")
 	}
 }
 

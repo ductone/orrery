@@ -68,15 +68,6 @@ func (e *Engine) decideWaiting(ctx context.Context, sid string, policy router.Po
 	}
 }
 
-// waitForCredentials waits when no configured model is usable because every
-// credential is backed off, and reports whether a credential came back.
-func (e *Engine) waitForCredentials(ctx context.Context, sid string, providers *provider.Registry, emit EmitFunc) bool {
-	if providers == nil || len(providers.AvailableIDs()) > 0 {
-		return false
-	}
-	return e.waitForRoutes(ctx, sid, providers, maxCredentialWait, emit)
-}
-
 func (e *Engine) waitForRoutes(ctx context.Context, sid string, providers *provider.Registry, maxWait time.Duration, emit EmitFunc, specs ...model.ModelSpec) bool {
 	start := time.Now()
 	e.emit(ctx, sid, "routing.credential_wait", map[string]any{"max_wait": maxWait.String()}, emit)

@@ -943,58 +943,11 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		// Once a worker is told to synthesise it stays told: re-opening its
 		// tools after a refused call would restart the gathering it just ended.
 		synthesizing = synthesizing || e.synthesisDue(req, s.Turn)
-		forceSynthesis := synthesizing
-		forceAdvance := parentJob == "" && s.Phase == string(router.Explore) && progress.phaseTurns >= 8
-		forcePlanSynthesis := parentJob == "" && s.Phase == string(router.Plan) && (progress.delegated || progress.phaseTurns >= 4)
-		forcePlanExecution := parentJob == "" && s.Phase == string(router.Plan) && progress.shouldForcePlanExecution()
-		forceImplementation := parentJob == "" && s.Phase == string(router.Implement) && progress.noProgressTurns >= 3
-		forceVerifiedCompletion := parentJob == "" && progress.shouldForceVerifiedCompletion() && !progress.awaitingFix()
-		forceResolution := parentJob == "" && (s.Phase == string(router.Review) || s.Phase == string(router.Diagnose)) && progress.phaseTurns >= 6
-		forceFinalResolution := parentJob == "" && shouldForceFinalResolution(s.Phase, progress.phaseTurns) && !progress.awaitingFix()
 		latestRequest, _ := e.store.LatestRequest(ctx, sid)
 		var mode turnMode
-		if forceSynthesis {
+		if synthesizing {
 			mode.restrict("Exploration is now complete. Synthesize the strongest existing evidence into the required result now.")
-		}
-		if forceAdvance || forcePlanSynthesis {
-			mode.advise("Exploration or planning has run long. Consider using the evidence gathered so far to update the plan, make the smallest justified edit, or run verification.")
-		}
-		if forcePlanExecution {
-			mode.advise("Planning has run long. Consider using the evidence already gathered to make the smallest justified edit and verify it. If no change is needed or the task cannot be completed, return a concise final result.")
-		}
-		if forceImplementation {
-			mode.advise("Implementation has gone several turns without an edit. If the evidence is sufficient, consider finishing the smallest justified edit and running focused verification rather than broadening exploration.")
-		}
-		if forceVerifiedCompletion {
-			mode.advise("The workspace has been verified and no edit has been made for several turns. If nothing remains, return the final result now from the existing diff and verification evidence.")
-		}
-		if forceResolution {
-			mode.advise("Review or diagnosis has run long. Consider using the current issue, diff, test, and review evidence to make the smallest required correction, run focused verification, then return the final result.")
-		}
-		if forceFinalResolution {
-			mode.advise("This review or diagnosis has run long. Unless a specific fix remains, return the final result now from the existing diff, verification, and review evidence.")
-		}
-		if mode.active() {
-			forced := map[string]bool{"synthesis": forceSynthesis, "advance": forceAdvance, "plan_synthesis": forcePlanSynthesis, "plan_execution": forcePlanExecution, "implementation": forceImplementation, "verified_completion": forceVerifiedCompletion, "resolution": forceResolution, "final_resolution": forceFinalResolution}
-			kinds := []string{}
-			for kind, on := range forced {
-				if on {
-					kinds = append(kinds, kind)
-				}
-			}
-			slices.Sort(kinds)
-			modeKind := "mode.advise"
-			if mode.noCalls || mode.allowed != nil {
-				modeKind = "mode.restrict"
-			}
-			e.emit(ctx, sid, "progress.intervention", map[string]any{
-				"kind": modeKind, "modes": kinds, "no_calls": mode.noCalls, "allowed_tools": mode.allowed,
-				"phase": s.Phase, "turn": s.Turn, "phase_turns": progress.phaseTurns,
-				"no_progress_turns": progress.noProgressTurns, "repeated_todos": progress.repeatedTodos,
-				"turns_since_edit": progress.turnsSinceEdit, "delegated": progress.delegated,
-				"verified": progress.verified, "awaiting_fix": progress.awaitingFix(),
-				"worker_turn_limit": workerTurnLimit(req),
-			}, emit)
+			e.emit(ctx, sid, "progress.intervention", map[string]any{"kind": "mode.restrict", "modes": []string{"synthesis"}, "no_calls": true, "turn": s.Turn, "worker_turn_limit": workerTurnLimit(req)}, emit)
 		}
 		build := func(m model.ModelSpec, d router.Decision) (provider.Request, error) {
 			history, err := e.providerMessages(ctx, sid)

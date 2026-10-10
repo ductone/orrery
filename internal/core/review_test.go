@@ -58,10 +58,6 @@ func TestCollectWorkspaceDiffIncludesNewFilesAndIgnoresRuntimeState(t *testing.T
 	if strings.Contains(text, "runtime.log") || strings.Contains(text, "private runtime state") {
 		t.Fatalf("runtime state leaked into review diff:\n%s", text)
 	}
-	dirty, err := workspaceHasReviewableChanges(context.Background(), dir)
-	if err != nil || !dirty {
-		t.Fatalf("dirty=%v err=%v", dirty, err)
-	}
 }
 
 func TestCollectWorkspaceDiffSupportsNonGitWorkspace(t *testing.T) {
@@ -74,9 +70,6 @@ func TestCollectWorkspaceDiffSupportsNonGitWorkspace(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, ".orrery", "runtime.log"), []byte("omit me"), 0o600); err != nil {
 		t.Fatal(err)
-	}
-	if dirty, err := workspaceHasReviewableChanges(context.Background(), dir); err != nil || dirty {
-		t.Fatalf("non-git workspace was treated as an existing dirty checkout: dirty=%v err=%v", dirty, err)
 	}
 	diff, err := collectWorkspaceDiff(context.Background(), dir)
 	if err != nil {

@@ -60,7 +60,6 @@ func (e *Engine) syncWorkspaceChanges(ctx context.Context, sid, root string, pro
 	progress.verified = false
 	progress.reviewed = false
 	progress.checksSinceEdit = nil
-	progress.fixPending = false
 	if progress.editedPaths == nil {
 		progress.editedPaths = map[string]bool{}
 	}

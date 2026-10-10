@@ -39,13 +39,6 @@ var announcementQuestion = map[string]jev.Question{"reports_completed_work": jev
 	"It announces work the agent is about to start or continue, such as saying it will inspect, implement, or continue next.",
 )}
 
-// answerOffTopic reports whether a final result fails to address the latest
-// request, returning the request it was checked against.
-func (e *Engine) answerOffTopic(ctx context.Context, sid string, s store.Session, latest, result string, emit EmitFunc) (string, bool) {
-	request, off, _ := e.checkAnswer(ctx, sid, s, latest, result, emit)
-	return request, off
-}
-
 // checkAnswer checks a final result against the latest request. When the
 // todo list still has open work, it also asks whether the result reports
 // completed work or merely announces work still to do.

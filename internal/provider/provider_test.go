@@ -21,13 +21,6 @@ import (
 	"github.com/ductone/orrey/internal/router"
 )
 
-type blockingClient struct{}
-
-func (blockingClient) Complete(ctx context.Context, _ model.ModelSpec, _ Request) (Response, error) {
-	<-ctx.Done()
-	return Response{}, ctx.Err()
-}
-
 func TestOpenAICompatAssembly(t *testing.T) {
 	var got map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -395,11 +388,4 @@ func TestResponseDecodeErrorIsRetryable(t *testing.T) {
 	if IsMalformedToolArguments(err) {
 		t.Fatal("decode error is not a malformed-tool-arguments error")
 	}
-}
-
-type failingClient struct{ calls *[]string }
-
-func (c failingClient) Complete(_ context.Context, m model.ModelSpec, _ Request) (Response, error) {
-	*c.calls = append(*c.calls, m.ID)
-	return Response{}, ErrCredentialsBackoff
 }

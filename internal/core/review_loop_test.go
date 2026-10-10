@@ -113,26 +113,6 @@ func TestFailedReviewRestoresToolsAndIsNotRepeated(t *testing.T) {
 	_ = os.Remove(filepath.Join(workspace, "main.go"))
 }
 
-func TestAwaitingFix(t *testing.T) {
-	p := newProgressTracker()
-	p.verified, p.turnsSinceEdit, p.phase = true, 5, "review"
-	if !p.shouldForceVerifiedCompletion() || p.awaitingFix() {
-		t.Fatal("before any review, verified work may be told to finish")
-	}
-	p.markReviewRejected(true)
-	if !p.awaitingFix() {
-		t.Fatal("a rejection awaits a fix")
-	}
-	p.observe(provider.ToolCall{Name: "edit", Arguments: map[string]any{"path": "a.go"}}, map[string]any{"applied": 1}, nil)
-	if p.awaitingFix() {
-		t.Fatal("an edit answers the rejection")
-	}
-	p.markReviewRejected(true)
-	if !p.awaitingFix() {
-		t.Fatal("each new rejection awaits a new fix")
-	}
-}
-
 func TestRemediationCapCountsIndependentRejections(t *testing.T) {
 	p := newProgressTracker()
 	p.beginTurn("review")

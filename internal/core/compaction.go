@@ -11,7 +11,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/ductone/orrey/internal/jev"
 	"github.com/ductone/orrey/internal/model"
 	"github.com/ductone/orrey/internal/provider"
 	"github.com/ductone/orrey/internal/router"
@@ -720,14 +719,6 @@ func summaryTranscriptBudget(spec model.ModelSpec) int {
 	return max(spec.ContextWindow/2, minTranscriptBudget)
 }
 
-func compactTranscript(msgs []store.Message, limit int) string {
-	chunks := transcriptChunks(msgs, limit)
-	if len(chunks) == 0 {
-		return ""
-	}
-	return chunks[0]
-}
-
 func transcriptChunks(msgs []store.Message, limit int) []string {
 	if limit < 1 {
 		limit = minTranscriptBudget
@@ -850,11 +841,6 @@ func recallHistory(checkpoints []store.Checkpoint, query string) []string {
 		}
 	}
 	return out
-}
-
-func maskOldToolResults(ctx context.Context, client *jev.Client, objective string, msgs []store.Message) bool {
-	changed, _ := maskOldToolResultsCached(ctx, jevRelevanceAsker(client), nil, objective, maskGate{}, msgs)
-	return changed
 }
 
 func matchingCall(msgs []store.Message, idx int, id string) (string, string) {

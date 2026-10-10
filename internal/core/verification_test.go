@@ -8,11 +8,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/ductone/orrey/internal/agentproto"
-	"github.com/ductone/orrey/internal/config"
-	"github.com/ductone/orrey/internal/provider"
 )
 
 func gitRepo(t *testing.T) (string, func(...string)) {
@@ -185,64 +180,4 @@ func TestCompactionGate(t *testing.T) {
 	if due, _ := g.phaseChange("wrap-up", "diagnose", 30, 60_000, 100_000); !due {
 		t.Fatal("leaving wrap-up long after the last compaction compacts")
 	}
-}
-
-// gateRun drives a root session that edits one file and then keeps trying to
-// finish, optionally running one command in between.
-func gateRun(t *testing.T, file, command string) (agentproto.TaskResult, *scriptedResponses, *Engine, string) {
-	t.Helper()
-	e, st := testEngine(t)
-	workspace, git := gitRepo(t)
-	writeFile(t, workspace, "check.sh", "#!/bin/sh\necho checked\n")
-	_ = os.Chmod(filepath.Join(workspace, "check.sh"), 0755)
-	git("add", "-A")
-	git("commit", "-qm", "base")
-	writeFile(t, workspace, "docs/rfcs/README.md", "RFCs\n")
-	git("add", "-A")
-	git("commit", "-qm", "rfcs")
-	s := &scriptedResponses{reply: func(n int, body map[string]any) map[string]any {
-		if strings.Contains(body["instructions"].(string), "Review this proposed workspace diff") {
-			return verdictJSON(true)
-		}
-		switch {
-		case n == 1:
-			return responsesCall("e1", "edit", map[string]any{"path": file, "hunks": []any{map[string]any{"anchor": "e3b0c442", "delete": 0, "insert": []any{"content"}}}})
-		case n == 2 && command != "":
-			return responsesCall("x1", "exec", map[string]any{"command": command})
-		}
-		return responsesText("Done: wrote " + file)
-	}}
-	srv := s.serve(t)
-	cfg := config.Config{
-		WorkspaceRoot: workspace,
-		Providers:     map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: srv.URL}},
-		Router:        config.RouterConfig{DisableSwitch: true, DefaultModel: "openai/gpt-5.6-terra"},
-	}
-	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
-	req := agentproto.TaskRequest{Spec: "Write it", Budget: agentproto.Budget{MaxUSD: 5, MaxTokens: 1_000_000, MaxWallClock: time.Minute}, Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"}}
-	id, results, err := e.Start(context.Background(), req, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case r := <-results:
-		_ = st
-		return r, s, e, id
-	case <-time.After(30 * time.Second):
-		t.Fatal("run did not finish")
-	}
-	return agentproto.TaskResult{}, nil, nil, ""
-}
-
-func eventTypes(t *testing.T, e *Engine, sid string) []string {
-	t.Helper()
-	es, err := e.store.EventsAfter(context.Background(), sid, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var out []string
-	for _, ev := range es {
-		out = append(out, ev.Type)
-	}
-	return out
 }

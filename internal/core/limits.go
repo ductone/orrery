@@ -122,10 +122,6 @@ func (e *Engine) limitAnswer(ctx context.Context, sid string) (answeredLimit, bo
 	return answeredLimit{declined: declines(last.Answer)}, true
 }
 
-func (e *Engine) harnessMessage(ctx context.Context, sid, text string) {
-	_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: text})
-}
-
 func storePendingInput(sid string, in agentproto.InputRequest) store.PendingInput {
 	return store.PendingInput{ID: in.ID, SessionID: sid, Question: in.Question, Choices: in.Choices, AllowFreeform: in.AllowFreeform}
 }

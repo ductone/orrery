@@ -32,8 +32,6 @@ type progressTracker struct {
 	// output: the evidence reviewers weigh to judge whether the change was
 	// checked. No command list decides that.
 	checksSinceEdit []commandRecord
-	// fixPending is set by a review rejection and cleared by the next edit.
-	fixPending bool
 	// workspaceHash tracks the last observed run changes, including exec writes.
 	workspaceHash string
 	// reviewRejections counts reviews that rejected this run's change.
@@ -123,7 +121,6 @@ func (p *progressTracker) observe(call provider.ToolCall, value any, callErr err
 			p.verified = false
 			p.reviewed = false
 			p.checksSinceEdit = nil
-			p.fixPending = false
 			if path := stringArg(call.Arguments, "path"); path != "" {
 				if p.editedPaths == nil {
 					p.editedPaths = map[string]bool{}
@@ -174,18 +171,6 @@ func (p *progressTracker) endTurn() {
 	p.noProgressTurns++
 }
 
-func (p *progressTracker) shouldForcePlanExecution() bool {
-	return p.repeatedTodos >= 2 || p.phaseTurns >= 6
-}
-
-func (p *progressTracker) shouldForceVerifiedCompletion() bool {
-	return p.verified && p.turnsSinceEdit >= 3 && (p.phase == "review" || p.phase == "diagnose")
-}
-
-func shouldForceFinalResolution(phase string, phaseTurns int) bool {
-	return (phase == "review" || phase == "diagnose") && phaseTurns >= 9
-}
-
 // strike records one misbehaviour of a kind by a model and reports whether
 // it is the third, resetting the count when it is.
 func (p *progressTracker) strike(model, kind string) bool {
@@ -215,14 +200,7 @@ func (p *progressTracker) markReviewRejected(reviewed bool) {
 	if reviewed {
 		p.reviewRejections++
 	}
-	p.fixPending = true
 }
-
-// awaitingFix reports a review rejection that no edit has answered yet. The
-// "finish now" modes that turn tool calls off must not apply then: they
-// once left an agent unable to edit after a failed review, so every turn
-// produced the same diff and another identical review.
-func (p *progressTracker) awaitingFix() bool { return p.reviewRemediation && p.fixPending }
 
 // maxReviewRejections bounds how many independent reviews may reject a run's
 // change before it stops.

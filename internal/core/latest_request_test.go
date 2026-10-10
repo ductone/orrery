@@ -209,13 +209,13 @@ func TestAnswerCheckFailsOpenAndIsBounded(t *testing.T) {
 	ctx := context.Background()
 	s := store.Session{ID: uuid.NewString(), Spec: "first"}
 	e, _ := testEngine(t)
-	if _, off := e.answerOffTopic(ctx, s.ID, s, "Build it", "anything", nil); off {
+	if _, off, _ := e.checkAnswer(ctx, s.ID, s, "Build it", "anything", nil); off {
 		t.Fatal("without jev.review there is no check")
 	}
 	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(529) }))
 	t.Cleanup(down.Close)
 	e.ReplaceRuntime(config.Config{Jev: config.JevConfig{APIKey: "k", BaseURL: down.URL, Review: true}}, nil, nil)
-	if _, off := e.answerOffTopic(ctx, s.ID, s, "Build it", "anything", nil); off {
+	if _, off, _ := e.checkAnswer(ctx, s.ID, s, "Build it", "anything", nil); off {
 		t.Fatal("a classifier outage must not refuse completion")
 	}
 	if maxAnswerRejections < 1 || maxAnswerRejections > 3 {
@@ -252,7 +252,7 @@ func TestAnswerCheckSendsTodoPlanForPointerRequest(t *testing.T) {
 	e.ReplaceRuntime(config.Config{Jev: config.JevConfig{APIKey: "k", BaseURL: srv.URL, Review: true}}, nil, nil)
 	request := "Implement bead orrery-vau"
 	draft := "Implemented session resume in the TUI and verified it."
-	if got, off := e.answerOffTopic(ctx, s.ID, s, request, draft, nil); got != request || off {
+	if got, off, _ := e.checkAnswer(ctx, s.ID, s, request, draft, nil); got != request || off {
 		t.Fatalf("request=%q off_topic=%v", got, off)
 	}
 	if body.State["latest_request"] != request || body.State["final_result"] != draft {

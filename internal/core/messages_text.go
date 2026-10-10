@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"encoding/json"
 	"strings"
 	"time"
@@ -23,15 +22,6 @@ func (e *Engine) waitBackground() {
 	case <-done:
 	case <-time.After(cfg.Jev.Timeout() + time.Second):
 	}
-}
-
-func (e *Engine) currentTurnID(ctx context.Context, sid string) string {
-	if id := turnIDFromContext(ctx); id != "" {
-		return id
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.turnIDs[sid]
 }
 
 // lastUserText returns the latest message a person sent, skipping messages

@@ -20,11 +20,6 @@ var relevanceQuestion = map[string]jev.Question{"needed": jev.Noul(
 	"A stub that it ran is enough.",
 )}
 
-func relevanceKeeps(ctx context.Context, client *jev.Client, objective, tool, args, content string) bool {
-	keep, _ := relevanceAnswer(ctx, client, objective, tool, args, content)
-	return keep
-}
-
 // relevanceAnswer asks Jev whether an old tool result is still needed. ok is
 // false when no answer was obtained, so callers must not cache the result.
 func relevanceAnswer(ctx context.Context, client *jev.Client, objective, tool, args, content string) (keep, ok bool) {

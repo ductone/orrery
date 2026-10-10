@@ -160,9 +160,9 @@ Independently of Jev, a search that hits `max_results` now reports the total mat
 A run ends when the work is done, when it needs the person, or on an error nothing can recover from. Limits change strategy instead of ending it:
 
 - **Budgets.** When a session reaches its dollar budget, it pauses with a question: continue with another `budget.session_usd`, or stop. The token and wall-clock limits of a run ask whether to keep going. A worker's budget is a hard slice of its parent's; a worker that exhausts it returns its latest findings as a partial result.
-- **Stall checks** (a phase running long, review findings left unfixed, an unchanged plan resubmitted) climb an escalation ladder: a nudge, then a different model, then compacting history and restating the latest request, and only then a question to the person.
+- **Review findings left unfixed** (four rejected reviews, or eight turns after a rejection without an edit) end the run with a question to the person.
 - **A misbehaving model** (repeated empty replies, truncated tool calls, results that fail the schema) is set aside for the rest of the run and the turn reroutes. If no model is left, or a provider error cannot be retried, the run asks rather than fails, naming the models it set aside and why.
-- **"Finish now" advice** after verification or a long review is advice: tools stay available, so findings can still be fixed.
+- **Read-only workers** synthesise their findings at their turn limit; that is the one point where the harness withholds tools.
 
 Answering the question resumes the session: agreeing (or replying with guidance) continues, and "Stop here" ends it cleanly. A headless `orrery run` exits with status 4 at the question; resume it with `orrery --session ID`.
 
