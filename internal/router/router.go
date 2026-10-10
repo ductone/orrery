@@ -186,6 +186,15 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 	}
 	reviewHasAlternate := p.reviewHasAlternateFamily(s)
 	defaultModelPinned := (p.cfg.DisableSwitch && p.cfg.DefaultModel != "") || s.ModelPin != ""
+	// Stickiness protects the incumbent's warm cache: leaving it means
+	// rebuilding a prefix. Whether other candidates happen to be warm is
+	// priced by their own work estimate, not penalised.
+	incumbentWarm := false
+	if s.CurrentModel != "" {
+		if entry, err := p.ledger.Cache(ctx, s.SessionID, s.CurrentModel); err == nil {
+			incumbentWarm = entry.Valid(p.now())
+		}
+	}
 	var candidates []Candidate
 	for _, m := range p.catalog {
 		c := Candidate{Model: m.ID}
@@ -276,14 +285,14 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 		// when the prefix is cold (e.g. right after compaction) there is no cache
 		// to preserve, so drop stickiness and let cost/quality decide.
 		deescalate := s.Stall.Deescalated && !stalled(s.Stall) && !s.Stall.ReviewRejected && slices.Contains([]Phase{Explore, Implement, WrapUp}, s.Phase)
-		if s.ToolContinuation && m.ID != s.CurrentModel && warm && !deescalate {
+		if s.ToolContinuation && m.ID != s.CurrentModel && incumbentWarm && !deescalate {
 			c.SwitchPenalty += .18
 		}
 		// A warm prefix normally keeps the incumbent: rebuilding the cache costs
 		// more than a small score gap. That must not hold a frontier model a stall
 		// boost put in place once the failures have cleared, or a long clean
 		// implement phase never returns to the efficient tier.
-		if s.CurrentModel != "" && m.ID != s.CurrentModel && warm && !deescalate {
+		if m.ID != s.CurrentModel && incumbentWarm && !deescalate {
 			c.SwitchPenalty += .08 + math.Min(.25, float64(s.InputTokens)/400000)
 		}
 		if perf, ok := s.Performance[m.ID]; ok {
@@ -404,6 +413,10 @@ const (
 	// reference model typically takes for a task (about 4 in the 2026-10-09
 	// sweep). A switch's cold first call is amortised over it.
 	workHorizonCalls = 4
+	// unmeasuredCallsPerTask is assumed for a model no sweep has measured. The
+	// measured models other than Claude took 2-2.7 times Claude's calls, so an
+	// unknown model is not assumed to be as economical as the best one.
+	unmeasuredCallsPerTask = 2
 )
 
 // workEstimate is the cost and time of a unit of work (workHorizonCalls
@@ -425,7 +438,7 @@ func workEstimate(m model.ModelSpec, s RoutingState, warmTokens int) (float64, f
 	latency := blend(perf.LatencySeconds, latencySecondsPrior)
 	calls := m.CallsPerTask
 	if calls <= 0 {
-		calls = 1
+		calls = unmeasuredCallsPerTask
 	}
 	next := m.Pricing.Estimate(s.InputTokens, output, warmTokens)
 	steady := m.Pricing.Estimate(s.InputTokens, output, int(cacheRatio*float64(s.InputTokens)))

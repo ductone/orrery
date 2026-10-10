@@ -452,12 +452,71 @@ func TestTimeValueWeighsStepsAndLatency(t *testing.T) {
 }
 
 func TestWorkEstimateCountsExtraCalls(t *testing.T) {
-	m := model.ModelSpec{ID: "x", Pricing: model.Pricing{Input: 1, Output: 1, CacheRead: .1}}
+	m := model.ModelSpec{ID: "x", CallsPerTask: 1, Pricing: model.Pricing{Input: 1, Output: 1, CacheRead: .1}}
 	s := RoutingState{InputTokens: 10_000, Performance: map[string]RoutePerformance{"x": {Calls: 1_000_000, LatencySeconds: 2, OutputTokensPerCall: 100, CacheReadRatio: .5}}}
 	one, oneSecs := workEstimate(m, s, 0)
 	m.CallsPerTask = 3
 	three, threeSecs := workEstimate(m, s, 0)
 	if three <= 2*one || threeSecs != 3*oneSecs {
 		t.Fatalf("three-call model: cost %.5f vs %.5f, seconds %.1f vs %.1f", three, one, threeSecs, oneSecs)
+	}
+}
+
+// warmLedger reports a warm cache for the listed models.
+type warmLedger struct {
+	ledger
+	warm map[string]bool
+}
+
+func (l *warmLedger) Cache(_ context.Context, _ string, m string) (store.CacheEntry, error) {
+	if l.warm[m] {
+		return store.CacheEntry{WarmPrefixTokens: 50_000, LastHit: time.Now(), TTL: time.Hour}, nil
+	}
+	return store.CacheEntry{}, nil
+}
+
+func TestStickinessProtectsTheIncumbentNotOtherWarmModels(t *testing.T) {
+	candidate := func(d Decision, id string) Candidate {
+		for _, c := range d.Candidates {
+			if c.Model == id {
+				return c
+			}
+		}
+		t.Fatalf("no candidate %s", id)
+		return Candidate{}
+	}
+	state := RoutingState{SessionID: "s", Point: TurnStart, Phase: Implement, InputTokens: 50_000, ToolContinuation: true, CurrentModel: "ramp/deepseek-v4.1-flash",
+		AvailableModels: []string{"ramp/claude-sonnet-5-5", "ramp/deepseek-v4.1-flash"}}
+	// The incumbent is cold; Sonnet is warm from earlier in the session. A
+	// warm non-incumbent must not be penalised for being warm.
+	p := NewV1(config.RouterConfig{LambdaCost: .35}, &warmLedger{warm: map[string]bool{"ramp/claude-sonnet-5-5": true}})
+	d, _, err := p.Decide(context.Background(), state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sw := candidate(d, "ramp/claude-sonnet-5-5").SwitchPenalty; sw != 0 {
+		t.Fatalf("warm non-incumbent penalised %.2f", sw)
+	}
+	// A warm incumbent makes leaving it cost a switch penalty.
+	p = NewV1(config.RouterConfig{LambdaCost: .35}, &warmLedger{warm: map[string]bool{"ramp/deepseek-v4.1-flash": true}})
+	if d, _, err = p.Decide(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if sw := candidate(d, "ramp/claude-sonnet-5-5").SwitchPenalty; sw <= 0 {
+		t.Fatal("leaving a warm incumbent must cost a switch penalty")
+	}
+	if sw := candidate(d, "ramp/deepseek-v4.1-flash").SwitchPenalty; sw != 0 {
+		t.Fatalf("the incumbent itself penalised %.2f", sw)
+	}
+}
+
+func TestUnmeasuredModelsAreNotAssumedEconomical(t *testing.T) {
+	s := RoutingState{InputTokens: 10_000}
+	measured := model.ModelSpec{ID: "a", CallsPerTask: 1, Pricing: model.Pricing{Input: 1, Output: 1}}
+	unknown := model.ModelSpec{ID: "b", Pricing: model.Pricing{Input: 1, Output: 1}}
+	_, a := workEstimate(measured, s, 0)
+	_, b := workEstimate(unknown, s, 0)
+	if b != a*unmeasuredCallsPerTask {
+		t.Fatalf("unmeasured seconds %.0f, want %.0f", b, a*unmeasuredCallsPerTask)
 	}
 }
