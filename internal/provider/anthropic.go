@@ -24,7 +24,7 @@ func newAnthropic(base string, keys []string) *anthropicClient {
 	for _, k := range keys {
 		p.creds = append(p.creds, credential{key: k})
 	}
-	return &anthropicClient{strings.TrimSuffix(base, "/"), p, httpClient(15 * time.Minute)}
+	return &anthropicClient{strings.TrimSuffix(base, "/"), p, httpClient(totalRequestCap)}
 }
 func (c *anthropicClient) Available(now time.Time, model string) bool {
 	return c.pool.available(now, model)
@@ -79,7 +79,7 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 		}
 		msgs = append(msgs, map[string]any{"role": mapRole(x.Role), "content": content})
 	}
-	body := map[string]any{"model": wireModel(m.ID), "max_tokens": min(r.MaxOutput, m.MaxOutput), "system": system, "messages": msgs}
+	body := map[string]any{"model": wireModel(m.ID), "max_tokens": min(r.MaxOutput, m.MaxOutput), "system": system, "messages": msgs, "stream": true}
 	if m.Compat.SupportsReasoningEffort && r.Effort != model.EffortNone {
 		body["output_config"] = map[string]any{"effort": m.Compat.EffortWireMap[r.Effort]}
 	}
@@ -99,18 +99,22 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 	req.Header.Set("x-api-key", key)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("content-type", "application/json")
-	resp, release, err := sendWithDeadlines(c.http, req, c.pool, key, m.ID, m.Compat.FirstByteTimeout)
+	resp, release, err := sendWithDeadlines(c.http, req, c.pool, key, m.ID, m.Compat.FirstByteTimeout, m.Compat.StreamIdleTimeout)
 	if err != nil {
 		return Response{}, err
 	}
 	defer release()
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode/100 != 2 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
 			c.pool.backoff(key, m.ID, backoffFor(resp))
 		}
 		return Response{}, &HTTPError{resp.StatusCode, string(raw)}
+	}
+	raw, err := readResponse(resp, 4<<20, assembleAnthropic)
+	if err != nil {
+		return Response{}, err
 	}
 	var wire struct {
 		Model      string `json:"model"`

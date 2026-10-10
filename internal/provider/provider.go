@@ -404,11 +404,10 @@ func (r *Registry) AvailableIDs() []string {
 func (r *Registry) CompleteOne(ctx context.Context, d router.Decision, build RequestBuilder) (Response, error) {
 	ctx, span := otel.Tracer("orrery/provider").Start(ctx, "provider.request")
 	defer span.End()
-	if timeout := d.Model.Compat.StreamIdleTimeout; timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
+	// StreamIdleTimeout is enforced per read in sendWithDeadlines (time since
+	// the last byte); the whole call gets only a much larger cap.
+	ctx, cancel := context.WithTimeout(ctx, totalRequestCap)
+	defer cancel()
 	span.SetAttributes(attribute.String("model", d.Model.ID))
 	c, ok := r.clients[providerName(d.Model.ID)]
 	if !ok {

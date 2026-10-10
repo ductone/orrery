@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -14,6 +15,12 @@ const (
 	// minute instead of waiting out the model's whole idle budget. Models that
 	// legitimately think longer before answering set first_byte_timeout.
 	defaultFirstByteTimeout = 90 * time.Second
+	// defaultStreamIdleTimeout bounds the silence between body bytes once a
+	// response has started, for models that set no stream_idle_timeout.
+	defaultStreamIdleTimeout = 10 * time.Minute
+	// totalRequestCap bounds a whole call, however steadily it streams. It
+	// is well above any idle timeout so it only stops runaway responses.
+	totalRequestCap = time.Hour
 )
 
 // stallError reports a response that went silent. It is a timeout, so it is
@@ -30,10 +37,14 @@ func (e *stallError) Timeout() bool   { return true }
 func (e *stallError) Temporary() bool { return true }
 
 // sendWithDeadlines performs req, failing when no response headers arrive
-// within firstByte. A call that never answers is a retryable transport failure,
-// and its route is cooled so the next call prefers another. The returned
-// release must be called once the response body is done with.
-func sendWithDeadlines(client *http.Client, req *http.Request, p *pool, key, model string, firstByte time.Duration) (*http.Response, func(), error) {
+// within firstByte or when the body then goes idle (no bytes) for idle. A call
+// that goes silent is a retryable transport failure, and its route is cooled
+// so the next call prefers another. The returned release must be called once
+// the response body is done with.
+func sendWithDeadlines(client *http.Client, req *http.Request, p *pool, key, model string, firstByte, idle time.Duration) (*http.Response, func(), error) {
+	if idle <= 0 {
+		idle = defaultStreamIdleTimeout
+	}
 	if firstByte <= 0 {
 		firstByte = defaultFirstByteTimeout
 	}
@@ -55,5 +66,33 @@ func sendWithDeadlines(client *http.Client, req *http.Request, p *pool, key, mod
 		cancel(nil)
 		return nil, nil, err
 	}
-	return resp, func() { cancel(nil) }, nil
+	idleTimer := time.AfterFunc(idle, func() {
+		p.backoff(key, model, defaultCredentialBackoff)
+		cancel(&stallError{"data", idle})
+	})
+	resp.Body = &idleBody{ReadCloser: resp.Body, ctx: ctx, timer: idleTimer, idle: idle}
+	return resp, func() { idleTimer.Stop(); cancel(nil) }, nil
+}
+
+// idleBody restarts the idle timer whenever bytes arrive, so a response that
+// streams slowly but steadily is never cut off, and reports an idle stall as
+// the stall rather than as a bare cancellation.
+type idleBody struct {
+	io.ReadCloser
+	ctx   context.Context
+	timer *time.Timer
+	idle  time.Duration
+}
+
+func (b *idleBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if n > 0 {
+		b.timer.Reset(b.idle)
+	}
+	if err != nil && err != io.EOF {
+		if stall, ok := context.Cause(b.ctx).(*stallError); ok {
+			return n, stall
+		}
+	}
+	return n, err
 }

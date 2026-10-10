@@ -51,7 +51,7 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 			input = append(input, map[string]any{"type": "function_call", "call_id": tc.ID, "name": name, "arguments": string(b)})
 		}
 	}
-	body := map[string]any{"model": wireModel(m.ID), "instructions": instructions, "input": input, "max_output_tokens": min(r.MaxOutput, m.MaxOutput), "store": false}
+	body := map[string]any{"model": wireModel(m.ID), "instructions": instructions, "input": input, "max_output_tokens": min(r.MaxOutput, m.MaxOutput), "store": false, "stream": true}
 	if r.CacheKey != "" {
 		body["prompt_cache_key"] = r.CacheKey
 	}
@@ -82,18 +82,22 @@ func (c *openAIClient) completeResponses(ctx context.Context, m model.ModelSpec,
 	req, _ := http.NewRequestWithContext(ctx, "POST", c.base+"/v1/responses", bytes.NewReader(b))
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
-	resp, release, err := sendWithDeadlines(c.http, req, c.pool, key, m.ID, m.Compat.FirstByteTimeout)
+	resp, release, err := sendWithDeadlines(c.http, req, c.pool, key, m.ID, m.Compat.FirstByteTimeout, m.Compat.StreamIdleTimeout)
 	if err != nil {
 		return Response{}, err
 	}
 	defer release()
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if resp.StatusCode/100 != 2 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
 			c.pool.backoff(key, m.ID, backoffFor(resp))
 		}
 		return Response{}, &HTTPError{resp.StatusCode, string(raw)}
+	}
+	raw, err := readResponse(resp, 8<<20, assembleResponses)
+	if err != nil {
+		return Response{}, err
 	}
 	var out struct {
 		Model             string `json:"model"`

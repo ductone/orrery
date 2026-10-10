@@ -314,18 +314,27 @@ func TestCredentialBackoffIsRetryable(t *testing.T) {
 	}
 }
 
-func TestCompleteOneHonorsModelRequestTimeout(t *testing.T) {
+func TestCompleteOneDoesNotCapCallAtIdleTimeout(t *testing.T) {
+	// The idle timeout is enforced on body reads, not as a deadline on the
+	// whole call: a client that answers after longer than it still succeeds.
 	spec := model.ModelSpec{ID: "xai/timeout-test", Compat: model.Compat{StreamIdleTimeout: 10 * time.Millisecond}}
-	r := &Registry{clients: map[string]Client{"xai": blockingClient{}}}
-	started := time.Now()
+	r := &Registry{clients: map[string]Client{"xai": slowClient{50 * time.Millisecond}}}
 	_, err := r.CompleteOne(context.Background(), router.Decision{Model: spec}, func(model.ModelSpec, router.Decision) (Request, error) {
 		return Request{}, nil
 	})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("error = %v, want deadline exceeded", err)
+	if err != nil {
+		t.Fatalf("error = %v, want the call to outlive the idle timeout", err)
 	}
-	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("request timeout took %v", elapsed)
+}
+
+type slowClient struct{ d time.Duration }
+
+func (c slowClient) Complete(ctx context.Context, _ model.ModelSpec, _ Request) (Response, error) {
+	select {
+	case <-time.After(c.d):
+		return Response{}, nil
+	case <-ctx.Done():
+		return Response{}, ctx.Err()
 	}
 }
 

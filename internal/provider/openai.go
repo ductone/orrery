@@ -26,7 +26,7 @@ func newOpenAI(base string, keys []string, responses bool) *openAIClient {
 	for _, k := range keys {
 		p.creds = append(p.creds, credential{key: k})
 	}
-	return &openAIClient{strings.TrimSuffix(base, "/"), p, httpClient(15 * time.Minute), responses}
+	return &openAIClient{strings.TrimSuffix(base, "/"), p, httpClient(totalRequestCap), responses}
 }
 func (c *openAIClient) Available(now time.Time, model string) bool {
 	return c.pool.available(now, model)
@@ -82,7 +82,7 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 		}
 		msgs = append(msgs, msg)
 	}
-	body := map[string]any{"model": wireModel(m.ID), "messages": msgs, "stream": false}
+	body := map[string]any{"model": wireModel(m.ID), "messages": msgs, "stream": true, "stream_options": map[string]any{"include_usage": true}}
 	if r.CacheKey != "" && m.Compat.CacheControl {
 		body["prompt_cache_key"] = r.CacheKey
 	}
@@ -114,18 +114,22 @@ func (c *openAIClient) Complete(ctx context.Context, m model.ModelSpec, r Reques
 	req, _ := http.NewRequestWithContext(ctx, "POST", c.base+"/v1/chat/completions", bytes.NewReader(b))
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
-	resp, release, err := sendWithDeadlines(c.http, req, c.pool, key, m.ID, m.Compat.FirstByteTimeout)
+	resp, release, err := sendWithDeadlines(c.http, req, c.pool, key, m.ID, m.Compat.FirstByteTimeout, m.Compat.StreamIdleTimeout)
 	if err != nil {
 		return Response{}, err
 	}
 	defer release()
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode/100 != 2 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
 			c.pool.backoff(key, m.ID, backoffFor(resp))
 		}
 		return Response{}, &HTTPError{resp.StatusCode, string(raw)}
+	}
+	raw, err := readResponse(resp, 4<<20, assembleChat)
+	if err != nil {
+		return Response{}, err
 	}
 	var out struct {
 		Model   string `json:"model"`
