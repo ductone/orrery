@@ -74,7 +74,7 @@ func TestCommandSummaryCharacterLimit(t *testing.T) {
 func TestReadOutsideWorkspaceSuggestsScratchPath(t *testing.T) {
 	r := New(t.TempDir())
 	_, err := r.Call(context.Background(), "read", map[string]any{"path": "../scratch.txt"})
-	if err == nil || !strings.Contains(err.Error(), "path escapes workspace") || !strings.Contains(err.Error(), ".orrery/") {
+	if err == nil || !strings.Contains(err.Error(), "path escapes workspace") || !strings.Contains(err.Error(), "ORRERY_SCRATCH") {
 		t.Fatalf("missing scratch guidance: %v", err)
 	}
 }

@@ -43,9 +43,31 @@ type Registry struct {
 	state    *SessionState
 	dialect  anchorDialect
 	ranker   SearchRanker
+	// scratch is the session's scratch directory; read, edit and exec may
+	// use it although it lies outside the workspace. Empty when unset.
+	scratch string
 	// jobFallback serves job ids this registry did not start, such as the
 	// worker jobs spawn creates.
 	jobFallback func(ctx context.Context, id, action string) (any, error)
+}
+
+// SetScratch names the session's scratch directory. It is created on first
+// use by exec, which exposes it as ORRERY_SCRATCH.
+func (r *Registry) SetScratch(dir string) {
+	if dir != "" {
+		dir = filepath.Clean(dir)
+	}
+	r.scratch = dir
+}
+
+// ScratchDir returns the directory for a session's scratch files.
+func ScratchDir(sessionID string) string {
+	return filepath.Join(ScratchRoot(), sessionID)
+}
+
+// ScratchRoot holds every session's scratch directory.
+func ScratchRoot() string {
+	return filepath.Join(os.TempDir(), "orrery")
 }
 
 // SetJobFallback lets the job tool serve ids it did not start itself.
@@ -307,7 +329,12 @@ func (r *Registry) safe(path string) (string, error) {
 	path = filepath.Clean(path)
 	rel, err := filepath.Rel(r.root, path)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
-		return "", errors.New("path escapes workspace; paths outside the workspace cannot be read or edited. Write scratch output under .orrery/ (for example .orrery/tmp/out.txt) and read it there")
+		if r.scratch != "" {
+			if sr, serr := filepath.Rel(r.scratch, path); serr == nil && sr != ".." && !strings.HasPrefix(sr, "../") {
+				return path, nil
+			}
+		}
+		return "", errors.New("path escapes workspace; paths outside the workspace cannot be read or edited, except the scratch directory in $ORRERY_SCRATCH. Write temporary output there and read it back")
 	}
 	return path, nil
 }
@@ -757,6 +784,12 @@ func (r *Registry) run(ctx context.Context, a map[string]any) (any, error) {
 	}
 	cmd := exec.CommandContext(ctx, "sh", "-lc", cmdText)
 	cmd.Dir = r.root
+	if r.scratch != "" {
+		if err := os.MkdirAll(r.scratch, 0700); err != nil {
+			return nil, err
+		}
+		cmd.Env = append(os.Environ(), "ORRERY_SCRATCH="+r.scratch)
+	}
 	logDir := filepath.Join(r.root, ".orrery", "logs")
 	if err := os.MkdirAll(logDir, 0700); err != nil {
 		return nil, err

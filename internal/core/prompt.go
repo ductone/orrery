@@ -68,10 +68,15 @@ func systemPrompt(p promptContext) string {
 	if has("lsp") {
 		lsp = "Use lsp for definitions, references, hover, symbols, and diagnostics instead of text search."
 	}
+	scratch := ""
+	if has("exec") {
+		scratch = "Use $ORRERY_SCRATCH (an exec environment variable) for temporary files such as redirected command output; read can open files there."
+	}
 	section("TOOLS",
 		"Use read and search to read and search the workspace. Use exec for builds, tests, and commands no dedicated tool covers, not for cat, grep, find, ls, or sed -n.",
 		lsp,
 		"Do not open guessed paths: locate files with search, then read the range you need.",
+		scratch,
 		"Prefer edit for hand-written source changes. Formatters, code generators, and other tools may write files through exec.",
 		"Never discard uncommitted changes (git reset --hard, checkout --, clean -f, restore) or force-push; uncommitted changes may belong to the person.",
 		anchor+" Re-read after a stale-anchor error or a phase-boundary compaction.",

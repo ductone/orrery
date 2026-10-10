@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ductone/orrey/internal/agentproto"
 	"github.com/ductone/orrey/internal/lsp"
@@ -58,6 +59,7 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 	} else {
 		r = builtin.NewWithStateDialect(root, state, string(dialect))
 	}
+	r.SetScratch(builtin.ScratchDir(e.scratchOwner(context.Background(), sid)))
 	if parentJob == "" {
 		memoryActions := []string{"propose", "confirm", "inspect", "correct", "forget"}
 		memoryDesc := "Control workspace memory. Propose evidence-backed candidates; inspect, correct, or forget records. Set contradicted=true to correct or forget a record this session showed to be wrong; otherwise correct and forget need user_confirmed."
@@ -588,3 +590,45 @@ func obj(props map[string]any, required ...string) map[string]any {
 	return map[string]any{"type": "object", "properties": props, "required": required, "additionalProperties": false}
 }
 func str() map[string]any { return map[string]any{"type": "string"} }
+
+// scratchOwner is the session whose scratch directory sid uses: the top-level
+// ancestor, so workers share their parent's directory.
+func (e *Engine) scratchOwner(ctx context.Context, sid string) string {
+	for range 8 {
+		s, err := e.store.Session(ctx, sid)
+		if err != nil || s.ParentSessionID == "" {
+			break
+		}
+		sid = s.ParentSessionID
+	}
+	return sid
+}
+
+// scratchTTL is how long a session must have been idle before its scratch
+// directory is deleted.
+const scratchTTL = 24 * time.Hour
+
+// cleanScratch deletes scratch directories of sessions that have not been
+// running for scratchTTL. Sessions resume, so nothing is deleted at session end.
+func (e *Engine) cleanScratch(ctx context.Context) {
+	root := builtin.ScratchRoot()
+	ents, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, d := range ents {
+		if !d.IsDir() {
+			continue
+		}
+		var last time.Time
+		running := false
+		if s, err := e.store.Session(ctx, d.Name()); err == nil {
+			last, running = s.UpdatedAt, s.Status == "running"
+		} else if info, err := d.Info(); err == nil {
+			last = info.ModTime()
+		}
+		if !running && time.Since(last) >= scratchTTL {
+			_ = os.RemoveAll(filepath.Join(root, d.Name()))
+		}
+	}
+}

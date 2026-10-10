@@ -78,6 +78,9 @@ type Engine struct {
 
 func New(cfg config.Config, s *store.Store, p *provider.Registry, mc *mcp.Manager) *Engine {
 	e := &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), lsp: lsp.New(cfg.LSP), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}, writers: map[string]string{}, compactedLastTurn: map[string]bool{}, toolStates: map[string]*builtin.SessionState{}, memoryEpochs: map[string]*memoryEpoch{}}
+	if s != nil {
+		e.cleanScratch(context.Background())
+	}
 	if p != nil {
 		e.catchUpMemory(context.Background())
 	}
