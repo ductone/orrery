@@ -3,7 +3,6 @@ package router
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -129,7 +128,35 @@ type Candidate struct {
 	Score    float64       `json:"score"`
 	Cache    CacheEstimate `json:"cache"`
 	Rejected string        `json:"rejected,omitempty"`
+	// FloorRejected marks a candidate only a floor (frontier or no-tiny)
+	// excluded. Its Score is what it would have scored without the floor.
+	FloorRejected bool `json:"floor_rejected,omitempty"`
 }
+
+// NoCompatibleError reports that every model was rejected, with each one's
+// reason.
+type NoCompatibleError struct{ Candidates []Candidate }
+
+func (e *NoCompatibleError) Error() string {
+	counts := map[string][]string{}
+	var order []string
+	for _, c := range e.Candidates {
+		r := c.Rejected
+		if r == "" {
+			r = "unknown"
+		}
+		if _, ok := counts[r]; !ok {
+			order = append(order, r)
+		}
+		counts[r] = append(counts[r], c.Model)
+	}
+	parts := make([]string, 0, len(order))
+	for _, r := range order {
+		parts = append(parts, fmt.Sprintf("%s: %s", r, strings.Join(counts[r], ", ")))
+	}
+	return "router: no compatible models (" + strings.Join(parts, "; ") + ")"
+}
+
 type Decision struct {
 	Model          model.ModelSpec   `json:"model"`
 	Effort         model.Effort      `json:"effort"`
@@ -137,6 +164,9 @@ type Decision struct {
 	ToolsetVariant string            `json:"toolset_variant"`
 	WasSwitch      bool              `json:"was_switch"`
 	Candidates     []Candidate       `json:"candidates"`
+	// FloorWinner names the model that would have won had no floor applied,
+	// when that differs from the chosen model.
+	FloorWinner string `json:"floor_winner,omitempty"`
 }
 type Explanation string
 type Policy interface {
@@ -183,7 +213,7 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 		}
 	}
 	if len(valid) == 0 {
-		return Decision{}, "", errors.New("router: no compatible models")
+		return Decision{}, "", &NoCompatibleError{Candidates: candidates}
 	}
 	slices.SortFunc(valid, func(a, b Candidate) int {
 		if a.Score > b.Score {
@@ -213,6 +243,12 @@ func (p *V1) Decide(ctx context.Context, s RoutingState) (Decision, Explanation,
 	span.SetAttributes(attribute.String("model", chosen.Model), attribute.Float64("estimated_cost_usd", chosen.CostUSD))
 	spec, _ := model.Get(chosen.Model)
 	d := Decision{Model: spec, Effort: chosen.Effort, EditDialect: spec.EditDialect, ToolsetVariant: toolset(spec), WasSwitch: s.CurrentModel != "" && s.CurrentModel != spec.ID, Candidates: candidates}
+	floorBest := chosen.Score
+	for _, c := range candidates {
+		if c.FloorRejected && c.Score > floorBest {
+			d.FloorWinner, floorBest = c.Model, c.Score
+		}
+	}
 	why := explain(s, chosen, d.WasSwitch)
 	if explored {
 		why = "exploring: " + why
@@ -238,6 +274,7 @@ func (p *V1) score(ctx context.Context, s RoutingState, reviewHasAlternate, defa
 	var candidates []Candidate
 	for _, m := range p.catalog {
 		c := Candidate{Model: m.ID}
+		floorReason := ""
 		switch {
 		case s.ModelPin != "" && m.ID != s.ModelPin && m.Model != s.ModelPin:
 			c.Rejected = "model pinned"
@@ -245,10 +282,6 @@ func (p *V1) score(ctx context.Context, s RoutingState, reviewHasAlternate, defa
 			c.Rejected = "default model pinned"
 		case s.AvailableModels != nil && !slices.Contains(s.AvailableModels, m.ID):
 			c.Rejected = "provider not configured"
-		case frontierFloor && m.Tier != model.Frontier:
-			c.Rejected = "needs a frontier model"
-		case floors && m.Tier == model.Tiny:
-			c.Rejected = "tiny models are a last resort"
 		case slices.Contains(s.ExcludeModels, m.ID):
 			c.Rejected = "model excluded after provider failure"
 		case s.HasImage && !model.Supports(m, model.Image):
@@ -264,9 +297,20 @@ func (p *V1) score(ctx context.Context, s RoutingState, reviewHasAlternate, defa
 		case p.cfg.DisableSwitch && s.CurrentModel != "" && m.ID != s.CurrentModel:
 			c.Rejected = "switching disabled"
 		}
+		if c.Rejected == "" {
+			switch {
+			case frontierFloor && m.Tier != model.Frontier:
+				floorReason = "needs a frontier model"
+			case floors && m.Tier == model.Tiny:
+				floorReason = "tiny models are a last resort"
+			}
+		}
 		if c.Rejected != "" {
 			candidates = append(candidates, c)
 			continue
+		}
+		if floorReason != "" {
+			c.Rejected, c.FloorRejected = floorReason, true
 		}
 		entry, _ := p.ledger.Cache(ctx, s.SessionID, m.ID)
 		warm := entry.Valid(p.now())

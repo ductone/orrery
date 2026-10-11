@@ -209,13 +209,13 @@ func TestAnswerCheckFailsOpenAndIsBounded(t *testing.T) {
 	ctx := context.Background()
 	s := store.Session{ID: uuid.NewString(), Spec: "first"}
 	e, _ := testEngine(t)
-	if _, off, _ := e.checkAnswer(ctx, s.ID, s, "Build it", "anything", nil); off {
+	if _, off := e.checkAnswer(ctx, s.ID, s, "Build it", "anything", nil); off {
 		t.Fatal("without jev.review there is no check")
 	}
 	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(529) }))
 	t.Cleanup(down.Close)
 	e.ReplaceRuntime(config.Config{Jev: config.JevConfig{APIKey: "k", BaseURL: down.URL, Review: true}}, nil, nil)
-	if _, off, _ := e.checkAnswer(ctx, s.ID, s, "Build it", "anything", nil); off {
+	if _, off := e.checkAnswer(ctx, s.ID, s, "Build it", "anything", nil); off {
 		t.Fatal("a classifier outage must not refuse completion")
 	}
 	if maxAnswerRejections < 1 || maxAnswerRejections > 3 {
@@ -252,7 +252,7 @@ func TestAnswerCheckSendsTodoPlanForPointerRequest(t *testing.T) {
 	e.ReplaceRuntime(config.Config{Jev: config.JevConfig{APIKey: "k", BaseURL: srv.URL, Review: true}}, nil, nil)
 	request := "Implement bead orrery-vau"
 	draft := "Implemented session resume in the TUI and verified it."
-	if got, off, _ := e.checkAnswer(ctx, s.ID, s, request, draft, nil); got != request || off {
+	if got, off := e.checkAnswer(ctx, s.ID, s, request, draft, nil); got != request || off {
 		t.Fatalf("request=%q off_topic=%v", got, off)
 	}
 	if body.State["latest_request"] != request || body.State["final_result"] != draft {
@@ -263,68 +263,6 @@ func TestAnswerCheckSendsTodoPlanForPointerRequest(t *testing.T) {
 	}
 	if _, ok := body.State["earlier_request"]; ok {
 		t.Fatal("the earlier request must not be sent to Jev")
-	}
-}
-
-func TestAnswerAnnouncementFollowsOpenTodos(t *testing.T) {
-	const announcement = "The bead is closed. Now I'll start orrery-qqb and inspect the issue plus rate-limit handling."
-	const report = "Implemented the rate-limit fix, verified it, and closed the bead."
-	for _, tc := range []struct {
-		name, status string
-		wantQuestion bool
-		wantReason   bool
-	}{
-		{"announces unfinished work", "pending", true, true},
-		{"reports despite stale todos", "pending", true, false},
-		{"completed todos need no announcement question", "completed", false, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			e, st := testEngine(t)
-			s := store.Session{ID: uuid.NewString(), Spec: "Implement orrery-qqb", BudgetUSD: 1}
-			if err := st.CreateSession(ctx, s); err != nil {
-				t.Fatal(err)
-			}
-			if err := st.SetTodos(ctx, s.ID, []store.Todo{{Text: "Inspect rate-limit handling", Status: tc.status}}); err != nil {
-				t.Fatal(err)
-			}
-			calls := 0
-			sawQuestion := false
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				calls++
-				var req struct {
-					Questions map[string]any    `json:"questions"`
-					State     map[string]string `json:"state"`
-				}
-				_ = json.NewDecoder(r.Body).Decode(&req)
-				_, sawQuestion = req.Questions["reports_completed_work"]
-				p := 0.9
-				if strings.Contains(req.State["final_result"], "Now I'll start") {
-					p = 0.05
-				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"answers": map[string]any{
-					"addresses_request":      map[string]any{"type": "noul", "noul": 0.81},
-					"reports_completed_work": map[string]any{"type": "noul", "noul": p},
-				}})
-			}))
-			t.Cleanup(srv.Close)
-			e.ReplaceRuntime(config.Config{Jev: config.JevConfig{APIKey: "k", BaseURL: srv.URL, Review: true}}, nil, nil)
-			result := announcement
-			if !tc.wantReason {
-				result = report
-			}
-			_, _, reason := e.checkAnswer(ctx, s.ID, s, s.Spec, result, nil)
-			if calls != 1 || sawQuestion != tc.wantQuestion || (reason != "") != tc.wantReason {
-				t.Fatalf("calls=%d question=%v reason=%q", calls, sawQuestion, reason)
-			}
-		})
-	}
-	ctx := context.Background()
-	e, _ := testEngine(t)
-	e.ReplaceRuntime(config.Config{Jev: config.JevConfig{APIKey: "k", BaseURL: "http://127.0.0.1:1", Review: true}}, nil, nil)
-	s := store.Session{ID: uuid.NewString(), Spec: "Implement orrery-qqb"}
-	if _, _, reason := e.checkAnswer(ctx, s.ID, s, s.Spec, announcement, nil); reason != "" {
-		t.Fatal("a classifier outage must not reject an announcement")
 	}
 }
 

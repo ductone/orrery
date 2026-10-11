@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -406,5 +407,34 @@ func TestBackgroundWorkExploresUnmeasuredModels(t *testing.T) {
 	}
 	if explored == 0 || explored > 40 {
 		t.Fatalf("explored %d of 200 background decisions; want about one in %d", explored, exploreEvery)
+	}
+}
+
+func TestNoCompatibleErrorListsReasons(t *testing.T) {
+	p := NewV1(config.RouterConfig{}, &ledger{})
+	_, _, err := p.Decide(context.Background(), RoutingState{SessionID: "s", Phase: Plan, InputTokens: 1000, AvailableModels: []string{}})
+	var nc *NoCompatibleError
+	if !errors.As(err, &nc) || len(nc.Candidates) == 0 || !strings.Contains(err.Error(), "provider not configured: ") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestFloorRejectedCandidatesKeepCounterfactualScore(t *testing.T) {
+	p := NewV1(config.RouterConfig{FrontierFloorPhases: []string{string(Review)}}, &ledger{})
+	d, _, err := p.Decide(context.Background(), RoutingState{SessionID: "s", Point: TurnStart, Phase: Review, InputTokens: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := false
+	for _, c := range d.Candidates {
+		if c.FloorRejected {
+			seen = true
+			if c.Score == 0 || c.Rejected == "" {
+				t.Fatalf("candidate %+v", c)
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("no floor-rejected candidates recorded")
 	}
 }

@@ -513,3 +513,29 @@ func TestRejectedRequestOnTheOnlyModelAsks(t *testing.T) {
 		t.Fatalf("result = %+v", r)
 	}
 }
+
+func TestDuplicateToolCallsEmitIntervention(t *testing.T) {
+	s := &scriptedResponses{reply: func(n int, body map[string]any) map[string]any {
+		if n > 1 {
+			return responsesText("done")
+		}
+		r := responsesCall("c1", "read", map[string]any{"path": "f0.txt"})
+		out := r["output"].([]any)
+		dup := map[string]any{}
+		for k, v := range out[0].(map[string]any) {
+			dup[k] = v
+		}
+		dup["call_id"] = "c2"
+		r["output"] = append(out, dup)
+		return r
+	}}
+	var kinds []string
+	runScripted(t, s, "read", func(event agentproto.AgentEvent) {
+		if event.Type == "progress.intervention" {
+			kinds = append(kinds, fmt.Sprint(event.Data.(map[string]any)["kind"]))
+		}
+	})
+	if len(kinds) != 1 || kinds[0] != "duplicate_tool_calls" {
+		t.Fatalf("interventions = %v", kinds)
+	}
+}

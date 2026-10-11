@@ -66,7 +66,6 @@ func (o *outcomeProjector) apply(ctx context.Context, db statsExecer, sid, typ s
 		Inconcl  bool   `json:"inconclusive"`
 		Disputed bool   `json:"disputed"`
 		OffTopic bool   `json:"off_topic"`
-		Announce bool   `json:"announces_work"`
 		Status   string `json:"status"`
 		Decision struct {
 			Model struct {
@@ -120,7 +119,7 @@ func (o *outcomeProjector) apply(ctx context.Context, db statsExecer, sid, typ s
 			}
 		}
 	case "completion.answer_check":
-		if (d.OffTopic || d.Announce) && s.answerRoute != "" {
+		if d.OffTopic && s.answerRoute != "" {
 			return bump(ctx, db, s.answerRoute, "answer_rejected", 1)
 		}
 	case "session.terminal":
