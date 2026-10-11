@@ -68,13 +68,25 @@ var squireReadWorkspaceSafeTools = map[string]struct{}{
 }
 
 func New(ctx context.Context, cfg map[string]config.MCPConfig, logRoot string) (*Manager, error) {
+	return newManager(ctx, cfg, logRoot, filepath.Join(config.Home(), "oauth"))
+}
+
+func newManager(ctx context.Context, cfg map[string]config.MCPConfig, logRoot, oauthRoot string) (*Manager, error) {
 	m := &Manager{servers: map[string]*Server{}}
 	for name, c := range cfg {
 		var cl Client
 		var err error
 		switch c.Transport {
 		case "http":
-			cl = &httpClient{url: c.URL, auth: c.AuthHeader, headers: c.Headers, http: &http.Client{Timeout: 2 * time.Minute}}
+			hc := &httpClient{url: c.URL, auth: c.AuthHeader, headers: c.Headers, http: &http.Client{Timeout: 2 * time.Minute}}
+			if c.OAuth {
+				if c.AuthHeader != "" {
+					m.Close()
+					return nil, fmt.Errorf("mcp %s: oauth and auth_header are mutually exclusive", name)
+				}
+				hc.oauth = newOAuthClient(c.URL, filepath.Join(oauthRoot, name+".json"), hc.http)
+			}
+			cl = hc
 		case "stdio":
 			cl, err = newStdio(ctx, c.Command, c.Env)
 		default:
@@ -255,6 +267,11 @@ type httpClient struct {
 	id        atomic.Int64
 	mu        sync.RWMutex
 	sessionID string
+
+	// oauth enables the MCP authorization-code flow for this server. Tokens and
+	// the dynamically registered client are persisted per server under
+	// ORRERY_HOME/oauth.
+	oauth *oauthClient
 }
 
 func (c *httpClient) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
@@ -279,6 +296,10 @@ func (c *httpClient) Notify(ctx context.Context, method string, params any) erro
 }
 
 func (c *httpClient) post(ctx context.Context, b []byte) (*http.Response, []byte, error) {
+	return c.postAttempt(ctx, b, 0)
+}
+
+func (c *httpClient) postAttempt(ctx context.Context, b []byte, attempt int) (*http.Response, []byte, error) {
 	req, _ := http.NewRequestWithContext(ctx, "POST", c.url, bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
@@ -291,6 +312,10 @@ func (c *httpClient) post(ctx context.Context, b []byte) (*http.Response, []byte
 	}
 	if c.auth != "" {
 		req.Header.Set("Authorization", c.auth)
+	} else if c.oauth != nil {
+		if tok := c.oauth.token(ctx); tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
 	}
 	for k, v := range c.headers {
 		req.Header.Set(k, v)
@@ -301,6 +326,17 @@ func (c *httpClient) post(ctx context.Context, b []byte) (*http.Response, []byte
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if resp.StatusCode == http.StatusUnauthorized && c.oauth != nil && attempt < 2 {
+		httpErr := fmt.Errorf("HTTP %d: %s", resp.StatusCode, raw)
+		failed := ""
+		if auth := req.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+			failed = strings.TrimPrefix(auth, "Bearer ")
+		}
+		if err := c.oauth.unauthorized(ctx, failed, resp.Header.Get("WWW-Authenticate")); err != nil {
+			return nil, nil, errors.Join(httpErr, err)
+		}
+		return c.postAttempt(ctx, b, attempt+1)
+	}
 	if resp.StatusCode/100 != 2 {
 		return nil, nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, raw)
 	}

@@ -260,13 +260,18 @@ type ProviderConfig struct {
 }
 
 type MCPConfig struct {
-	Transport  string            `yaml:"transport"`
-	URL        string            `yaml:"url"`
-	Command    []string          `yaml:"command"`
-	AuthHeader string            `yaml:"auth_header"`
-	Headers    map[string]string `yaml:"headers"`
-	Env        map[string]string `yaml:"env"`
-	Squire     bool              `yaml:"squire"`
+	Transport  string   `yaml:"transport"`
+	URL        string   `yaml:"url"`
+	Command    []string `yaml:"command"`
+	OAuth      bool     `yaml:"oauth"`
+	AuthHeader string   `yaml:"auth_header"`
+	// OAuth enables the MCP authorization-code flow (RFC 9728 discovery, dynamic
+	// client registration, PKCE) for this server. Mutually exclusive with
+	// AuthHeader; when enabled, tokens and the registered client are persisted
+	// under ORRERY_HOME/oauth and refreshed automatically.
+	Headers map[string]string `yaml:"headers"`
+	Env     map[string]string `yaml:"env"`
+	Squire  bool              `yaml:"squire"`
 }
 
 type RouterConfig struct {
