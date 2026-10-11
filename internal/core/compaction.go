@@ -790,7 +790,7 @@ func projectAssistant(msg provider.Message) string {
 func projectTool(name, args, content string) string {
 	head := defaultToolHead
 	switch {
-	case name == "edit":
+	case isEditTool(name):
 		head = editToolHead
 	case name == "read" || name == "fetch" || name == "search":
 		head = readToolHead
@@ -817,7 +817,7 @@ func auditDurableState(state DurableState, msgs []store.Message) DurableState {
 			state.Instructions = appendBounded(state.Instructions, parsed.Content, 12)
 		}
 		name, args := matchingCall(msgs, i, parsed.ToolCallID)
-		if name == "edit" && !strings.Contains(joined, strings.ToLower(args)) {
+		if isEditTool(name) && !strings.Contains(joined, strings.ToLower(args)) {
 			state.Files = appendBounded(state.Files, args, 12)
 		}
 		if name == "exec" && (strings.Contains(args, "test") || strings.Contains(args, "build")) && !strings.Contains(joined, strings.ToLower(args)) {

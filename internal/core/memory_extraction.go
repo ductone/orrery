@@ -297,7 +297,7 @@ func (e *Engine) extractMemory(ctx context.Context, sid string) error {
 			}
 			if json.Unmarshal(event.Data, &finished) == nil && finished.Result["error"] == nil && finished.Result["ok"] != false {
 				command, _ := finished.Call.Arguments["command"].(string)
-				if finished.Call.Name == "edit" || finished.Call.Name == "exec" && command != "" {
+				if isEditTool(finished.Call.Name) || finished.Call.Name == "exec" && command != "" {
 					useful = true
 				}
 				inputEvents = append(inputEvents, event)

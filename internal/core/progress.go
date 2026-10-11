@@ -114,14 +114,18 @@ func (p *progressTracker) observe(call provider.ToolCall, value any, callErr err
 		case "spawn":
 			p.turnProgress = true
 			p.delegated = true
-		case "edit":
+		case "edit", "write", "replace", "ast_edit":
 			p.turnProgress = true
 			p.turnEdited = true
 			p.edited = true
 			p.verified = false
 			p.reviewed = false
 			p.checksSinceEdit = nil
+			paths := editResultPaths(value)
 			if path := stringArg(call.Arguments, "path"); path != "" {
+				paths = append(paths, path)
+			}
+			for _, path := range paths {
 				if p.editedPaths == nil {
 					p.editedPaths = map[string]bool{}
 				}
@@ -241,6 +245,35 @@ func fingerprint(prefix string, value any) string {
 	raw := store.JSON(value)
 	sum := sha256.Sum256([]byte(prefix + "\x00" + raw))
 	return hex.EncodeToString(sum[:8])
+}
+
+// editResultPaths returns the files a replace or ast_edit result reports it
+// changed, so multi-file edits reach changed-file tracking and review.
+func editResultPaths(value any) []string {
+	m, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, key := range []string{"replaced", "files"} {
+		switch entries := m[key].(type) {
+		case []map[string]any:
+			for _, e := range entries {
+				if p, _ := e["path"].(string); p != "" {
+					out = append(out, p)
+				}
+			}
+		case []any:
+			for _, raw := range entries {
+				if e, ok := raw.(map[string]any); ok {
+					if p, _ := e["path"].(string); p != "" {
+						out = append(out, p)
+					}
+				}
+			}
+		}
+	}
+	return out
 }
 
 func stringArg(args map[string]any, key string) string {

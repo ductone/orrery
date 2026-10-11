@@ -39,6 +39,34 @@ func TestProgressRecognizesEditsAndVerification(t *testing.T) {
 	}
 }
 
+func TestProgressTreatsWritingToolsAsEdits(t *testing.T) {
+	cases := []struct {
+		call  provider.ToolCall
+		value any
+		paths []string
+	}{
+		{provider.ToolCall{Name: "write", Arguments: map[string]any{"path": "w.go"}}, map[string]any{"path": "/ws/w.go"}, []string{"w.go"}},
+		{provider.ToolCall{Name: "replace", Arguments: map[string]any{"paths": []any{"pkg"}}}, map[string]any{"replaced": []map[string]any{{"path": "/ws/pkg/a.go"}, {"path": "/ws/pkg/b.go"}}}, []string{"/ws/pkg/a.go", "/ws/pkg/b.go"}},
+		{provider.ToolCall{Name: "ast_edit", Arguments: map[string]any{"paths": []any{"*.go"}}}, map[string]any{"files": []map[string]any{{"path": "/ws/c.go"}}}, []string{"/ws/c.go"}},
+	}
+	for _, c := range cases {
+		p := newProgressTracker()
+		p.verified, p.reviewed = true, true
+		p.observe(c.call, c.value, nil)
+		if !p.edited || p.verified || p.reviewed {
+			t.Fatalf("%s must invalidate verification and review: %+v", c.call.Name, p)
+		}
+		for _, path := range c.paths {
+			if !p.editedPaths[path] {
+				t.Fatalf("%s did not record %s: %v", c.call.Name, path, p.editedPaths)
+			}
+		}
+		if !isEditTool(c.call.Name) {
+			t.Fatalf("isEditTool(%q) = false", c.call.Name)
+		}
+	}
+}
+
 func TestDiffWhitespaceCheckDoesNotClaimWorkspaceVerification(t *testing.T) {
 	p := newProgressTracker()
 	p.beginTurn("review")

@@ -1279,7 +1279,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		instructionBoundaryHit := false
 		for _, call := range resp.Message.ToolCalls {
 			outcome.ToolCalls++
-			if call.Name == "edit" {
+			if isEditTool(call.Name) {
 				outcome.EditAttempts++
 			}
 			e.emit(ctx, sid, "tool.started", call, emit)
@@ -1318,7 +1318,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 						stall.TestFailStreak++
 					}
 				}
-				if call.Name == "edit" {
+				if isEditTool(call.Name) {
 					stall.RepeatedEdits++
 					outcome.EditRetries++
 				}
@@ -1335,14 +1335,14 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 					stall.FailedCommands = 0
 					stall.TestFailStreak = 0
 				}
-				if call.Name == "edit" {
+				if isEditTool(call.Name) {
 					stall.RepeatedEdits = 0
 				}
 				e.inferPhase(ctx, sid, call.Name, fmt.Sprint(call.Arguments["command"]), progress)
 			}
 			shaped, images := extractImages(value)
 			if !instructionBlocked {
-				if call.Name == "exec" || call.Name == "edit" || call.Name == "job" || call.Name == "spawn" {
+				if call.Name == "exec" || isEditTool(call.Name) || call.Name == "job" || call.Name == "spawn" {
 					e.syncWorkspaceChanges(ctx, sid, req.Workspace.Path, progress)
 				}
 				shaped = progress.observe(call, shaped, callErr)
@@ -1496,8 +1496,20 @@ func (e *Engine) classifier() classify.Classifier {
 	return jev.New(j.APIKey, j.BaseURL, j.Model, j.Timeout())
 }
 
+// isEditTool reports whether a tool writes file content through the same
+// file-state path as edit (write, replace, ast_edit). The engine treats them
+// all as edits: they count as edit attempts, move the phase to implement,
+// invalidate prior verification and review, and record changed files.
+func isEditTool(name string) bool {
+	switch name {
+	case "edit", "write", "replace", "ast_edit":
+		return true
+	}
+	return false
+}
+
 func shouldBlockEditForInstructions(call provider.ToolCall, instructionBoundaryHit bool) bool {
-	return call.Name == "edit" && instructionBoundaryHit
+	return isEditTool(call.Name) && instructionBoundaryHit
 }
 
 // providerRetryBackoff grows per consecutive retryable failure on the same

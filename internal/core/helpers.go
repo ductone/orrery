@@ -131,12 +131,12 @@ func (e *Engine) inferPhase(ctx context.Context, sid, toolName, command string, 
 	next := s.Phase
 
 	// Edit while in explore/plan → implement (initial implementation work).
-	if toolName == "edit" && (next == string(router.Explore) || next == string(router.Plan)) {
+	if isEditTool(toolName) && (next == string(router.Explore) || next == string(router.Plan)) {
 		next = string(router.Implement)
 	}
 
 	// Edit while in review/diagnose → implement (work resumed after review).
-	if toolName == "edit" && (next == string(router.Review) || next == string(router.Diagnose)) {
+	if isEditTool(toolName) && (next == string(router.Review) || next == string(router.Diagnose)) {
 		next = string(router.Implement)
 	}
 

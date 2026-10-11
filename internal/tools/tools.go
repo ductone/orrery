@@ -99,6 +99,9 @@ type fileSnapshot struct {
 	// versions of the file, so an edit invalidated by the session's own later
 	// edits can be translated instead of failing as stale.
 	history []anchorVersion
+	// execChanged is set when a command run by exec changed the file after
+	// this session last read or wrote it, so a stale edit can say so.
+	execChanged bool
 }
 
 // anchorHistoryVersions bounds how many versions of a file the session
@@ -158,12 +161,12 @@ func lineText(lines []hashline.Line) []string {
 
 func editDescription(d anchorDialect) string {
 	if d == anchorContextual {
-		return "Apply contextual hashline hunks. Anchors are 8-character hashes of the previous, current, and next visible lines from the latest read; changing either neighbor makes an anchor stale. For a new file use e3b0c442 with delete=0."
+		return "Apply contextual hashline hunks. Anchors are 8-character hashes of the previous, current, and next visible lines from the latest read; changing either neighbor makes an anchor stale. For a new file use the write tool, or anchor e3b0c442 with delete=0."
 	}
 	if d == anchorText {
-		return "Apply exact-text anchor hunks. Copy the complete line text from the latest read into anchor; repeated identical lines are ambiguous. For a new file use an empty anchor with delete=0."
+		return "Apply exact-text anchor hunks. Copy the complete line text from the latest read into anchor; repeated identical lines are ambiguous. For a new file use the write tool, or an empty anchor with delete=0."
 	}
-	return "Apply content-anchored hashline hunks. You MUST read the exact target window immediately before editing and copy its latest 8-character hash into anchor. To create a new file, use anchor e3b0c442 with delete=0. Identical lines share a hash; when an anchor is ambiguous, also pass its line number from the read as line. Re-read after compaction or a stale error."
+	return "Apply content-anchored hashline hunks. You MUST read the exact target window immediately before editing and copy its latest 8-character hash into anchor. To create a new file, use the write tool, or anchor e3b0c442 with delete=0. Identical lines share a hash; when an anchor is ambiguous, also pass its line number from the read as line. Re-read after compaction or a stale error."
 }
 
 func readDescription(d anchorDialect) string {
@@ -199,6 +202,11 @@ func NewWithStateDialect(root string, state *SessionState, dialect string) *Regi
 	}
 	r.add("edit", editDescription(r.dialect), schema(map[string]any{"path": str(), "hunks": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"anchor": anchor, "line": map[string]any{"type": "integer", "description": "The anchor's line number from the latest read. Needed only when identical lines share a hash."}, "offset": num(), "delete": num(), "insert": map[string]any{"type": "array", "items": str()}}, "required": []string{"anchor", "delete", "insert"}, "additionalProperties": false}}}, "path", "hunks"), r.edit)
 	r.add("exec", "Run a shell command in the workspace. Use background=true for long jobs.", schema(map[string]any{"command": str(), "background": boolean(), "timeout_seconds": num()}, "command"), r.run)
+	r.add("write", writeDescription, schema(map[string]any{"path": str(), "content": str(), "append": boolean()}, "path", "content"), r.write)
+	r.add("replace", replaceDescription, schema(map[string]any{"old_string": str(), "new_string": str(), "paths": map[string]any{"type": "array", "items": str()}, "replace_all": boolean()}, "old_string", "new_string", "paths"), r.replace)
+	if astGrepAvailable() {
+		r.add("ast_edit", astEditDescription, schema(map[string]any{"ops": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"pattern": str(), "rewrite": str()}, "required": []string{"pattern", "rewrite"}, "additionalProperties": false}}, "paths": map[string]any{"type": "array", "items": str()}, "lang": str()}, "ops", "paths"), r.astEdit)
+	}
 	r.add("job", "Wait for, cancel, or read logs from an exec command, or wait for (or check on) a worker job started by spawn. Accepts this session's cmd-… IDs, including the basename without .log from foreground exec log paths.", schema(map[string]any{"id": str(), "action": map[string]any{"type": "string", "enum": []string{"wait", "cancel", "logs"}}}, "id", "action"), r.job)
 	return r
 }
@@ -382,6 +390,7 @@ func (r *Registry) read(ctx context.Context, a map[string]any) (any, error) {
 	snapshot.version = currentVersion
 	snapshot.content = lineText(lines)
 	snapshot.history = appendAnchorVersion(snapshot.history, currentVersion, false, lines)
+	snapshot.execChanged = false
 	r.state.snapshots[p] = snapshot
 	r.state.mu.Unlock()
 	if around, ok := a["around_line"]; ok && around != nil {
@@ -515,6 +524,17 @@ func (r *Registry) edit(_ context.Context, a map[string]any) (any, error) {
 				"directive":        "re-read the target region and retry using fresh anchors",
 			}
 			pendingErr = errors.New("E_FILE_CHANGED: file changed since this session last read it")
+			if snapshot.execChanged {
+				lo, hi := changedSpan(snapshot.content, lineText(current))
+				hi = max(hi, lo+1)
+				msg := fmt.Sprintf("E_FILE_CHANGED: file changed by your last command; re-read lines %d-%d", lo+1, hi)
+				pendingNote = "file changed by your last command; every anchor resolved uniquely in the current file"
+				if m, ok := pending.(map[string]any); ok {
+					m["error"] = msg
+					m["directive"] = fmt.Sprintf("re-read lines %d-%d, then retry using fresh anchors", lo+1, hi)
+				}
+				pendingErr = errors.New(msg)
+			}
 		}
 	}
 	var translated []string
@@ -580,6 +600,7 @@ func (r *Registry) edit(_ context.Context, a map[string]any) (any, error) {
 	snapshot.version = currentVersion
 	snapshot.content = lineText(result.Lines)
 	snapshot.history = appendAnchorVersion(snapshot.history, currentVersion, true, result.Lines)
+	snapshot.execChanged = false
 	r.state.snapshots[p.Path] = snapshot
 	windows := computeFreshWindows(result.Lines, result.Affected)
 	out := map[string]any{"applied": len(p.Hunks), "fresh_anchors": windows}
@@ -833,12 +854,30 @@ func (r *Registry) run(ctx context.Context, a map[string]any) (any, error) {
 	timeout := time.Duration(asInt(a["timeout_seconds"], 120)) * time.Second
 	select {
 	case <-j.done:
+		r.markExecChanged()
 		return commandSummary(path, j.err)
 	case <-time.After(timeout):
 		_ = cmd.Process.Kill()
 		return nil, fmt.Errorf("command timed out; log: %s", path)
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	}
+}
+
+// markExecChanged flags every file this session has read or written whose
+// content no longer matches the session's snapshot after a command finished,
+// so the next edit on it can say the command changed it.
+func (r *Registry) markExecChanged() {
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+	for path, snapshot := range r.state.snapshots {
+		if snapshot.version == "" {
+			continue
+		}
+		if v, err := fileVersion(path); err == nil && v != snapshot.version {
+			snapshot.execChanged = true
+			r.state.snapshots[path] = snapshot
+		}
 	}
 }
 
@@ -900,6 +939,7 @@ func (r *Registry) job(ctx context.Context, a map[string]any) (any, error) {
 	case "wait":
 		select {
 		case <-j.done:
+			r.markExecChanged()
 			return commandSummary(j.path, j.err)
 		case <-ctx.Done():
 			return nil, ctx.Err()

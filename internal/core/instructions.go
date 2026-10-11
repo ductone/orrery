@@ -176,8 +176,19 @@ func (d *instructionDiscovery) ForTool(call provider.ToolCall) []workspaceInstru
 	switch call.Name {
 	case "read":
 		return d.forPath(fmt.Sprint(call.Arguments["path"]), false)
-	case "edit":
+	case "edit", "write":
 		return d.forPath(fmt.Sprint(call.Arguments["path"]), true)
+	case "replace", "ast_edit":
+		var docs []workspaceInstruction
+		paths, _ := call.Arguments["paths"].([]any)
+		for _, raw := range paths {
+			p, _ := raw.(string)
+			if p == "" || strings.ContainsAny(p, "*?[{") {
+				continue
+			}
+			docs = append(docs, d.forPath(p, false)...)
+		}
+		return docs
 	default:
 		return nil
 	}

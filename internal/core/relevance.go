@@ -227,7 +227,7 @@ func maskOldToolResultsCached(ctx context.Context, ask relevanceAsker, cache *sy
 			continue
 		}
 		name, args := matchingCall(msgs, i, parsed.ToolCallID)
-		if name == "edit" || (keepVerification && name == "exec" && (strings.Contains(args, "test") || strings.Contains(args, "build"))) {
+		if isEditTool(name) || (keepVerification && name == "exec" && (strings.Contains(args, "test") || strings.Contains(args, "build"))) {
 			keepVerification = name != "exec"
 			continue
 		}
