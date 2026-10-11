@@ -27,6 +27,14 @@ type rpcRequest struct {
 	Method  string `json:"method"`
 	Params  any    `json:"params,omitempty"`
 }
+
+// rpcNotification omits params when nil: JSON-RPC 2.0 allows params to be
+// absent but not null, and strict servers (Linear) reject a null value.
+type rpcNotification struct {
+	JSONRPC string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
+}
 type rpcResponse struct {
 	ID     *int64          `json:"id,omitempty"`
 	Result json.RawMessage `json:"result"`
@@ -290,7 +298,7 @@ func (c *httpClient) Call(ctx context.Context, method string, params any) (json.
 }
 
 func (c *httpClient) Notify(ctx context.Context, method string, params any) error {
-	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
+	b, _ := json.Marshal(rpcNotification{"2.0", method, params})
 	_, _, err := c.post(ctx, b)
 	return err
 }
@@ -473,7 +481,7 @@ func (c *stdioClient) Call(ctx context.Context, method string, params any) (json
 func (c *stdioClient) Notify(_ context.Context, method string, params any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
+	b, _ := json.Marshal(rpcNotification{"2.0", method, params})
 	_, err := c.in.Write(append(b, '\n'))
 	return err
 }

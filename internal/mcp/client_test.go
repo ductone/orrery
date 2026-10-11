@@ -2,9 +2,10 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/ductone/orrey/internal/config"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/ductone/orrey/internal/config"
 )
 
 func TestHTTPLifecycleAndBoundaryRefresh(t *testing.T) {
@@ -227,4 +230,43 @@ func TestStdioHelperProcess(t *testing.T) {
 		}
 	}
 	os.Exit(0)
+}
+
+func TestNotifyOmitsNilParams(t *testing.T) {
+	// JSON-RPC 2.0 allows params to be absent but never null, and strict
+	// servers (Linear's hosted MCP) reject "params":null with HTTP 400.
+	b, err := json.Marshal(rpcNotification{"2.0", "notifications/initialized", nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(b, []byte("params")) {
+		t.Fatalf("nil params must be omitted, got %s", b)
+	}
+	b, err = json.Marshal(rpcNotification{"2.0", "custom", map[string]any{"a": 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(b, []byte("params")) {
+		t.Fatalf("non-nil params must be included, got %s", b)
+	}
+}
+
+func TestHTTPNotifyOmitsNilParamsOnTheWire(t *testing.T) {
+	// Regression for the Linear startup failure: the notifications/initialized
+	// body must not contain "params":null, which the server rejects.
+	var bodies [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, b)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	c := &httpClient{url: srv.URL, http: &http.Client{}}
+	if err := c.Notify(context.Background(), "notifications/initialized", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 1 || bytes.Contains(bodies[0], []byte("params")) {
+		t.Fatalf("notification body must omit nil params, got %q", bodies)
+	}
 }
