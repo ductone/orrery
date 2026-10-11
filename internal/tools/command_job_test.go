@@ -35,7 +35,7 @@ func TestCommandLogIDSurvivesRegistryRebuild(t *testing.T) {
 				}
 			}
 			other := NewWithState(root, &SessionState{})
-			for _, unknown := range []string{id, "cmd-unknown", "../" + id} {
+			for _, unknown := range []string{"cmd-unknown", "../" + id} {
 				for _, action := range []string{"logs", "wait"} {
 					if _, err := other.Call(ctx, "job", map[string]any{"id": unknown, "action": action}); err == nil {
 						t.Fatalf("another session accepted %q for %s", unknown, action)
@@ -63,5 +63,21 @@ func TestBackgroundCommandWaitSurvivesRegistryRebuild(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "exit status 7") || !strings.Contains(result.(map[string]any)["summary"].(string), "background") {
 			t.Fatalf("wait = %v, error = %v", result, err)
 		}
+	}
+}
+
+func TestJobFallsBackToLogAndExitStatus(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	first := NewWithState(root, &SessionState{})
+	result, _ := first.Call(ctx, "exec", map[string]any{"command": "printf marker; exit 3"})
+	id := strings.TrimSuffix(filepath.Base(result.(map[string]any)["log"].(string)), ".log")
+	other := NewWithState(root, &SessionState{})
+	got, err := other.Call(ctx, "job", map[string]any{"id": id, "action": "wait"})
+	if err == nil || !strings.Contains(err.Error(), "exit status 3") || !strings.Contains(got.(map[string]any)["summary"].(string), "marker") {
+		t.Fatalf("got=%v err=%v", got, err)
+	}
+	if _, err := other.Call(ctx, "job", map[string]any{"id": "cmd-1", "action": "logs"}); err == nil {
+		t.Fatal("missing log accepted")
 	}
 }

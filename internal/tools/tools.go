@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -487,6 +488,9 @@ func (r *Registry) edit(_ context.Context, a map[string]any) (any, error) {
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		return nil, readErr
 	}
+	var pending any
+	var pendingErr error
+	var pendingNote string
 	if readErr == nil {
 		currentVersion, err := fileVersion(p.Path)
 		if err != nil {
@@ -494,22 +498,23 @@ func (r *Registry) edit(_ context.Context, a map[string]any) (any, error) {
 		}
 		snapshot, ok := r.state.snapshots[p.Path]
 		if !ok {
-			details := map[string]any{
+			pendingNote = "file was not read by this registry; every anchor resolved uniquely in the current file"
+			pending = map[string]any{
 				"error":           "E_FILE_NOT_READ: file must be read before editing",
 				"current_version": currentVersion,
 				"directive":       "read the exact target window, then retry with a returned anchor",
 			}
-			return details, errors.New("E_FILE_NOT_READ: file must be read before editing")
-		}
-		if currentVersion != snapshot.version {
-			details := map[string]any{
+			pendingErr = errors.New("E_FILE_NOT_READ: file must be read before editing")
+		} else if currentVersion != snapshot.version {
+			pendingNote = "file changed since this session last read it; every anchor resolved uniquely in the current file"
+			pending = map[string]any{
 				"error":            "E_FILE_CHANGED: file changed since this session last read it",
 				"expected_version": snapshot.version,
 				"current_version":  currentVersion,
 				"diff_since_read":  diffSince(snapshot.content, lineText(current)),
 				"directive":        "re-read the target region and retry using fresh anchors",
 			}
-			return details, errors.New("E_FILE_CHANGED: file changed since this session last read it")
+			pendingErr = errors.New("E_FILE_CHANGED: file changed since this session last read it")
 		}
 	}
 	var translated []string
@@ -517,6 +522,9 @@ func (r *Registry) edit(_ context.Context, a map[string]any) (any, error) {
 		return nil, err
 	}
 	result, err := hashline.ApplyWithMode(p, r.dialect.mode())
+	if err != nil && pendingErr != nil {
+		return pending, pendingErr
+	}
 	if errors.Is(err, hashline.ErrNoChanges) {
 		r.state.noop.signature, r.state.noop.streak = signature, r.state.noop.streak+1
 		if r.state.noop.streak >= 3 {
@@ -575,6 +583,9 @@ func (r *Registry) edit(_ context.Context, a map[string]any) (any, error) {
 	r.state.snapshots[p.Path] = snapshot
 	windows := computeFreshWindows(result.Lines, result.Affected)
 	out := map[string]any{"applied": len(p.Hunks), "fresh_anchors": windows}
+	if pendingNote != "" {
+		out["note"] = pendingNote
+	}
 	if len(translated) > 0 {
 		out["translated_anchors"] = translated
 	}
@@ -810,7 +821,12 @@ func (r *Registry) run(ctx context.Context, a map[string]any) (any, error) {
 	r.state.mu.Lock()
 	r.state.jobs[id] = j
 	r.state.mu.Unlock()
-	go func() { j.err = cmd.Wait(); f.Close(); close(j.done) }()
+	go func() {
+		j.err = cmd.Wait()
+		f.Close()
+		writeExitStatus(path, j.err)
+		close(j.done)
+	}()
 	if bg, _ := a["background"].(bool); bg {
 		return map[string]any{"id": id, "log": path}, nil
 	}
@@ -826,6 +842,45 @@ func (r *Registry) run(ctx context.Context, a map[string]any) (any, error) {
 	}
 }
 
+// writeExitStatus records a finished command's exit code next to its log so
+// a later process can report it.
+func writeExitStatus(logPath string, runErr error) {
+	code := 0
+	if runErr != nil {
+		code = -1
+		var ee *exec.ExitError
+		if errors.As(runErr, &ee) {
+			code = ee.ExitCode()
+		}
+	}
+	_ = os.WriteFile(strings.TrimSuffix(logPath, ".log")+".exit", []byte(strconv.Itoa(code)), 0600)
+}
+
+// jobFromLog serves a job id this process does not hold from the log file the
+// command wrote, with its recorded exit status when there is one.
+func (r *Registry) jobFromLog(id, action string) (any, error) {
+	if !strings.HasPrefix(id, "cmd-") || strings.ContainsAny(id, "/\\.") {
+		return nil, errors.New("job not found")
+	}
+	path := filepath.Join(r.root, ".orrery", "logs", id+".log")
+	if _, err := os.Stat(path); err != nil {
+		return nil, errors.New("job not found")
+	}
+	if action != "logs" && action != "wait" {
+		if action == "cancel" {
+			return nil, errors.New("job is not running in this process; it cannot be cancelled")
+		}
+		return nil, errors.New("invalid action")
+	}
+	var runErr error
+	if b, err := os.ReadFile(strings.TrimSuffix(path, ".log") + ".exit"); err == nil {
+		if code, perr := strconv.Atoi(strings.TrimSpace(string(b))); perr == nil && code != 0 {
+			runErr = fmt.Errorf("exit status %d", code)
+		}
+	}
+	return commandSummary(path, runErr)
+}
+
 func (r *Registry) job(ctx context.Context, a map[string]any) (any, error) {
 	id := asString(a["id"])
 	r.state.mu.Lock()
@@ -835,7 +890,7 @@ func (r *Registry) job(ctx context.Context, a map[string]any) (any, error) {
 		if r.jobFallback != nil {
 			return r.jobFallback(ctx, id, asString(a["action"]))
 		}
-		return nil, errors.New("job not found")
+		return r.jobFromLog(id, asString(a["action"]))
 	}
 	switch asString(a["action"]) {
 	case "logs":

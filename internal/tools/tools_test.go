@@ -360,7 +360,7 @@ func TestConcurrentSessionsDoNotOverwriteSameSnapshot(t *testing.T) {
 	}
 }
 
-func TestOptimisticLockDetectsFinalNewlineOnlyChange(t *testing.T) {
+func TestUniqueAnchorAppliesAfterFinalNewlineOnlyChange(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "file.txt")
 	if err := os.WriteFile(path, []byte("one\n"), 0600); err != nil {
@@ -379,8 +379,8 @@ func TestOptimisticLockDetectsFinalNewlineOnlyChange(t *testing.T) {
 		"path":  "file.txt",
 		"hunks": []any{map[string]any{"anchor": anchor, "delete": float64(1), "insert": []any{"changed"}}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "E_FILE_CHANGED") {
-		t.Fatalf("final-newline-only change was not detected: %v", err)
+	if err != nil {
+		t.Fatalf("edit with uniquely resolving anchor refused: %v", err)
 	}
 }
 
@@ -557,5 +557,31 @@ func TestRetainedLine(t *testing.T) {
 				t.Fatalf("retainedLine(%d) = %d, %v; want %d, %v", tc.old, got, ok, tc.want, tc.ok)
 			}
 		})
+	}
+}
+
+func TestEditAppliesWhenUnreadButAnchorUnique(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "file.txt")
+	if err := os.WriteFile(path, []byte("one\ntwo\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	value, err := NewWithState(root, &SessionState{}).Call(context.Background(), "read", map[string]any{"path": "file.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := value.([]hashline.Line)[0].Hash
+	out, err := NewWithState(root, &SessionState{}).Call(context.Background(), "edit", map[string]any{
+		"path":  "file.txt",
+		"hunks": []any{map[string]any{"anchor": anchor, "delete": float64(1), "insert": []any{"uno"}}},
+	})
+	if err != nil || out.(map[string]any)["note"] == nil {
+		t.Fatalf("out=%v err=%v", out, err)
+	}
+	if _, err := NewWithState(root, &SessionState{}).Call(context.Background(), "edit", map[string]any{
+		"path":  "file.txt",
+		"hunks": []any{map[string]any{"anchor": "deadbeef", "delete": float64(1), "insert": []any{"x"}}},
+	}); err == nil || !strings.Contains(err.Error(), "E_FILE_NOT_READ") {
+		t.Fatalf("err=%v", err)
 	}
 }

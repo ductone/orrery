@@ -396,3 +396,15 @@ func TestAffectedRegionsAreInNewFileCoordinates(t *testing.T) {
 		t.Fatalf("regions do not point at the edited lines: %q %q %q", res.Lines[5].Text, res.Lines[11].Text, res.Lines[2].Text)
 	}
 }
+
+func TestPickOccurrenceSingleMatchWithinTolerance(t *testing.T) {
+	if idx, ok := pickOccurrence([]int{10, 200}, 15, true); !ok || idx != 10 {
+		t.Fatalf("idx=%d ok=%v", idx, ok)
+	}
+	if _, ok := pickOccurrence([]int{10, 20}, 15, true); ok {
+		t.Fatal("two matches within tolerance resolved")
+	}
+	if _, ok := pickOccurrence([]int{10, 200}, 150, true); ok {
+		t.Fatal("match outside tolerance resolved")
+	}
+}

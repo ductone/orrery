@@ -91,6 +91,15 @@ func pickOccurrence(occurrences []int, line int, deleting bool) (int, bool) {
 			return idx, true
 		}
 	}
+	near, within := -1, 0
+	for _, idx := range occurrences {
+		if abs(idx-want) <= lineTolerance {
+			near, within = idx, within+1
+		}
+	}
+	if within == 1 {
+		return near, true
+	}
 	if deleting {
 		return 0, false
 	}
