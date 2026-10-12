@@ -50,6 +50,7 @@ type block struct {
 	tool       *toolRecord
 	result     *agentproto.TaskResult
 	input      *agentproto.InputRequest
+	todoPrev   []store.Todo
 	todos      []store.Todo
 	panel      func(*renderer) string
 	review     bool
@@ -89,6 +90,7 @@ type state struct {
 	workers       []worker
 	queued        []queuedMessage
 	input         *agentproto.InputRequest
+	todosPrev     []store.Todo // plan before the latest todo.changed, for transition lines
 	todos         []store.Todo
 	tokensIn      int
 	tokensOut     int
@@ -224,11 +226,13 @@ func (s *state) apply(ev Event) []block {
 		b := block{kind: blockTool, tool: rec}
 		if d.Call.Name == "todo" {
 			b.todos = append([]store.Todo(nil), s.todos...)
+			b.todoPrev = append([]store.Todo(nil), s.todosPrev...)
 		}
 		return []block{b}
 	case "todo.changed":
 		var todos []store.Todo
 		_ = json.Unmarshal(ev.Data, &todos)
+		s.todosPrev = s.todos
 		s.todos = todos
 		for _, t := range todos {
 			if t.Status == "in_progress" {
@@ -285,6 +289,15 @@ func (s *state) apply(ev Event) []block {
 			}
 		}
 		s.lastResult = nil
+		if len(s.todos) > 0 {
+			done := 0
+			for _, t := range s.todos {
+				if t.Status == "completed" {
+					done++
+				}
+			}
+			return []block{b, notice("☷", toneDim, "plan %d/%d done", done, len(s.todos))}
+		}
 		return []block{b}
 	case "session.terminated":
 		s.setStatus("terminated", ev.CreatedAt)

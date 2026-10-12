@@ -279,7 +279,7 @@ func (r *renderer) toolBody(b block) ([]string, bool) {
 			return []string{r.st.muted.Render("background job " + id + " · log " + formatAny(m["log"]))}, false
 		}
 	case "todo":
-		return r.todoLines(b.todos), false
+		return r.todoBlockLines(b.todoPrev, b.todos), false
 	case "edit":
 		return r.editLines(t.call.Arguments), false
 	case "read":
@@ -316,15 +316,60 @@ func (r *renderer) todoLines(todos []store.Todo) []string {
 	return out
 }
 
+// todoBlockLines renders one todo update. A first write or a restructure (items
+// added, removed or reordered) shows the full list; a status-only update shows
+// one line of the items whose status changed, with progress.
+func (r *renderer) todoBlockLines(prev, cur []store.Todo) []string {
+	if !sameTodoItems(prev, cur) {
+		return r.todoLines(cur)
+	}
+	var parts []string
+	done := 0
+	for i, t := range cur {
+		if t.Status == "completed" {
+			done++
+		}
+		if i < len(prev) && prev[i].Status == t.Status {
+			continue
+		}
+		switch t.Status {
+		case "completed":
+			parts = append(parts, r.st.accentDim.Render("✓ ")+r.st.muted.Render(t.Text))
+		case "in_progress":
+			parts = append(parts, r.st.purple.Render("◆ ")+r.st.bright.Render(t.Text))
+		default:
+			parts = append(parts, r.st.muted.Render("○ ")+r.st.signal.Render(t.Text))
+		}
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	progress := r.st.muted.Render(fmt.Sprintf(" (%d/%d)", done, len(cur)))
+	return []string{strings.Join(parts, r.st.muted.Render(" · ")) + progress}
+}
+
+// sameTodoItems reports whether two plans have the same items in the same
+// order. Status and phase may differ.
+func sameTodoItems(a, b []store.Todo) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Text != b[i].Text {
+			return false
+		}
+	}
+	return true
+}
+
 func (r *renderer) todoLine(t store.Todo) string {
-	phase := r.st.muted.Render(fmt.Sprintf("%-9s", t.Phase))
 	switch t.Status {
 	case "completed":
-		return r.st.accentDim.Render("✓ ") + phase + " " + r.st.muted.Render(t.Text)
+		return r.st.accentDim.Render("✓ ") + r.st.muted.Render(t.Text)
 	case "in_progress":
-		return r.st.purple.Render("◆ ") + phase + " " + r.st.bright.Render(t.Text)
+		return r.st.purple.Render("◆ ") + r.st.bright.Render(t.Text)
 	default:
-		return r.st.muted.Render("○ ") + phase + " " + r.st.signal.Render(t.Text)
+		return r.st.muted.Render("○ ") + r.st.signal.Render(t.Text)
 	}
 }
 
