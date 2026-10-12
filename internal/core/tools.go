@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -133,7 +134,9 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		if err := e.store.SetTodos(ctx, sid, ts); err != nil {
 			return nil, err
 		}
-		phase := phaseFrom(ts)
+		// A todo may de-escalate out of a frontier-floored phase but never
+		// escalate into one; the floor list is the configured router setting.
+		phase := clampPhase(old.Phase, phaseFrom(ts), runtimeCfg.Router.FrontierFloorPhases)
 		if phase != old.Phase {
 			old.Phase = phase
 			old.DurableSummary = setPlanSnapshot(old.DurableSummary, store.JSON(ts))
@@ -586,6 +589,19 @@ func phaseFrom(ts []store.Todo) string {
 	}
 	return string(router.WrapUp)
 }
+
+// clampPhase stops a todo update from escalating a session into a
+// frontier-floored phase. A todo may move the session out of a floored phase
+// (for example plan to implement) but never into one from outside it. floors
+// is RouterConfig.FrontierFloorPhases; with none configured nothing is clamped.
+func clampPhase(oldPhase, newPhase string, floors []string) string {
+	floored := func(p string) bool { return slices.Contains(floors, p) }
+	if floored(newPhase) && !floored(oldPhase) {
+		return oldPhase
+	}
+	return newPhase
+}
+
 func obj(props map[string]any, required ...string) map[string]any {
 	return map[string]any{"type": "object", "properties": props, "required": required, "additionalProperties": false}
 }
