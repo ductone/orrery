@@ -74,6 +74,9 @@ type Engine struct {
 	// relevanceCaches holds per-session keep/clear answers for old tool
 	// results (sid -> *sessionRelevance), invalidated when the objective changes.
 	relevanceCaches sync.Map
+	// prevStatus holds a session's status from before a launch path set it to
+	// "running", so the run can tell whether the previous run passed.
+	prevStatus map[string]string
 }
 
 func New(cfg config.Config, s *store.Store, p *provider.Registry, mc *mcp.Manager) *Engine {
@@ -396,6 +399,7 @@ func (e *Engine) AddBudget(ctx context.Context, id string, addUSD float64, emit 
 		cancel()
 		return s, false, err
 	}
+	e.notePrevStatusLocked(id, s.Status)
 	e.cancels[id] = cancel
 	e.turnIDs[id] = turnID
 	e.mu.Unlock()
@@ -511,6 +515,7 @@ func (e *Engine) ContinueIntegratedWithAttachments(ctx context.Context, id, inst
 		e.mu.Unlock()
 		return StartInfo{}, err
 	}
+	e.notePrevStatusLocked(id, s.Status)
 	turnCtx, cancel := context.WithTimeout(withTurnID(ctx, receipt.TurnID), req.Budget.MaxWallClock)
 	e.cancels[id] = cancel
 	e.turnIDs[id] = receipt.TurnID
@@ -610,6 +615,9 @@ func (e *Engine) drainQueued(id string, emit EmitFunc) {
 		go e.drainQueued(id, emit)
 		return
 	}
+	e.mu.Lock()
+	e.notePrevStatusLocked(id, s.Status)
+	e.mu.Unlock()
 	if err := e.store.SetSessionStatus(ctx, id, "running"); err != nil {
 		e.emit(ctx, id, "provider.error", map[string]any{"error": "dequeue queued message: set running: " + err.Error()}, emit)
 		return
@@ -780,6 +788,36 @@ func hashPayload(v any) string {
 	return fmt.Sprintf("%x", sha256.Sum256(b))
 }
 
+// shouldClearTodos returns true when a new user instruction should reset the
+// session todo plan. The user's choice: only clear when the previous run
+// finished with status `pass`. Keep the plan when the previous run ended in
+// input_required, interrupted, cancelled, or failed states.
+func shouldClearTodos(prevStatus string, newInstruction bool) bool {
+	if !newInstruction {
+		return false
+	}
+	return prevStatus == string(agentproto.Pass)
+}
+
+// notePrevStatusLocked records a session's status from just before a launch
+// path marks it running. Callers hold e.mu.
+func (e *Engine) notePrevStatusLocked(id, status string) {
+	if e.prevStatus == nil {
+		e.prevStatus = map[string]string{}
+	}
+	e.prevStatus[id] = status
+}
+
+// takePrevStatus returns and forgets the status recorded by
+// notePrevStatusLocked, or "" when none was recorded.
+func (e *Engine) takePrevStatus(id string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	status := e.prevStatus[id]
+	delete(e.prevStatus, id)
+	return status
+}
+
 func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.TaskRequest, emit EmitFunc) (result agentproto.TaskResult) {
 	// A bug in the loop fails this session, not the process: the TUI and
 	// serve host sessions in-process, and one panic took a TUI down.
@@ -830,6 +868,10 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		}
 		return defaultOutputCap
 	}
+	// prevRunStatus is the session status before this run's launch path set it
+	// to "running"; empty for worker runs and direct calls, which never clear.
+	prevRunStatus := e.takePrevStatus(sid)
+	todoClearChecked := false
 	synthesizing := false
 	if answer, ok := e.limitAnswer(ctx, sid); ok && answer.declined {
 		return e.finish(sid, agentproto.TaskResult{Status: agentproto.Cancelled, Outcome: outcome, Error: "stopped at the person's request"}, emit)
@@ -895,6 +937,30 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		// The opening request is the session spec, not a stored message, so a
 		// root session's first turn is a new instruction too.
 		newInstruction := endsWithUserInstruction(stored) || (parentJob == "" && len(stored) == 0)
+
+		// If this turn starts with a new user instruction and the previous run
+		// finished with status pass, clear the live todo plan. Keep the plan for
+		// ask answers (input_required) and after interrupted, cancelled or failed
+		// runs as the user requested.
+		// Only the first turn of a run consults the previous run's status;
+		// later turns are mid-run and never clear the plan.
+		clearCheck := !todoClearChecked
+		todoClearChecked = true
+		if clearCheck && shouldClearTodos(prevRunStatus, newInstruction) {
+			if ts, err := e.store.Todos(ctx, sid); err == nil && len(ts) > 0 {
+				// Clear live todos
+				if err := e.store.SetTodos(ctx, sid, nil); err != nil {
+					e.emit(ctx, sid, "todo.clear_failed", map[string]any{"error": err.Error()}, emit)
+				} else {
+					// Record the previous plan in the durable summary so it's not lost.
+					s.DurableSummary = setPlanSnapshot(s.DurableSummary, store.JSON(ts))
+					_ = e.store.UpdateSession(ctx, s)
+					// Notify listeners the todo list changed (now empty)
+					e.emit(ctx, sid, "todo.changed", []store.Todo{}, emit)
+				}
+			}
+		}
+
 		runtimeCfg, runtimeProviders, runtimePolicy, _, _ := e.runtimeSnapshot()
 		state := router.RoutingState{SessionID: sid, Turn: s.Turn + 1, Point: point, Phase: router.Phase(s.Phase), CurrentModel: currentModel, InputTokens: inputTokens, EstimatedOutput: 4000, HasImage: messagesHaveImages(stored), ToolContinuation: len(stored) > 0 && stored[len(stored)-1].Role == "tool", NewInstruction: newInstruction, Stall: stall, AvailableModels: runtimeProviders.AvailableIDs(), Performance: e.routePerformance(ctx)}
 		if newInstruction {
