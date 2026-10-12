@@ -22,6 +22,7 @@ unmapped `model_raw` names. Add those to `aliases.json` to map them.
 - `models.json` (generated): the canonical registry.
 - `observations.jsonl` (generated): one measurement per line.
 - `sources.json` (generated): provenance for each source (URL, fetched_at, counts, newest date in the data, notes).
+- `capability.py` / `capability.json`, `cluster.py` / `clusters.json` / `clusters.md`: the capability model and the bands (see below).
 
 | source | what |
 |---|---|
@@ -97,6 +98,17 @@ Ids are normalized as follows:
 - `5p3` / `5-5` → `5.3` / `5.5`.
 - `claude-3-5-sonnet` → `claude-sonnet-3.5`.
 - 8-digit and ISO dates are dropped, except for DeepSeek, which keeps `MMDD` (`deepseek-v4-pro-0813`). 4-digit `MMDD` suffixes are kept.
+
+## Capability model and clusters
+
+    python3 -I research/modelbench/capability.py   # ~15 s, writes capability.json
+    python3 -I research/modelbench/cluster.py      # writes clusters.json and clusters.md
+
+Both are stdlib only and deterministic (fixed seeds).
+
+- `capability.py` fits a joint latent-ability model over (model, effort):
+  `z = a_b + s_b * (theta_m + g_e + u_{m,e})`. z is the primary metric of each benchmark, transformed (logit for pct, log for METR minutes, linear for elo, score or ECI) and z-standardized per benchmark. The coding/agentic benchmarks have weight 1: CursorBench, DeepSWE pass@1, FrontierSWE score, FrontierCode, SWE-bench Verified (Epoch), Terminal-Bench, Aider polyglot, GSO, METR p50, LMArena webdev overall and agent overall. WeirdML has weight 0.5. The general benchmarks have weight 0.5: ECI, GPQA, LMArena text overall and SciCode. `g_e` is a global effort offset (`g_high = 0`). `unspecified` gets its own offset and is never equated to a level. `u` has a ridge prior N(0, 0.6²). `theta_m` has a ridge prior centred on a release-date trend. The model is fitted by alternating ridge least squares. `se` combines a 50-sample bootstrap over cells with the conditional Laplace variance. The output also includes held-out validation, effort-monotonicity checks and a cost index. The cost index is `log_cost` = ln(USD per CursorBench-equivalent task). It is measured from the CursorBench, DeepSWE and FrontierSWE cost columns. Otherwise it is estimated from the model's own measured efforts, or from list price (3 input : 1 output) times a learned effort multiplier. `cost_source` records which.
+- `cluster.py` builds capability bands with Jenks natural breaks on theta, fitted on routable points with se <= 0.5. It also computes the Pareto frontier of capability against cost, the best-value effort per route, and disagreements with the current `Tier`. The tiers are read from `~/.orrery/catalog/catalog-ramp.json` and `internal/model/models.go`. `clusters.md` is the human-readable report.
 
 ## Known gaps / caveats
 
