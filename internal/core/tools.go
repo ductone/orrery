@@ -186,7 +186,7 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		})
 	}
 	if req.Workspace.Mode != "read" {
-		r.Add("spawn", "Create an in-process worker with isolated session state and a hard budget slice. Read workers run asynchronously. Shared-write workers run synchronously so the parent cannot mutate the checkout at the same time.", obj(map[string]any{"spec": str(), "result_schema": map[string]any{"type": "object"}, "budget_fraction": map[string]any{"type": "number"}, "review": map[string]any{"type": "boolean"}, "phase": map[string]any{"type": "string", "enum": []string{"explore", "plan", "implement", "diagnose", "review", "wrap-up"}}, "workspace_mode": map[string]any{"type": "string", "enum": []string{"read", "shared-write"}}}, "spec"), func(ctx context.Context, a map[string]any) (any, error) {
+		r.Add("spawn", "Create an in-process worker with isolated session state and a hard budget slice. Read workers run asynchronously. Shared-write workers run synchronously so the parent cannot mutate the checkout at the same time. Isolated workers run asynchronously in a git worktree (.orrery/worktrees) seeded from the parent's HEAD plus uncommitted changes; their commits are applied back to the parent checkout and the result reports branch, commits, files and any conflicting files. Non-git workspaces fall back to shared-write.", obj(map[string]any{"spec": str(), "result_schema": map[string]any{"type": "object"}, "budget_fraction": map[string]any{"type": "number"}, "review": map[string]any{"type": "boolean"}, "phase": map[string]any{"type": "string", "enum": []string{"explore", "plan", "implement", "diagnose", "review", "wrap-up"}}, "workspace_mode": map[string]any{"type": "string", "enum": []string{"read", "shared-write", "isolated"}}}, "spec"), func(ctx context.Context, a map[string]any) (any, error) {
 			if req.Depth == 0 {
 				return nil, errors.New("spawn forbidden at depth 0")
 			}
@@ -336,7 +336,7 @@ func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq ag
 			workspaceMode = "read"
 		}
 	}
-	if err := validateWorkspaceMode(workspaceMode); err != nil {
+	if err := validateWorkspaceMode(strings.Replace(workspaceMode, "isolated", "shared-write", 1)); err != nil {
 		return nil, err
 	}
 	if parentReq.Workspace.Mode == "read" && workspaceMode != "read" {
@@ -350,7 +350,27 @@ func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq ag
 		cfg, _, _, _, _ := e.runtimeSnapshot()
 		childUSD = reviewChildBudget(childUSD, available, cfg.Budget.ReviewFloorUSD())
 	}
-	child := agentproto.TaskRequest{Spec: spec, ResultSchema: schema, Budget: agentproto.Budget{MaxTokens: max(1000, int(float64(parentReq.Budget.MaxTokens)*fraction)), MaxUSD: childUSD, MaxWallClock: parentReq.Budget.MaxWallClock, MaxDepth: parentReq.Budget.MaxDepth}, Workspace: agentproto.Workspace{Path: parentReq.Workspace.Path, Mode: workspaceMode, Ownership: parentReq.Workspace.Ownership}, Depth: parentReq.Depth - 1}
+	isoBranch, isoBase, isolatedPath := "", "", ""
+	if workspaceMode == "isolated" {
+		if !isGitWorkspace(ctx, parentReq.Workspace.Path) {
+			workspaceMode = "shared-write"
+		} else {
+			wtPath := filepath.Join(parentReq.Workspace.Path, ".orrery", "worktrees", id)
+			branch := "orrery/job-" + id[:8]
+			if err := createIsolatedWorktree(ctx, parentReq.Workspace.Path, wtPath, branch); err != nil {
+				return nil, err
+			}
+			isoBranch = branch
+			isoBase = gitOutput(ctx, wtPath, "rev-parse", "HEAD")
+			workspaceMode = "shared-write"
+			isolatedPath = wtPath
+		}
+	}
+	childPath := parentReq.Workspace.Path
+	if isolatedPath != "" {
+		childPath = isolatedPath
+	}
+	child := agentproto.TaskRequest{Spec: spec, ResultSchema: schema, Budget: agentproto.Budget{MaxTokens: max(1000, int(float64(parentReq.Budget.MaxTokens)*fraction)), MaxUSD: childUSD, MaxWallClock: parentReq.Budget.MaxWallClock, MaxDepth: parentReq.Budget.MaxDepth}, Workspace: agentproto.Workspace{Path: childPath, Mode: workspaceMode, Ownership: parentReq.Workspace.Ownership}, Depth: parentReq.Depth - 1}
 	child.Hints.Review = review
 	child.Hints.Background = parentReq.Hints.Background
 	child.Hints.Effort = opts.effort
@@ -421,12 +441,18 @@ func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq ag
 		}
 		e.emit(context.Background(), sid, "job.terminal", map[string]any{"id": id, "parent_session_id": sid, "parent_job_id": parent, "result": result}, emit)
 	}
-	if workspaceMode == "shared-write" {
+	if workspaceMode == "shared-write" && isoBranch == "" {
 		result := runJob(ctx)
 		finishJob(result, false)
 		return map[string]any{"id": id, "status": result.Status, "result": result, "uri": "job://" + id + "/result"}, nil
 	}
-	go func() { finishJob(runJob(context.Background()), true) }()
+	go func() {
+		result := runJob(context.Background())
+		if isoBranch != "" {
+			result = finalizeIsolatedJob(context.Background(), parentReq.Workspace.Path, child.Workspace.Path, isoBranch, isoBase, result)
+		}
+		finishJob(result, true)
+	}()
 	return map[string]any{"id": id, "status": "running", "uri": "job://" + id + "/result"}, nil
 }
 

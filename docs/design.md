@@ -111,8 +111,11 @@ with environment isolation.
 
 Read workers share the checkout with mutation tools removed and may run in the
 background. Shared-write workers run synchronously while the parent is paused.
-A per-workspace writer lease prevents simultaneous mutable root turns. Creating
-checkouts, snapshots, containers, or complete development environments remains
+Isolated workers get a harness-created git worktree under `.orrery/worktrees/`
+(parent HEAD plus uncommitted changes), run in the background, commit on a
+branch, and are applied back to the parent checkout; conflicts are reported
+with the branch kept. A per-workspace writer lease prevents simultaneous
+mutable root turns. Containers and complete development environments remain
 the embedding system's responsibility.
 
 ### Progressive instruction discovery
@@ -180,11 +183,10 @@ general terminal emulator, PTY product, environment lifecycle manager, package
 installer, or remote workspace service. An embedding host may own those
 facilities.
 
-Orrery also does not create detached worktrees or repository copies for worker
-jobs. Source-only isolation is misleading when commands still share services,
-databases, ports, caches, and process-global configuration. A future isolated
-write mode would require an explicit, complete patch handoff contract and is
-not part of the current worker model.
+Isolated worker worktrees only isolate source files. Commands still share
+services, databases, ports, caches, and process-global configuration, so the
+embedding host owns that isolation. Non-git workspaces fall back to
+shared-write.
 
 ### Not an approval system
 
