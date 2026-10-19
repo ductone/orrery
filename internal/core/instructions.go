@@ -11,8 +11,8 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/ductone/orrey/internal/provider"
-	builtin "github.com/ductone/orrey/internal/tools"
+	"github.com/ductone/orrery/internal/provider"
+	builtin "github.com/ductone/orrery/internal/tools"
 	"gopkg.in/yaml.v3"
 )
 

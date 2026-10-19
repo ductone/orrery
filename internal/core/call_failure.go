@@ -4,8 +4,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/ductone/orrey/internal/model"
-	"github.com/ductone/orrey/internal/provider"
+	"github.com/ductone/orrery/internal/model"
+	"github.com/ductone/orrery/internal/provider"
 )
 
 // failureClass is what kind of failure a model call met. Each class has one

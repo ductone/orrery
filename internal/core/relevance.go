@@ -9,10 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ductone/orrey/internal/classify"
-	"github.com/ductone/orrey/internal/jev"
-	"github.com/ductone/orrey/internal/provider"
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/internal/classify"
+	"github.com/ductone/orrery/internal/jev"
+	"github.com/ductone/orrery/internal/provider"
+	"github.com/ductone/orrery/internal/store"
 )
 
 var relevanceQuestion = map[string]jev.Question{"needed": jev.Noul(

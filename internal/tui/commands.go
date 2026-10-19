@@ -10,8 +10,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	catalog "github.com/ductone/orrey/internal/model"
-	"github.com/ductone/orrey/internal/store"
+	catalog "github.com/ductone/orrery/internal/model"
+	"github.com/ductone/orrery/internal/store"
 )
 
 type command struct {

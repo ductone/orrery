@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/ductone/orrey/internal/model"
+	"github.com/ductone/orrery/internal/model"
 	"io"
 	"net/http"
 	"strings"

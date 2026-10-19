@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ductone/orrey/internal/model"
+	"github.com/ductone/orrery/internal/model"
 )
 
 // hungServer accepts requests and never answers, like the provider calls that

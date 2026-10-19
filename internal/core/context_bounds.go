@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/ductone/orrey/internal/model"
-	"github.com/ductone/orrey/internal/provider"
-	"github.com/ductone/orrey/internal/router"
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/internal/model"
+	"github.com/ductone/orrery/internal/provider"
+	"github.com/ductone/orrery/internal/router"
+	"github.com/ductone/orrery/internal/store"
 )
 
 // maxToolResultChars bounds one tool result in history (about 25K tokens).

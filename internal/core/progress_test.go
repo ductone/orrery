@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/ductone/orrey/internal/agentproto"
-	"github.com/ductone/orrey/internal/provider"
+	"github.com/ductone/orrery/agentproto"
+	"github.com/ductone/orrery/internal/provider"
 )
 
 func TestProgressSuppressesUnchangedReadsAndDetectsStall(t *testing.T) {

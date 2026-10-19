@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/ductone/orrey/internal/classify"
-	"github.com/ductone/orrey/internal/jev"
+	"github.com/ductone/orrery/internal/classify"
+	"github.com/ductone/orrery/internal/jev"
 )
 
 // QuestionVersion identifies the review questions below. Bump it when their

@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/ductone/orrey/internal/core"
+	"github.com/ductone/orrery/internal/core"
 )
 
 // ReviewCase is a prepared change for the review benchmark: a fixture at its

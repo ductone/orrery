@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ductone/orrey/internal/jev"
+	"github.com/ductone/orrery/internal/jev"
 )
 
 const sampleDiff = `diff --git a/internal/auth/token.go b/internal/auth/token.go

@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/internal/store"
 )
 
 // workerWaitTimeout bounds a job wait on a worker. A worker that outlives it

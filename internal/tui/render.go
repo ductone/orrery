@@ -12,8 +12,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/ductone/orrey/internal/agentproto"
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/agentproto"
+	"github.com/ductone/orrery/internal/store"
 )
 
 const (

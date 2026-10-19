@@ -6,7 +6,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/ductone/orrey/internal/jev"
+	"github.com/ductone/orrery/internal/jev"
 )
 
 // The review cascade: changes beyond these sizes go straight to the full

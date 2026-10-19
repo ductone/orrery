@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ductone/orrey/internal/agentproto"
-	"github.com/ductone/orrey/internal/model"
-	"github.com/ductone/orrey/internal/review"
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/agentproto"
+	"github.com/ductone/orrery/internal/model"
+	"github.com/ductone/orrery/internal/review"
+	"github.com/ductone/orrery/internal/store"
 )
 
 // reviewPlanTimeout bounds the classifier calls that plan a review.

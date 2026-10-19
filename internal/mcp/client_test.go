@@ -14,7 +14,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/ductone/orrey/internal/config"
+	"github.com/ductone/orrery/config"
 )
 
 func TestHTTPLifecycleAndBoundaryRefresh(t *testing.T) {

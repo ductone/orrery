@@ -16,7 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/internal/store"
 )
 
 const (

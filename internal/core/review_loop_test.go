@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ductone/orrey/internal/agentproto"
-	"github.com/ductone/orrey/internal/provider"
+	"github.com/ductone/orrery/agentproto"
+	"github.com/ductone/orrery/internal/provider"
 )
 
 // The loop a session fell into: it edited, verified, and then the harness

@@ -3,7 +3,7 @@ package catalog
 import (
 	"encoding/json"
 
-	"github.com/ductone/orrey/internal/config"
+	"github.com/ductone/orrery/config"
 	"os"
 	"path/filepath"
 	"sync"

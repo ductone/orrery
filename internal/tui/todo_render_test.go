@@ -6,7 +6,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/internal/store"
 )
 
 func plainTodoLines(lines []string) string {

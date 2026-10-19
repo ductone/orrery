@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ductone/orrey/internal/hashline"
+	"github.com/ductone/orrery/internal/hashline"
 )
 
 func TestExecFailureIsAnError(t *testing.T) {

@@ -1071,7 +1071,7 @@ const file_agent_proto_rawDesc = "" +
 	"\x05Agent\x12B\n" +
 	"\x03Run\x12\x1c.orrery.agent.v1.TaskRequest\x1a\x1b.orrery.agent.v1.AgentEvent0\x01\x12N\n" +
 	"\bContinue\x12 .orrery.agent.v1.ContinueRequest\x1a\x1e.orrery.agent.v1.ContinueEvent0\x01\x12I\n" +
-	"\x06Cancel\x12\x1e.orrery.agent.v1.CancelRequest\x1a\x1f.orrery.agent.v1.CancelResponseB:Z8github.com/ductone/orrey/internal/agentproto/gen;agentv1b\x06proto3"
+	"\x06Cancel\x12\x1e.orrery.agent.v1.CancelRequest\x1a\x1f.orrery.agent.v1.CancelResponseB2Z0github.com/ductone/orrery/agentproto/gen;agentv1b\x06proto3"
 
 var (
 	file_agent_proto_rawDescOnce sync.Once

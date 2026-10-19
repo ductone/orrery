@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/ductone/orrey/internal/agentproto"
-	"github.com/ductone/orrey/internal/config"
-	runtimemcp "github.com/ductone/orrey/internal/mcp"
+	"github.com/ductone/orrery/agentproto"
+	"github.com/ductone/orrery/config"
+	runtimemcp "github.com/ductone/orrery/internal/mcp"
 )
 
 func TestReadOnlyToolRegistryOmitsSpawn(t *testing.T) {

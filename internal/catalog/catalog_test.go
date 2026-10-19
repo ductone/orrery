@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ductone/orrey/internal/config"
-	"github.com/ductone/orrey/internal/model"
+	"github.com/ductone/orrery/config"
+	"github.com/ductone/orrery/internal/model"
 )
 
 // entry builds a Ramp /v1/models entry in the listing's shape.

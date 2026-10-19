@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ductone/orrey/internal/agentproto"
+	"github.com/ductone/orrery/agentproto"
 )
 
 func gitT(t *testing.T, dir string, args ...string) {

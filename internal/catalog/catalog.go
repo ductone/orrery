@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ductone/orrey/internal/config"
-	"github.com/ductone/orrey/internal/model"
+	"github.com/ductone/orrery/config"
+	"github.com/ductone/orrery/internal/model"
 )
 
 // Result is a built catalog and how it was assembled.

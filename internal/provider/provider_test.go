@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ductone/orrey/internal/config"
-	"github.com/ductone/orrey/internal/model"
-	"github.com/ductone/orrey/internal/router"
+	"github.com/ductone/orrery/config"
+	"github.com/ductone/orrery/internal/model"
+	"github.com/ductone/orrery/internal/router"
 )
 
 func TestOpenAICompatAssembly(t *testing.T) {

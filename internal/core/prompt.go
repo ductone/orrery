@@ -6,8 +6,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/ductone/orrey/internal/model"
-	"github.com/ductone/orrey/internal/router"
+	"github.com/ductone/orrery/internal/model"
+	"github.com/ductone/orrery/internal/router"
 )
 
 // systemPromptLead opens every agent system prompt. Other model calls (titles,

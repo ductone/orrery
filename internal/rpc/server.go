@@ -15,9 +15,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/ductone/orrey/internal/agentproto"
-	"github.com/ductone/orrey/internal/core"
-	"github.com/ductone/orrey/internal/provider"
+	"github.com/ductone/orrery/agentproto"
+	"github.com/ductone/orrery/internal/core"
+	"github.com/ductone/orrery/internal/provider"
 )
 
 type Mode string

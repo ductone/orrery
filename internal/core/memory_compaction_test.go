@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ductone/orrey/internal/config"
-	"github.com/ductone/orrey/internal/provider"
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/config"
+	"github.com/ductone/orrery/internal/provider"
+	"github.com/ductone/orrery/internal/store"
 )
 
 func TestCompactionPersistsMemoryCandidatesAndWatermark(t *testing.T) {

@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ductone/orrey/internal/model"
-	"github.com/ductone/orrey/internal/provider"
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/internal/model"
+	"github.com/ductone/orrery/internal/provider"
+	"github.com/ductone/orrery/internal/store"
 )
 
 func TestTranscriptProjectionKeepsMiddleFactsWithinBudget(t *testing.T) {

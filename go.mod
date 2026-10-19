@@ -1,4 +1,4 @@
-module github.com/ductone/orrey
+module github.com/ductone/orrery
 
 go 1.26.5
 

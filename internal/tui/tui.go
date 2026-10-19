@@ -9,7 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/internal/store"
 )
 
 // Options configures one TUI process. Exactly one session is in scope: an

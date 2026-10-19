@@ -11,10 +11,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/ductone/orrey/internal/model"
-	"github.com/ductone/orrey/internal/provider"
-	"github.com/ductone/orrey/internal/router"
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/internal/model"
+	"github.com/ductone/orrery/internal/provider"
+	"github.com/ductone/orrery/internal/router"
+	"github.com/ductone/orrery/internal/store"
 )
 
 // DurableState is the stable, machine-readable recovery contract produced by

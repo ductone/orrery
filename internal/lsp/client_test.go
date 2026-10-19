@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ductone/orrey/internal/config"
+	"github.com/ductone/orrery/config"
 )
 
 func TestManagerDefinition(t *testing.T) {

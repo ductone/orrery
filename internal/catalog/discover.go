@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ductone/orrey/internal/model"
+	"github.com/ductone/orrery/internal/model"
 )
 
 // DefaultRampBaseURL is Ramp Router's API base when the config sets none.

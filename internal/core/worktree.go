@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ductone/orrey/internal/agentproto"
+	"github.com/ductone/orrery/agentproto"
 )
 
 // createIsolatedWorktree creates a git worktree at worktreePath based on the

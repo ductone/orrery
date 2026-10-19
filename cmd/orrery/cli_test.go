@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ductone/orrey/internal/config"
+	"github.com/ductone/orrery/config"
 )
 
 func TestClosestCommand(t *testing.T) {

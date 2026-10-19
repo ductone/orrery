@@ -3,7 +3,7 @@ package core
 import (
 	"context"
 
-	"github.com/ductone/orrey/internal/provider"
+	"github.com/ductone/orrery/internal/provider"
 )
 
 // A background worker can finish while its parent is mid-turn, between a tool

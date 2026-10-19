@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ductone/orrey/internal/model"
-	"github.com/ductone/orrey/internal/router"
+	"github.com/ductone/orrery/internal/model"
+	"github.com/ductone/orrery/internal/router"
 )
 
 func basePrompt() promptContext {

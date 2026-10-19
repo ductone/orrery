@@ -6,18 +6,16 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/ductone/orrey/internal/agentproto"
-	"github.com/ductone/orrey/internal/catalog"
-	"github.com/ductone/orrey/internal/config"
-	"github.com/ductone/orrey/internal/core"
-	orreval "github.com/ductone/orrey/internal/eval"
-	"github.com/ductone/orrey/internal/mcp"
-	"github.com/ductone/orrey/internal/model"
-	"github.com/ductone/orrey/internal/provider"
-	rpcserver "github.com/ductone/orrey/internal/rpc"
-	"github.com/ductone/orrey/internal/store"
-	"github.com/ductone/orrey/internal/telemetry"
-	"github.com/ductone/orrey/internal/web"
+	"github.com/ductone/orrery"
+	"github.com/ductone/orrery/agentproto"
+	"github.com/ductone/orrery/config"
+	"github.com/ductone/orrery/internal/core"
+	orreval "github.com/ductone/orrery/internal/eval"
+	"github.com/ductone/orrery/internal/mcp"
+	rpcserver "github.com/ductone/orrery/internal/rpc"
+	"github.com/ductone/orrery/internal/store"
+	"github.com/ductone/orrery/internal/telemetry"
+	"github.com/ductone/orrery/internal/web"
 	"log/slog"
 	"net/http"
 	"os"
@@ -187,7 +185,7 @@ func openRuntime(ctx context.Context, path string) (*runtime, error) {
 		s.Close()
 		return nil, err
 	}
-	p := newProviders(cfg)
+	p := orrery.NewProviders(cfg)
 	e := core.New(cfg, s, p, mc)
 	rt := &runtime{cfg: cfg, configPath: path, store: s, mcp: mc, engine: e, shutdownOTel: shutdownOTel}
 	e.SetBoundaryHook(rt.phaseBoundary)
@@ -267,7 +265,7 @@ func (rt *runtime) phaseBoundary(ctx context.Context) error {
 		rt.pending.Store(true)
 		return fmt.Errorf("reload telemetry: %w", err)
 	}
-	oldMCP := rt.engine.ReplaceRuntime(nextCfg, newProviders(nextCfg), nextMCP)
+	oldMCP := rt.engine.ReplaceRuntime(nextCfg, orrery.NewProviders(nextCfg), nextMCP)
 	oldShutdownOTel := rt.shutdownOTel
 	rt.cfg = nextCfg
 	rt.pendingEnv = nil
@@ -497,19 +495,6 @@ func readOnly(ctx context.Context, cmd, cfgPath string, args []string) int {
 	return export(ctx, rt, args)
 }
 
-// newProviders builds the provider registry, remembering models a provider
-// refuses for this account so the next catalog build leaves them out.
-func newProviders(cfg config.Config) *provider.Registry {
-	p := provider.New(cfg)
-	p.SetRefusalHook(func(id, reason string) {
-		if err := catalog.MarkUnavailable(catalog.Dir(), id, reason); err != nil {
-			slog.Warn("record refused model", "model", id, "error", err)
-		}
-		slog.Warn("model refused by provider; leaving it out", "model", id)
-	})
-	return p
-}
-
 // skipDiscovery is set for commands that only read the store, which do not
 // need a model catalog and should not wait on the network.
 var skipDiscovery bool
@@ -521,19 +506,7 @@ func installCatalog(ctx context.Context, cfg config.Config) {
 	if skipDiscovery {
 		return
 	}
-	res := catalog.Build(ctx, cfg, catalog.Dir(), nil)
-	model.Install(res.Models)
-	for _, d := range res.Discoveries {
-		attrs := []any{"provider", d.Provider, "source", d.Source, "listed", d.Listed, "usable", len(d.Models)}
-		if d.Error != "" {
-			attrs = append(attrs, "error", d.Error)
-		}
-		slog.Info("model discovery", attrs...)
-	}
-	for _, w := range res.Warnings {
-		slog.Warn("model override not applied", "warning", w)
-	}
-	slog.Info("model catalog", "models", len(res.Models), "discovered", res.Discovered, "overrides", res.Overridden, "disabled", res.Disabled)
+	orrery.InstallModelCatalog(ctx, cfg)
 }
 
 // logDir holds engine, MCP, and terminal UI logs. They live beside the user

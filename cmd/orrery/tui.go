@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ductone/orrey/internal/tui"
+	"github.com/ductone/orrery/internal/tui"
 )
 
 // runTUI starts the terminal UI. Local mode embeds the engine; --server

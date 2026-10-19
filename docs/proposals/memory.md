@@ -58,7 +58,7 @@ Pending proposals are surfaced through the **next request context**, explicitly 
 
 Only active, unexpired records are eligible for the pinned active-memory set. Injection defaults on and is bounded by **8 records / 1200 estimated tokens**. The selected set is pinned across ordinary turns and refreshed at declared cache-safe boundaries, with invalidation for mutations. Memory/store failures are best-effort rather than a reason to fail a coding session.
 
-Current defaults in [`internal/config/config.go`](../../internal/config/config.go) and [`orrery.example.yaml`](../../orrery.example.yaml):
+Current defaults in [`config/config.go`](../../config/config.go) and [`orrery.example.yaml`](../../orrery.example.yaml):
 
 ```yaml
 memory:

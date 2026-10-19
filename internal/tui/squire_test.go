@@ -16,7 +16,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/internal/store"
 )
 
 func TestSquireContract(t *testing.T) {

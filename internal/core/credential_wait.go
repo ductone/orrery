@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/ductone/orrey/internal/model"
+	"github.com/ductone/orrery/internal/model"
 	"time"
 
-	"github.com/ductone/orrey/internal/provider"
-	"github.com/ductone/orrey/internal/router"
+	"github.com/ductone/orrery/internal/provider"
+	"github.com/ductone/orrery/internal/router"
 )
 
 // Credential backoff (a rate limit, or credits reserved by requests still in

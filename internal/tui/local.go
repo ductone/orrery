@@ -9,9 +9,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/ductone/orrey/internal/agentproto"
-	"github.com/ductone/orrey/internal/core"
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/agentproto"
+	"github.com/ductone/orrery/internal/core"
+	"github.com/ductone/orrery/internal/store"
 )
 
 // localPoll matches the SSE transport's cadence closely enough that local

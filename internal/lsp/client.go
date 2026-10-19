@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ductone/orrey/internal/config"
+	"github.com/ductone/orrery/config"
 )
 
 type Manager struct {

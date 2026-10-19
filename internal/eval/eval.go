@@ -15,9 +15,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/ductone/orrey/internal/agentproto"
-	"github.com/ductone/orrey/internal/core"
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/agentproto"
+	"github.com/ductone/orrery/internal/core"
+	"github.com/ductone/orrery/internal/store"
 )
 
 const SchemaVersion = 1

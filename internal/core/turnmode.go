@@ -4,7 +4,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/ductone/orrey/internal/provider"
+	"github.com/ductone/orrery/internal/provider"
 )
 
 // turnMode is how a forced intervention constrains one turn. Constraints never

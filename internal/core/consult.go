@@ -5,9 +5,9 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/ductone/orrey/internal/model"
-	"github.com/ductone/orrey/internal/provider"
-	"github.com/ductone/orrey/internal/router"
+	"github.com/ductone/orrery/internal/model"
+	"github.com/ductone/orrery/internal/provider"
+	"github.com/ductone/orrery/internal/router"
 )
 
 // consultSystem frames a consulted model: a stronger model asked for judgement

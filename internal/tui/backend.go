@@ -8,7 +8,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/internal/store"
 )
 
 // Event is the durable session event envelope shared by SQLite, SSE, and the

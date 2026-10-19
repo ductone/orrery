@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/ductone/orrey/internal/provider"
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/internal/provider"
+	"github.com/ductone/orrery/internal/store"
 )
 
 // oldToolHistory returns n old tool results (ids c0..cN-1, "keep" content

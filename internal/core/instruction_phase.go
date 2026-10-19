@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ductone/orrey/internal/jev"
-	"github.com/ductone/orrey/internal/provider"
-	"github.com/ductone/orrey/internal/router"
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/internal/jev"
+	"github.com/ductone/orrery/internal/provider"
+	"github.com/ductone/orrery/internal/router"
+	"github.com/ductone/orrery/internal/store"
 )
 
 // A new user message has always been routed as planning: frontier-floored and

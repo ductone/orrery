@@ -15,7 +15,7 @@ import (
 
 	"unicode/utf8"
 
-	"github.com/ductone/orrey/internal/hashline"
+	"github.com/ductone/orrery/internal/hashline"
 )
 
 const writeDescription = "Write file content. Creates the file if it does not exist, or replaces its entire contents. Use this tool to create a new file instead of edit. The file becomes part of the session's file state, so a later edit must re-read it first."

@@ -3,9 +3,9 @@ package core
 import (
 	"testing"
 
-	"github.com/ductone/orrey/internal/config"
-	"github.com/ductone/orrey/internal/model"
-	"github.com/ductone/orrey/internal/provider"
+	"github.com/ductone/orrery/config"
+	"github.com/ductone/orrery/internal/model"
+	"github.com/ductone/orrery/internal/provider"
 )
 
 func TestTitleModelPrefersCuratedCheapModels(t *testing.T) {

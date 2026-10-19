@@ -11,12 +11,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ductone/orrey/internal/config"
-	"github.com/ductone/orrey/internal/jev"
-	"github.com/ductone/orrey/internal/model"
-	"github.com/ductone/orrey/internal/provider"
-	"github.com/ductone/orrey/internal/router"
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/config"
+	"github.com/ductone/orrery/internal/jev"
+	"github.com/ductone/orrery/internal/model"
+	"github.com/ductone/orrery/internal/provider"
+	"github.com/ductone/orrery/internal/router"
+	"github.com/ductone/orrery/internal/store"
 )
 
 const memoryExtractionPrompt = `Extract zero to a few durable workspace memory proposals. Return JSON {"memory_candidates":[{"kind":"fact|command|decision|preference|lesson","text":"...","evidence_refs":["session/event or repository path"]}]}. Only propose evidence-backed facts true of the repository or the person beyond the current task, never session progress, speculative claims, secrets or copied tool output. Use supplied evidence pointers, not copied evidence content. Existing records and user corrections take precedence. Text must fit max_record_bytes. A question is not an instruction or a preference.`

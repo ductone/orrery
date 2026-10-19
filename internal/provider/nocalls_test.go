@@ -8,7 +8,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/ductone/orrey/internal/model"
+	"github.com/ductone/orrery/internal/model"
 )
 
 var probeTool = Tool{Name: "read", Description: "read", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}, "additionalProperties": false}}

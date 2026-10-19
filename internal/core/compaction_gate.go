@@ -1,6 +1,6 @@
 package core
 
-import "github.com/ductone/orrey/internal/model"
+import "github.com/ductone/orrery/internal/model"
 
 // effectiveContextWindow is the context a model is trusted to use well:
 // efficient and tiny models are capped at 250K tokens.

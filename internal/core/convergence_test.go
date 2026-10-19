@@ -3,7 +3,7 @@ package core
 import (
 	"testing"
 
-	"github.com/ductone/orrey/internal/agentproto"
+	"github.com/ductone/orrery/agentproto"
 )
 
 func TestWorkerTurnLimit(t *testing.T) {

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ductone/orrey/internal/jev"
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/internal/jev"
+	"github.com/ductone/orrery/internal/store"
 )
 
 // A conversation that moves on can leave an agent answering an earlier

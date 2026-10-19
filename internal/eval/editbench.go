@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ductone/orrey/internal/hashline"
-	"github.com/ductone/orrey/internal/tools"
+	"github.com/ductone/orrery/internal/hashline"
+	"github.com/ductone/orrery/internal/tools"
 )
 
 const (

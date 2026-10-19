@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/ductone/orrey/internal/config"
+	"github.com/ductone/orrery/config"
 )
 
 // fakeAS implements the OAuth endpoints Orrery drives: protected resource

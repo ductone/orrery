@@ -1,7 +1,7 @@
 package core
 
 import (
-	"github.com/ductone/orrey/internal/agentproto"
+	"github.com/ductone/orrery/agentproto"
 )
 
 // Read-only workers synthesise their result at a turn limit: the spawner's

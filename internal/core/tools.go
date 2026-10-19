@@ -16,13 +16,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ductone/orrey/internal/agentproto"
-	"github.com/ductone/orrey/internal/lsp"
-	"github.com/ductone/orrey/internal/model"
-	"github.com/ductone/orrey/internal/provider"
-	"github.com/ductone/orrey/internal/router"
-	"github.com/ductone/orrey/internal/store"
-	builtin "github.com/ductone/orrey/internal/tools"
+	"github.com/ductone/orrery/agentproto"
+	"github.com/ductone/orrery/internal/lsp"
+	"github.com/ductone/orrery/internal/model"
+	"github.com/ductone/orrery/internal/provider"
+	"github.com/ductone/orrery/internal/router"
+	"github.com/ductone/orrery/internal/store"
+	builtin "github.com/ductone/orrery/internal/tools"
 	"github.com/google/uuid"
 )
 

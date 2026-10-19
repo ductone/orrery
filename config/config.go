@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ductone/orrey/internal/model"
+	"github.com/ductone/orrery/internal/model"
 	"gopkg.in/yaml.v3"
 )
 

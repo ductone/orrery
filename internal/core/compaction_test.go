@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ductone/orrey/internal/agentproto"
-	"github.com/ductone/orrey/internal/config"
-	"github.com/ductone/orrey/internal/provider"
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/agentproto"
+	"github.com/ductone/orrery/config"
+	"github.com/ductone/orrery/internal/provider"
+	"github.com/ductone/orrery/internal/store"
 )
 
 // This exercises the failure mode seen after a phase-boundary compaction: an

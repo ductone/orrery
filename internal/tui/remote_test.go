@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ductone/orrey/internal/config"
-	"github.com/ductone/orrey/internal/core"
-	"github.com/ductone/orrey/internal/provider"
-	"github.com/ductone/orrey/internal/store"
-	"github.com/ductone/orrey/internal/web"
+	"github.com/ductone/orrery/config"
+	"github.com/ductone/orrery/internal/core"
+	"github.com/ductone/orrery/internal/provider"
+	"github.com/ductone/orrery/internal/store"
+	"github.com/ductone/orrery/internal/web"
 )
 
 const remoteTestCompletion = `{"model":"gpt-5.6-terra","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Done."}]}],"usage":{"input_tokens":10,"output_tokens":5}}`

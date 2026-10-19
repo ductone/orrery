@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ductone/orrey/internal/classify"
+	"github.com/ductone/orrery/internal/classify"
 )
 
 const (

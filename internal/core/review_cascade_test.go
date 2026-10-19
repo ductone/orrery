@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ductone/orrey/internal/agentproto"
-	"github.com/ductone/orrey/internal/review"
+	"github.com/ductone/orrery/agentproto"
+	"github.com/ductone/orrery/internal/review"
 )
 
 func TestJevGateApprovesAProseChange(t *testing.T) {

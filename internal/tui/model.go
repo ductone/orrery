@@ -14,7 +14,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/google/uuid"
 
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/internal/store"
 )
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ductone/orrey/internal/provider"
+	"github.com/ductone/orrery/internal/provider"
 )
 
 func TestInstructionDiscoveryLoadsRootAndProgressesByPath(t *testing.T) {

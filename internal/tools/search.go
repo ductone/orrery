@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ductone/orrey/internal/classify"
-	"github.com/ductone/orrey/internal/jev"
+	"github.com/ductone/orrery/internal/classify"
+	"github.com/ductone/orrery/internal/jev"
 )
 
 const (

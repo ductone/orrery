@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/ductone/orrey/internal/model"
+	"github.com/ductone/orrery/internal/model"
 )
 
 func TestFollowUpKeepsSystemSectionsStable(t *testing.T) {

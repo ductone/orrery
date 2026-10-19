@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ductone/orrey/internal/agentproto"
+	"github.com/ductone/orrery/agentproto"
 )
 
 func TestValidateAttachmentsRejectsSymlinkAndDuplicate(t *testing.T) {

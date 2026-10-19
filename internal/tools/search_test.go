@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ductone/orrey/internal/jev"
+	"github.com/ductone/orrery/internal/jev"
 )
 
 func writeFiles(t *testing.T, root string, files map[string]string) {

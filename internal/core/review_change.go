@@ -6,8 +6,8 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/ductone/orrey/internal/agentproto"
-	"github.com/ductone/orrey/internal/store"
+	"github.com/ductone/orrery/agentproto"
+	"github.com/ductone/orrery/internal/store"
 	"github.com/google/uuid"
 )
 
