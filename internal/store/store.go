@@ -61,6 +61,7 @@ func (s *Store) migrate() error {
 		"parent_session_id":        "TEXT NOT NULL DEFAULT ''",
 		"latest_request":           "TEXT NOT NULL DEFAULT ''",
 		"owner_pid":                "INTEGER NOT NULL DEFAULT 0",
+		"archived_at":              "TEXT NOT NULL DEFAULT ''",
 	} {
 		if err := s.ensureColumn("sessions", name, definition); err != nil {
 			return err
@@ -81,7 +82,7 @@ func (s *Store) migrate() error {
 	if err := s.ensureColumn("checkpoints", "continuation_json", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS request_receipts(session_id TEXT NOT NULL REFERENCES sessions(id), request_id TEXT NOT NULL, kind TEXT NOT NULL, turn_id TEXT NOT NULL, payload_hash TEXT NOT NULL, accepted_at TEXT NOT NULL, PRIMARY KEY(session_id,request_id)); CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_external ON sessions(integration,external_id,external_incarnation) WHERE external_id!=''; CREATE TABLE IF NOT EXISTS work_items(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), objective TEXT NOT NULL, status TEXT NOT NULL, phase TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL, created_at TEXT NOT NULL, completed_at TEXT); CREATE TABLE IF NOT EXISTS continuation(session_id TEXT PRIMARY KEY REFERENCES sessions(id), active_work_item_id TEXT NOT NULL DEFAULT '', final_report_required INTEGER NOT NULL DEFAULT 0, resolved_request_ids_json TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL); CREATE INDEX IF NOT EXISTS idx_work_items_session ON work_items(session_id);` + memorySchema)
+	_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS request_receipts(session_id TEXT NOT NULL REFERENCES sessions(id), request_id TEXT NOT NULL, kind TEXT NOT NULL, turn_id TEXT NOT NULL, payload_hash TEXT NOT NULL, accepted_at TEXT NOT NULL, PRIMARY KEY(session_id,request_id)); CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_external ON sessions(integration,external_id,external_incarnation) WHERE external_id!=''; CREATE TABLE IF NOT EXISTS work_items(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), objective TEXT NOT NULL, status TEXT NOT NULL, phase TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL, created_at TEXT NOT NULL, completed_at TEXT); CREATE TABLE IF NOT EXISTS continuation(session_id TEXT PRIMARY KEY REFERENCES sessions(id), active_work_item_id TEXT NOT NULL DEFAULT '', final_report_required INTEGER NOT NULL DEFAULT 0, resolved_request_ids_json TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL); CREATE INDEX IF NOT EXISTS idx_work_items_session ON work_items(session_id); CREATE TABLE IF NOT EXISTS session_archives(session_id TEXT PRIMARY KEY REFERENCES sessions(id), archived_at TEXT NOT NULL, data BLOB NOT NULL);` + memorySchema)
 	if err != nil {
 		return err
 	}
@@ -222,10 +223,11 @@ func (s *Store) CreateSessionAccepted(ctx context.Context, x Session, requestID,
 }
 func (s *Store) Session(ctx context.Context, id string) (Session, error) {
 	var x Session
-	var ca, ua string
-	err := s.db.QueryRowContext(ctx, `SELECT id,spec,title,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at FROM sessions WHERE id=?`, id).Scan(&x.ID, &x.Spec, &x.Title, &x.DurableSummary, &x.Phase, &x.Model, &x.Turn, &x.SpentUSD, &x.BudgetUSD, &x.Status, &x.Integration, &x.ExternalID, &x.ExternalIncarnation, &x.WorkspacePath, &x.WorkspaceOwnership, &x.IntegrationContextJSON, &x.RequestJSON, &x.ParentSessionID, &ca, &ua)
+	var ca, ua, aa string
+	err := s.db.QueryRowContext(ctx, `SELECT id,spec,title,durable_summary,phase,model,turn,spent_usd,budget_usd,status,integration,external_id,external_incarnation,workspace_path,workspace_ownership,integration_context_json,request_json,parent_session_id,created_at,updated_at,archived_at FROM sessions WHERE id=?`, id).Scan(&x.ID, &x.Spec, &x.Title, &x.DurableSummary, &x.Phase, &x.Model, &x.Turn, &x.SpentUSD, &x.BudgetUSD, &x.Status, &x.Integration, &x.ExternalID, &x.ExternalIncarnation, &x.WorkspacePath, &x.WorkspaceOwnership, &x.IntegrationContextJSON, &x.RequestJSON, &x.ParentSessionID, &ca, &ua, &aa)
 	x.CreatedAt, _ = time.Parse(time.RFC3339Nano, ca)
 	x.UpdatedAt, _ = time.Parse(time.RFC3339Nano, ua)
+	x.ArchivedAt, _ = time.Parse(time.RFC3339Nano, aa)
 	return x, err
 }
 
@@ -238,7 +240,16 @@ func (s *Store) SessionByExternalID(ctx context.Context, integration, externalID
 	return s.Session(ctx, id)
 }
 func (s *Store) Sessions(ctx context.Context) ([]Session, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM sessions WHERE parent_session_id IS NULL OR parent_session_id='' ORDER BY updated_at DESC`)
+	return s.sessionsWhere(ctx, `parent_session_id IS NULL OR parent_session_id=''`)
+}
+
+// ChildSessions lists every session with a parent, including orphans.
+func (s *Store) ChildSessions(ctx context.Context) ([]Session, error) {
+	return s.sessionsWhere(ctx, `parent_session_id IS NOT NULL AND parent_session_id!=''`)
+}
+
+func (s *Store) sessionsWhere(ctx context.Context, where string) ([]Session, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM sessions WHERE `+where+` ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -339,7 +350,7 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"request_receipts", "events", "messages", "todos", "work_items", "continuation", "cache_ledger", "jobs", "routing_records", "checkpoints", "pending_inputs", "queued_messages"} {
+	for _, table := range []string{"request_receipts", "events", "messages", "todos", "work_items", "continuation", "cache_ledger", "jobs", "routing_records", "checkpoints", "pending_inputs", "queued_messages", "session_archives", "memory_watermarks", "memory_sightings"} {
 		if _, err = tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE session_id=?`, id); err != nil {
 			return err
 		}

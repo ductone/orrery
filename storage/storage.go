@@ -69,6 +69,10 @@ type Sessions interface {
 	// Sessions lists top-level sessions (no parent), most recently updated
 	// first.
 	Sessions(ctx context.Context) ([]Session, error)
+	// ChildSessions lists every child session (one with a ParentSessionID:
+	// the workers and reviewers a session spawned), including any whose
+	// parent has since been deleted, most recently updated first.
+	ChildSessions(ctx context.Context) ([]Session, error)
 	// UpdateSession writes DurableSummary, Phase, Model, Turn and Status.
 	UpdateSession(ctx context.Context, x Session) error
 	UpdateSessionTitle(ctx context.Context, id, title string) error
@@ -263,4 +267,31 @@ type RouteStats interface {
 // Pinger is implemented by stores that can report their health.
 type Pinger interface {
 	Ping(ctx context.Context) error
+}
+
+// Archiver is implemented by stores that can archive and measure sessions.
+// The engine's retention uses it when present.
+type Archiver interface {
+	// ArchiveSession atomically replaces everything recorded for a finished
+	// session except its session row — events, messages, receipts, todos,
+	// work items, continuation, pending inputs, queued messages, routing
+	// records, cache ledger, checkpoints, memory watermark — with one
+	// compressed archive, and sets the session's ArchivedAt. The durable
+	// summary stays on the session row. Archiving an archived session is a
+	// no-op. The store does not judge whether the session is finished; the
+	// caller does.
+	//
+	// The archive keeps what SessionArchive holds. Receipts, queued
+	// messages, routing records and the cache ledger are dropped without
+	// being archived: they only matter while the session can still run. The
+	// session's jobs are left in place, since they are small and are read
+	// for finished sessions (job status, the jobs listing); they are not
+	// part of the archive.
+	ArchiveSession(ctx context.Context, sid string) error
+	// ReadArchive returns what ArchiveSession removed, or an error matching
+	// ErrNotFound when the session has no archive.
+	ReadArchive(ctx context.Context, sid string) (SessionArchive, error)
+	// UsageBytes reports the store's current size in bytes, counting space
+	// that archiving or deleting sessions has freed as free.
+	UsageBytes(ctx context.Context) (int64, error)
 }

@@ -14,6 +14,7 @@ type (
 	WorkItem       = storage.WorkItem
 	Continuation   = storage.Continuation
 	Job            = storage.Job
+	SessionArchive = storage.SessionArchive
 	Event          = storage.Event
 	RequestReceipt = storage.RequestReceipt
 	CacheEntry     = storage.CacheEntry
@@ -45,4 +46,7 @@ func SessionTitle(spec string) string { return storage.SessionTitle(spec) }
 // NormalizeTitle validates and cleans a model-generated title.
 func NormalizeTitle(s string) string { return storage.NormalizeTitle(s) }
 
-var _ storage.Store = (*Store)(nil)
+var (
+	_ storage.Store    = (*Store)(nil)
+	_ storage.Archiver = (*Store)(nil)
+)

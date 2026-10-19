@@ -88,6 +88,9 @@ type Engine struct {
 	// prevStatus holds a session's status from before a launch path set it to
 	// "running", so the run can tell whether the previous run passed.
 	prevStatus map[string]string
+	// now is the clock retention measures session age against; nil means
+	// time.Now. Tests set it.
+	now func() time.Time
 }
 
 func New(cfg config.Config, s storage.Store, p *provider.Registry, mc *mcp.Manager) *Engine {

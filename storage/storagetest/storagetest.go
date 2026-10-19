@@ -42,6 +42,8 @@ func Run(t *testing.T, newStore func(t *testing.T) storage.Store) {
 		{"MemoryWatermarkAndSightings", testMemoryWatermarkAndSightings},
 		{"Routing", testRouting},
 		{"RouteStats", testRouteStats},
+		{"ChildSessions", testChildSessions},
+		{"Archiver", testArchiver},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -637,4 +639,108 @@ func testTodosAndWorkItems(t *testing.T, s storage.Store) {
 	if c, _ = s.Continuation(ctx, "s"); c.FinalReportRequired {
 		t.Fatal("an acknowledged report was re-opened by an identical plan")
 	}
+}
+
+func testChildSessions(t *testing.T, s storage.Store) {
+	ctx := context.Background()
+	newSession(t, s, "top")
+	must(t, s.CreateSession(ctx, storage.Session{ID: "kid", Spec: "work", BudgetUSD: 1, ParentSessionID: "top"}))
+	must(t, s.CreateSession(ctx, storage.Session{ID: "orphan", Spec: "work", BudgetUSD: 1, ParentSessionID: "gone"}))
+	kids, err := s.ChildSessions(ctx)
+	must(t, err)
+	if len(kids) != 2 {
+		t.Fatalf("ChildSessions = %+v, want kid and orphan", kids)
+	}
+	for _, k := range kids {
+		if k.ID == "top" || k.ParentSessionID == "" {
+			t.Fatalf("ChildSessions returned %+v", k)
+		}
+	}
+}
+
+func testArchiver(t *testing.T, s storage.Store) {
+	a, ok := s.(storage.Archiver)
+	if !ok {
+		t.Skip("store does not implement storage.Archiver")
+	}
+	ctx := context.Background()
+	newSession(t, s, "s")
+	must(t, s.UpdateSession(ctx, storage.Session{ID: "s", DurableSummary: "kept summary", Phase: "act", Model: "m", Turn: 2, Status: "pass"}))
+	must(t, s.AddMessage(ctx, "s", "user", "hello"))
+	must(t, s.AddMessage(ctx, "s", "assistant", "world"))
+	_, err := s.AddEvent(ctx, "s", "tick", map[string]int{"i": 1})
+	must(t, err)
+	_, err = s.AddEvent(ctx, "s", "tock", nil)
+	must(t, err)
+	must(t, s.SetTodos(ctx, "s", []storage.Todo{{Text: "a", Phase: "act", Status: "pending"}}))
+	must(t, s.CreatePendingInput(ctx, storage.PendingInput{ID: "q", SessionID: "s", Question: "?"}))
+	_, err = s.CreateCheckpoint(ctx, "cp", "s", "label", "reason")
+	must(t, err)
+	must(t, s.AdvanceMemoryWatermark(ctx, "s", 2))
+	must(t, s.CreateJob(ctx, storage.Job{ID: "j", SessionID: "s", Spec: "work", ResultSchemaJSON: "{}", BudgetJSON: "{}", WorkspaceJSON: "{}", HintsJSON: "{}", Model: "m", Status: "running", Depth: 1}))
+	before, err := s.Session(ctx, "s")
+	must(t, err)
+	if !before.ArchivedAt.IsZero() {
+		t.Fatalf("new session ArchivedAt = %v", before.ArchivedAt)
+	}
+	if n, err := a.UsageBytes(ctx); err != nil || n <= 0 {
+		t.Fatalf("UsageBytes = %d, %v", n, err)
+	}
+
+	must(t, a.ArchiveSession(ctx, "s"))
+	if msgs, _ := s.Messages(ctx, "s"); len(msgs) != 0 {
+		t.Fatalf("messages after archive = %d", len(msgs))
+	}
+	if evs, _ := s.EventsAfter(ctx, "s", 0); len(evs) != 0 {
+		t.Fatalf("events after archive = %d", len(evs))
+	}
+	if todos, _ := s.Todos(ctx, "s"); len(todos) != 0 {
+		t.Fatalf("todos after archive = %d", len(todos))
+	}
+	if cps, _ := s.Checkpoints(ctx, "s"); len(cps) != 0 {
+		t.Fatalf("checkpoints after archive = %d", len(cps))
+	}
+	if seq, _ := s.MemoryWatermark(ctx, "s"); seq != 0 {
+		t.Fatalf("watermark after archive = %d", seq)
+	}
+	got, err := s.Session(ctx, "s")
+	must(t, err)
+	if got.ArchivedAt.IsZero() || got.DurableSummary != "kept summary" || got.Status != "pass" || !got.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatalf("session after archive = %+v (before %+v)", got, before)
+	}
+	if top, _ := s.Sessions(ctx); len(top) != 1 || top[0].ArchivedAt.IsZero() {
+		t.Fatalf("Sessions after archive = %+v", top)
+	}
+	if jobs, _ := s.Jobs(ctx, "s"); len(jobs) != 1 {
+		t.Fatalf("jobs after archive = %d, want them kept", len(jobs))
+	}
+
+	arc, err := a.ReadArchive(ctx, "s")
+	must(t, err)
+	if len(arc.Events) != 2 || arc.Events[0].Type != "tick" || arc.Events[1].Seq != 2 || len(arc.Messages) != 2 ||
+		messageText(t, arc.Messages[1]) != "world" || len(arc.Todos) != 1 || len(arc.PendingInputs) != 1 ||
+		len(arc.Checkpoints) != 1 || arc.Checkpoints[0].ID != "cp" || arc.ArchivedAt.IsZero() {
+		t.Fatalf("archive = %+v", arc)
+	}
+
+	// Archiving again changes nothing.
+	must(t, a.ArchiveSession(ctx, "s"))
+	again, err := s.Session(ctx, "s")
+	must(t, err)
+	if !again.ArchivedAt.Equal(got.ArchivedAt) {
+		t.Fatalf("ArchivedAt changed on re-archive: %v -> %v", got.ArchivedAt, again.ArchivedAt)
+	}
+	if arc2, err := a.ReadArchive(ctx, "s"); err != nil || len(arc2.Messages) != 2 {
+		t.Fatalf("archive after re-archive = %+v, %v", arc2, err)
+	}
+
+	if err := a.ArchiveSession(ctx, "missing"); err == nil {
+		t.Fatal("archived a session that does not exist")
+	}
+	_, err = a.ReadArchive(ctx, "never-archived")
+	notFound(t, "ReadArchive(never-archived)", err)
+
+	must(t, s.DeleteSession(ctx, "s"))
+	_, err = a.ReadArchive(ctx, "s")
+	notFound(t, "ReadArchive after DeleteSession", err)
 }

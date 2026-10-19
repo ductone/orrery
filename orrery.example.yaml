@@ -70,6 +70,14 @@ budget:
 #   max_tokens: 1200
 #   max_record_bytes: 2048
 #   retain_days: 0 # 0 means records never expire automatically
+# Retention bounds what a long-lived agent keeps. Engine.MaintainStorage applies
+# it; the host decides when to call it. Durations use Go syntax (no "d" unit).
+# retention:
+#   worker_after: 24h    # delete worker and review sessions this long after they finish
+#   archive_after: 720h  # compress top-level sessions this long after they finish
+#   delete_after: 0s     # delete archived sessions after this long; 0 keeps them
+#   max_bytes: 0         # store size budget; 0 means none
+#   high_water_fraction: 0.8
 telemetry:
   otlp_endpoint: "http://localhost:4318"
 web_search:

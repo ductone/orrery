@@ -31,9 +31,81 @@ type Config struct {
 	LSP           map[string]LSPConfig      `yaml:"lsp"`
 	// LegacyInterventions accepts the removed interventions block so existing
 	// configs still load. Its value is ignored.
-	LegacyInterventions map[string]any `yaml:"interventions,omitempty"`
-	Memory              MemoryConfig   `yaml:"memory"`
-	Jev                 JevConfig      `yaml:"jev"`
+	LegacyInterventions map[string]any  `yaml:"interventions,omitempty"`
+	Memory              MemoryConfig    `yaml:"memory"`
+	Retention           RetentionConfig `yaml:"retention"`
+	Jev                 JevConfig       `yaml:"jev"`
+}
+
+// Retention defaults.
+const (
+	defaultRetentionWorkerAfter       = 24 * time.Hour
+	defaultRetentionArchiveAfter      = 30 * 24 * time.Hour
+	defaultRetentionHighWaterFraction = 0.8
+)
+
+// RetentionConfig bounds how much a persistent agent keeps. Engine.MaintainStorage
+// applies it. Ages are measured from when a session last changed, so a
+// session is only touched once it has been finished that long. Durations use
+// Go syntax ("24h", "720h"; there is no "d" unit).
+type RetentionConfig struct {
+	// WorkerAfter is how long after finishing a worker or review session is
+	// deleted. Zero means the default, 24h.
+	WorkerAfter time.Duration `yaml:"worker_after"`
+	// ArchiveAfter is how long after finishing a top-level session is
+	// archived: its transcript and event log are compressed into one record
+	// and its other records dropped. Zero means the default, 30 days.
+	ArchiveAfter time.Duration `yaml:"archive_after"`
+	// DeleteAfter is how long after archiving a session is deleted outright.
+	// Zero (the default) keeps archived sessions forever.
+	DeleteAfter time.Duration `yaml:"delete_after"`
+	// MaxBytes is the store's size budget. Zero (the default) means no
+	// budget. Above it, maintenance archives and then deletes the oldest
+	// sessions regardless of age, until usage falls to HighWaterFraction of
+	// MaxBytes.
+	MaxBytes int64 `yaml:"max_bytes"`
+	// HighWaterFraction is the fraction of MaxBytes cleanup aims for, so
+	// that it does not run again after every new session. Zero means the
+	// default, 0.8.
+	HighWaterFraction float64 `yaml:"high_water_fraction"`
+}
+
+// WorkerWindow returns WorkerAfter, or its default when unset.
+func (r RetentionConfig) WorkerWindow() time.Duration {
+	if r.WorkerAfter <= 0 {
+		return defaultRetentionWorkerAfter
+	}
+	return r.WorkerAfter
+}
+
+// ArchiveWindow returns ArchiveAfter, or its default when unset.
+func (r RetentionConfig) ArchiveWindow() time.Duration {
+	if r.ArchiveAfter <= 0 {
+		return defaultRetentionArchiveAfter
+	}
+	return r.ArchiveAfter
+}
+
+// HighWater returns HighWaterFraction, or its default when unset.
+func (r RetentionConfig) HighWater() float64 {
+	if r.HighWaterFraction <= 0 {
+		return defaultRetentionHighWaterFraction
+	}
+	return r.HighWaterFraction
+}
+
+// Validate reports a negative duration or size, or a fraction above 1.
+func (r RetentionConfig) Validate() error {
+	if r.WorkerAfter < 0 || r.ArchiveAfter < 0 || r.DeleteAfter < 0 {
+		return errors.New("config: retention durations must be non-negative")
+	}
+	if r.MaxBytes < 0 {
+		return errors.New("config: retention.max_bytes must be non-negative")
+	}
+	if r.HighWaterFraction < 0 || r.HighWaterFraction > 1 {
+		return errors.New("config: retention.high_water_fraction must be between 0 and 1")
+	}
+	return nil
 }
 
 // JevConfig configures TypeSafe's Jev classifier and the decision sites that
@@ -457,6 +529,9 @@ func load(path string, overrides map[string]string, secrets bool) (Config, error
 	}
 	if cfg.Memory.RetainDays < 0 {
 		return cfg, errors.New("config: memory.retain_days must be non-negative")
+	}
+	if err := cfg.Retention.Validate(); err != nil {
+		return cfg, err
 	}
 	for name, server := range cfg.LSP {
 		if strings.TrimSpace(name) == "" || len(server.Command) == 0 || strings.TrimSpace(server.Command[0]) == "" {

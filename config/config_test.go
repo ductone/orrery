@@ -411,3 +411,31 @@ func TestMemoryClamping(t *testing.T) {
 	}
 
 }
+
+func TestRetentionConfig(t *testing.T) {
+	d := Default().Retention
+	if d.WorkerWindow() != 24*time.Hour || d.ArchiveWindow() != 30*24*time.Hour || d.DeleteAfter != 0 || d.MaxBytes != 0 || d.HighWater() != 0.8 {
+		t.Fatalf("defaults = %+v", d)
+	}
+	dir := t.TempDir()
+	load := func(body string) (Config, error) {
+		path := filepath.Join(dir, "c.yaml")
+		if err := os.WriteFile(path, []byte("listen: '127.0.0.1:1'\ndatabase: 'x.db'\n"+body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return Load(path)
+	}
+	cfg, err := load("retention:\n  worker_after: 2h\n  archive_after: 720h\n  delete_after: 1440h\n  max_bytes: 1000\n  high_water_fraction: 0.5\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := cfg.Retention
+	if r.WorkerAfter != 2*time.Hour || r.ArchiveAfter != 720*time.Hour || r.DeleteAfter != 1440*time.Hour || r.MaxBytes != 1000 || r.HighWater() != 0.5 {
+		t.Fatalf("loaded = %+v", r)
+	}
+	for _, bad := range []string{"worker_after: -1h", "max_bytes: -1", "high_water_fraction: 1.5", "bogus: 1"} {
+		if _, err := load("retention:\n  " + bad + "\n"); err == nil {
+			t.Errorf("retention %q accepted", bad)
+		}
+	}
+}

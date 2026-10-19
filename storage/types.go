@@ -23,6 +23,21 @@ type Session struct {
 	Turn                                                  int
 	SpentUSD, BudgetUSD                                   float64
 	CreatedAt, UpdatedAt                                  time.Time
+	// ArchivedAt is when the session was archived (see Archiver); the zero
+	// time means it has not been.
+	ArchivedAt time.Time
+}
+
+// SessionArchive is what Archiver.ArchiveSession removed from a session.
+type SessionArchive struct {
+	Events        []Event
+	Messages      []Message
+	Todos         []Todo
+	WorkItems     []WorkItem
+	Continuation  Continuation
+	PendingInputs []PendingInput
+	Checkpoints   []Checkpoint
+	ArchivedAt    time.Time
 }
 
 type Message struct {
