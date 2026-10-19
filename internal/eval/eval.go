@@ -17,7 +17,7 @@ import (
 
 	"github.com/ductone/orrery/agentproto"
 	"github.com/ductone/orrery/internal/core"
-	"github.com/ductone/orrery/internal/store"
+	"github.com/ductone/orrery/storage"
 )
 
 const SchemaVersion = 1
@@ -39,7 +39,7 @@ type Case struct {
 	TimeoutText  string         `json:"timeout,omitempty"`
 }
 
-func BuildCase(ctx context.Context, s *store.Store, sessionID, acceptance string) (Case, error) {
+func BuildCase(ctx context.Context, s storage.Store, sessionID, acceptance string) (Case, error) {
 	session, err := s.Session(ctx, sessionID)
 	if err != nil {
 		return Case{}, err

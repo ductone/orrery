@@ -15,36 +15,6 @@ import (
 
 const memoryBaseSchema = `CREATE TABLE IF NOT EXISTS workspaces(workspace_id TEXT PRIMARY KEY, identity_key TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS memory_records(memory_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id), scope TEXT NOT NULL CHECK(scope IN ('workspace','project','user')), kind TEXT NOT NULL, text TEXT NOT NULL, provenance TEXT NOT NULL, confidence REAL NOT NULL CHECK(confidence>=0 AND confidence<=1), status TEXT NOT NULL CHECK(status IN ('pending','active','superseded','expired','deleted')), evidence_refs TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT, superseded_by TEXT REFERENCES memory_records(memory_id)); CREATE INDEX IF NOT EXISTS memory_records_lookup ON memory_records(workspace_id,scope,status,updated_at);`
 
-var (
-	ErrMemoryNotFound        = errors.New("memory record not found")
-	ErrMemoryNotSupersedable = errors.New("memory record cannot be superseded")
-)
-
-type Workspace struct {
-	ID, IdentityKey      string
-	CreatedAt, UpdatedAt time.Time
-}
-
-type MemoryRecord struct {
-	ID, WorkspaceID, Scope, Kind, Text, Provenance string
-	Confidence                                     float64
-	Status                                         string
-	EvidenceRefs                                   string
-	CreatedAt, UpdatedAt                           time.Time
-	ExpiresAt                                      *time.Time
-	SupersededBy                                   string
-}
-
-type MemoryFilter struct {
-	WorkspaceID    string
-	Scope          string
-	Status         string
-	IncludeExpired bool
-	// IncludeDeleted also returns forget tombstones, so extraction can avoid
-	// resurrecting something the person explicitly forgot.
-	IncludeDeleted bool
-}
-
 // EnsureWorkspace returns the stable workspace row for an application-resolved identity key.
 func (s *Store) EnsureWorkspace(ctx context.Context, identityKey string) (Workspace, error) {
 	if identityKey == "" {
@@ -184,15 +154,6 @@ func (s *Store) ForgetMemory(ctx context.Context, workspaceID, id string) error 
 		return sql.ErrNoRows
 	}
 	return nil
-}
-
-// MemoryMutation describes one lifecycle change committed with its audit event.
-type MemoryMutation struct {
-	Operation   string
-	Record      MemoryRecord
-	WorkspaceID string
-	OldID       string
-	MemoryID    string
 }
 
 // ApplyMemoryMutationEvent commits a memory lifecycle change and its event in

@@ -10,7 +10,10 @@
 //	eng, err := orrery.New(orrery.Options{Config: cfg, Store: st})
 //	...
 //	defer eng.Close()
-//	result, err := eng.Run(ctx, agentproto.TaskRequest{Spec: "..."}, func(ev agentproto.AgentEvent) {})
+//	result, err := eng.Run(ctx, agentproto.TaskRequest{
+//		Spec:      "...",
+//		Workspace: agentproto.Workspace{Path: dir},
+//	}, func(ev agentproto.AgentEvent) {})
 //
 // Engine methods start, continue, cancel, checkpoint and fork sessions; the
 // agentproto package holds the request, result and event types they use.
@@ -29,6 +32,7 @@ import (
 	"github.com/ductone/orrery/internal/model"
 	"github.com/ductone/orrery/internal/provider"
 	"github.com/ductone/orrery/internal/store"
+	"github.com/ductone/orrery/storage"
 )
 
 type (
@@ -101,8 +105,9 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 // Options configures New.
 type Options struct {
 	Config config.Config
-	// Store holds sessions, transcripts, events, jobs and memory. Required.
-	Store *SQLiteStore
+	// Store holds sessions, transcripts, events, jobs and memory: OpenSQLite,
+	// or any storage.Store implementation. Required.
+	Store storage.Store
 	// Providers defaults to NewProviders(Config).
 	Providers *Providers
 	// MCP is optional; without it the engine has no MCP tools.

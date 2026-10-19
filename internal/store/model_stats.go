@@ -10,16 +10,6 @@ import (
 
 const modelStatsSchema = `CREATE TABLE IF NOT EXISTS model_stats(route TEXT PRIMARY KEY, calls INTEGER NOT NULL DEFAULT 0, latency_seconds REAL NOT NULL DEFAULT 0, output_tokens_per_second REAL NOT NULL DEFAULT 0, output_tokens_per_call REAL NOT NULL DEFAULT 0, truncated INTEGER NOT NULL DEFAULT 0, empty INTEGER NOT NULL DEFAULT 0, malformed INTEGER NOT NULL DEFAULT 0, provider_errors INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0, last_call TEXT NOT NULL DEFAULT '', last_slow_call TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);`
 
-type ModelStat struct {
-	Route                                       string
-	Calls                                       int
-	LatencySeconds, OutputTokensPerSecond       float64
-	OutputTokensPerCall                         float64
-	InputTokens, CacheReadTokens                int
-	Truncated, Empty, Malformed, ProviderErrors int
-	LastCall, LastSlowCall, UpdatedAt           time.Time
-}
-
 type statsExecer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }

@@ -3,13 +3,14 @@ package core
 import (
 	"context"
 	"encoding/json"
-	"github.com/ductone/orrery/internal/classify"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ductone/orrery/internal/classify"
 
 	"github.com/ductone/orrery/agentproto"
 	"github.com/ductone/orrery/config"
@@ -109,7 +110,7 @@ func TestInstructionPhase(t *testing.T) {
 // routingStates returns the recorded routing state of each turn decision.
 func routingStates(t *testing.T, e *Engine, sid string) []router.RoutingState {
 	t.Helper()
-	rows, err := e.store.DB().Query(`SELECT state_json FROM routing_records WHERE session_id=? AND decision_point!='review' ORDER BY created_at`, sid)
+	rows, err := e.store.(*store.Store).DB().Query(`SELECT state_json FROM routing_records WHERE session_id=? AND decision_point!='review' ORDER BY created_at`, sid)
 	if err != nil {
 		t.Fatal(err)
 	}

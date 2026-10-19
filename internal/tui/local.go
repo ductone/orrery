@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/ductone/orrery/agentproto"
 	"github.com/ductone/orrery/internal/core"
 	"github.com/ductone/orrery/internal/store"
+	"github.com/ductone/orrery/storage"
 )
 
 // localPoll matches the SSE transport's cadence closely enough that local
@@ -33,7 +33,7 @@ func (l *Local) Describe() string { return "local" }
 
 func (l *Local) Session(ctx context.Context, id string) (store.Session, error) {
 	s, err := l.engine.Store().Session(ctx, id)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, storage.ErrNotFound) {
 		return s, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	return s, err
@@ -41,7 +41,7 @@ func (l *Local) Session(ctx context.Context, id string) (store.Session, error) {
 
 func (l *Local) Lookup(ctx context.Context, integration, externalID, incarnation string) (store.Session, error) {
 	s, err := l.engine.Store().SessionByExternalID(ctx, integration, externalID, incarnation)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, storage.ErrNotFound) {
 		return s, ErrNotFound
 	}
 	return s, err

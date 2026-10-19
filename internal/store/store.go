@@ -133,17 +133,6 @@ func (s *Store) ensureColumn(table, name, definition string) error {
 	return err
 }
 
-type Session struct {
-	ID, Spec, Title, DurableSummary, Phase, Model, Status string
-	Integration, ExternalID, ExternalIncarnation          string
-	WorkspacePath, WorkspaceOwnership                     string
-	ParentSessionID                                       string
-	IntegrationContextJSON, RequestJSON                   string
-	Turn                                                  int
-	SpentUSD, BudgetUSD                                   float64
-	CreatedAt, UpdatedAt                                  time.Time
-}
-
 func (s *Store) CreateSession(ctx context.Context, x Session) error {
 	now := time.Now().UTC()
 	if x.Phase == "" {
@@ -387,6 +376,17 @@ func (s *Store) AddBudget(ctx context.Context, id string, usd float64) error {
 	return nil
 }
 
+// SpentUSDWithChildren returns the spend of the session plus its direct child
+// sessions.
+func (s *Store) SpentUSDWithChildren(ctx context.Context, sid string) (float64, error) {
+	var n float64
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(spent_usd),0) FROM sessions WHERE id=? OR parent_session_id=?`, sid, sid).Scan(&n)
+	return n, err
+}
+
+// Ping reports whether the database is reachable.
+func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
+
 func (s *Store) ReservedJobUSD(ctx context.Context, sid string) (float64, error) {
 	var n float64
 	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(CAST(json_extract(budget_json,'$.max_usd') AS REAL)),0) FROM jobs WHERE session_id=? AND status='running'`, sid).Scan(&n)
@@ -403,25 +403,6 @@ func (s *Store) UpdateLatestTurnRoutingOutcome(ctx context.Context, sid string, 
 func (s *Store) UpdateSessionRoutingOutcome(ctx context.Context, sid string, v any) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE routing_records SET session_outcome_json=? WHERE session_id=?`, JSON(v), sid)
 	return err
-}
-
-type Message struct {
-	Role, ContentJSON string
-	CreatedAt         time.Time
-}
-
-type Checkpoint struct {
-	ID, SessionID, Label, Reason                       string
-	SessionJSON, MessagesJSON, TodosJSON               string
-	PendingInputsJSON, WorkItemsJSON, ContinuationJSON string
-	CreatedAt                                          time.Time
-}
-
-type PendingInput struct {
-	ID, SessionID, Question, Answer, Status string
-	Choices                                 []string
-	AllowFreeform                           bool
-	CreatedAt, AnsweredAt                   time.Time
 }
 
 func (s *Store) CreatePendingInput(ctx context.Context, input PendingInput) error {
@@ -490,17 +471,6 @@ func (s *Store) ResolvePendingInput(ctx context.Context, sid, answer string) (Pe
 	_, err = s.db.ExecContext(ctx, `UPDATE pending_inputs SET status='answered',answer=?,answered_at=? WHERE id=? AND status='pending'`, answer, now.Format(time.RFC3339Nano), x.ID)
 	x.Status, x.Answer, x.AnsweredAt = "answered", answer, now
 	return x, err
-}
-
-type QueuedMessage struct {
-	ID              int
-	SessionID       string
-	RequestID       string
-	Content         string
-	AttachmentsJSON string
-	Source          string
-	PayloadHash     string
-	CreatedAt       time.Time
 }
 
 // EnqueueMessage stores a user message to be delivered as the next turn when the
@@ -947,32 +917,6 @@ func (s *Store) ApplyCompaction(ctx context.Context, session Session, keep int) 
 	return tx.Commit()
 }
 
-type Todo struct {
-	Position int    `json:"position"`
-	Text     string `json:"text"`
-	Phase    string `json:"phase"`
-	Status   string `json:"status"`
-}
-
-// WorkItem is a harness-owned continuation record derived from the todo plan.
-// Unlike todo prose, it carries a stable ID and lifecycle timestamps so the
-// active objective and report obligation survive compaction and todo edits.
-type WorkItem struct {
-	ID, SessionID, Objective, Status, Phase string
-	Position                                int
-	CreatedAt, CompletedAt                  time.Time
-}
-
-// Continuation is the authoritative per-session continuation state: which work
-// item is active and whether a final report is still owed.
-type Continuation struct {
-	SessionID           string
-	ActiveWorkItemID    string
-	FinalReportRequired bool
-	ResolvedRequestIDs  []string
-	UpdatedAt           time.Time
-}
-
 func (s *Store) SetTodos(ctx context.Context, sid string, todos []Todo) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1254,12 +1198,6 @@ func (s *Store) Continuation(ctx context.Context, sid string) (Continuation, err
 	return c, nil
 }
 
-type Job struct {
-	ID, SessionID, ParentJobID, Spec, ResultSchemaJSON, BudgetJSON, WorkspaceJSON, HintsJSON, Model, Status, ResultJSON, OutcomeJSON string
-	Depth                                                                                                                            int
-	CreatedAt, UpdatedAt                                                                                                             time.Time
-}
-
 func (s *Store) CreateJob(ctx context.Context, j Job) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.db.ExecContext(ctx, `INSERT INTO jobs(id,session_id,parent_job_id,spec,result_schema_json,budget_json,workspace_json,hints_json,depth,model,status,created_at,updated_at)VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, j.ID, j.SessionID, nilIfEmpty(j.ParentJobID), j.Spec, j.ResultSchemaJSON, j.BudgetJSON, j.WorkspaceJSON, j.HintsJSON, j.Depth, j.Model, j.Status, now, now)
@@ -1312,17 +1250,6 @@ func nilIfEmpty(s string) any {
 		return nil
 	}
 	return s
-}
-
-type Event struct {
-	SchemaVersion int             `json:"schema_version"`
-	EventID       string          `json:"event_id"`
-	Seq           int             `json:"sequence"`
-	SessionID     string          `json:"session_id"`
-	TurnID        string          `json:"turn_id,omitempty"`
-	Type          string          `json:"type"`
-	Data          json.RawMessage `json:"data"`
-	CreatedAt     time.Time       `json:"timestamp"`
 }
 
 func (s *Store) AddEvent(ctx context.Context, sid, typ string, data any) (Event, error) {
@@ -1386,12 +1313,6 @@ func (s *Store) EventsAfter(ctx context.Context, sid string, after int) ([]Event
 		out = append(out, e)
 	}
 	return out, rows.Err()
-}
-
-type RequestReceipt struct {
-	SessionID, RequestID, Kind, TurnID, PayloadHash string
-	AcceptedAt                                      time.Time
-	Duplicate                                       bool
 }
 
 func (s *Store) RequestReceipt(ctx context.Context, sid, requestID string) (RequestReceipt, error) {
@@ -1483,16 +1404,6 @@ func (s *Store) ExportRouting(ctx context.Context, since time.Time, emit func([]
 }
 func (s *Store) String() string { return fmt.Sprintf("sqlite(%p)", s.db) }
 
-type CacheEntry struct {
-	SessionID, Model string
-	WarmPrefixTokens int
-	LastHit          time.Time
-	TTL              time.Duration
-}
-
-func (e CacheEntry) Valid(now time.Time) bool {
-	return e.WarmPrefixTokens > 0 && !e.LastHit.IsZero() && now.Before(e.LastHit.Add(e.TTL))
-}
 func (s *Store) Cache(ctx context.Context, sid, model string) (CacheEntry, error) {
 	var e CacheEntry
 	var hit sql.NullString
@@ -1510,14 +1421,6 @@ func (s *Store) Cache(ctx context.Context, sid, model string) (CacheEntry, error
 func (s *Store) WarmCache(ctx context.Context, sid, model string, tokens int, ttl time.Duration) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO cache_ledger(session_id,model,warm_prefix_tokens,last_hit,ttl_seconds)VALUES(?,?,?,?,?) ON CONFLICT(session_id,model) DO UPDATE SET warm_prefix_tokens=excluded.warm_prefix_tokens,last_hit=excluded.last_hit,ttl_seconds=excluded.ttl_seconds`, sid, model, tokens, time.Now().UTC().Format(time.RFC3339Nano), int(ttl.Seconds()))
 	return err
-}
-
-type RoutingRecord struct {
-	ID, SessionID                                                       string
-	Turn                                                                int
-	DecisionPoint, StateJSON, CandidatesJSON, ChosenModel, ChosenEffort string
-	WasSwitch                                                           bool
-	CacheEstJSON, Explanation                                           string
 }
 
 func (s *Store) WriteRouting(ctx context.Context, r RoutingRecord) error {

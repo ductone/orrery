@@ -10,19 +10,6 @@ import (
 
 const modelOutcomesSchema = `CREATE TABLE IF NOT EXISTS model_outcomes(route TEXT PRIMARY KEY, authored_pass REAL NOT NULL DEFAULT 0, authored_fail REAL NOT NULL DEFAULT 0, reviews INTEGER NOT NULL DEFAULT 0, overturned INTEGER NOT NULL DEFAULT 0, answer_rejected INTEGER NOT NULL DEFAULT 0, run_pass INTEGER NOT NULL DEFAULT 0, run_fail INTEGER NOT NULL DEFAULT 0, run_input_required INTEGER NOT NULL DEFAULT 0, run_cancelled INTEGER NOT NULL DEFAULT 0);`
 
-// ModelOutcome is what happened to the work a route did. Authored counts are
-// fractional: a review verdict is shared among the routes that made the edit
-// and exec-write calls since the previous review, by share of calls.
-type ModelOutcome struct {
-	Route                      string
-	AuthoredPass, AuthoredFail float64
-	// Reviews counts reviews the route performed; Overturned those whose
-	// findings were later overturned by adjudication or a later review.
-	Reviews, Overturned                              int
-	AnswerRejected                                   int
-	RunPass, RunFail, RunInputRequired, RunCancelled int
-}
-
 // outcomeSession is the per-session state needed to attribute outcomes.
 type outcomeSession struct {
 	route         string             // active route from the latest routing decision

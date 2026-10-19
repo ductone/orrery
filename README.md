@@ -56,6 +56,30 @@ Provider keys may be literal strings or `!cmd <command>` values. Secret commands
 ./orrery models --stats            # add per-model call statistics
 ```
 
+## Embedding as a Go library
+
+The root package `github.com/ductone/orrery` constructs an engine in another Go program. Requests, results and events are in `agentproto`; configuration is in `config`.
+
+```go
+cfg := config.Default()
+orrery.InstallModelCatalog(ctx, cfg)
+st, err := orrery.OpenSQLite(cfg.Database)
+if err != nil {
+	return err
+}
+eng, err := orrery.New(orrery.Options{Config: cfg, Store: st})
+if err != nil {
+	return err
+}
+defer eng.Close()
+result, err := eng.Run(ctx, agentproto.TaskRequest{
+	Spec:      "Summarize the open issues",
+	Workspace: agentproto.Workspace{Path: workspaceDir},
+}, nil) // budget defaults come from cfg.Budget
+```
+
+The engine persists through the `storage.Store` interface, so a host can supply its own backend instead of SQLite. Run `storage/storagetest` against an implementation to check it against the documented contracts.
+
 ### Model catalog and statistics
 
 `orrery models` lists the startup catalog: discovered routes (or their cache), built-in routes, and config overrides. The aligned table shows route and canonical model IDs, tier, family, input/output prices per million tokens, context window, and discovered/overridden flags. Disabled config entries and override warnings appear below it.

@@ -32,13 +32,14 @@ import (
 	"github.com/ductone/orrery/internal/store"
 	builtin "github.com/ductone/orrery/internal/tools"
 	"github.com/ductone/orrery/internal/webtools"
+	"github.com/ductone/orrery/storage"
 )
 
 type EmitFunc func(agentproto.AgentEvent)
 
 type Engine struct {
 	cfg       config.Config
-	store     *store.Store
+	store     storage.Store
 	providers *provider.Registry
 	policy    router.Policy
 	mcp       *mcp.Manager
@@ -79,7 +80,7 @@ type Engine struct {
 	prevStatus map[string]string
 }
 
-func New(cfg config.Config, s *store.Store, p *provider.Registry, mc *mcp.Manager) *Engine {
+func New(cfg config.Config, s storage.Store, p *provider.Registry, mc *mcp.Manager) *Engine {
 	e := &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), lsp: lsp.New(cfg.LSP), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}, writers: map[string]string{}, compactedLastTurn: map[string]bool{}, toolStates: map[string]*builtin.SessionState{}, memoryEpochs: map[string]*memoryEpoch{}}
 	if s != nil {
 		e.cleanScratch(context.Background())
@@ -122,7 +123,9 @@ func (e *Engine) routePerformance(ctx context.Context) map[string]router.RoutePe
 	}
 	return out
 }
-func (e *Engine) Store() *store.Store { return e.store }
+
+// Store returns the engine's store.
+func (e *Engine) Store() storage.Store { return e.store }
 func (e *Engine) Close() error {
 	e.waitBackground()
 	if e.lsp != nil {

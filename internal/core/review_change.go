@@ -87,6 +87,6 @@ func (e *Engine) ReviewChange(ctx context.Context, workspace, task string, chang
 			}
 		}
 	}
-	_ = e.store.DB().QueryRowContext(ctx, `SELECT COALESCE(SUM(spent_usd),0) FROM sessions WHERE id=? OR parent_session_id=?`, sid, sid).Scan(&out.CostUSD)
+	out.CostUSD, _ = e.store.SpentUSDWithChildren(ctx, sid)
 	return out, err
 }

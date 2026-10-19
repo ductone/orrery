@@ -9,9 +9,6 @@ import (
 // Normalize legacy free-text categories before enforcing the enumerations on writes.
 const memorySchema = memoryBaseSchema + `CREATE TABLE IF NOT EXISTS memory_watermarks(session_id TEXT PRIMARY KEY REFERENCES sessions(id), sequence INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS memory_sightings(memory_id TEXT NOT NULL REFERENCES memory_records(memory_id), session_id TEXT NOT NULL REFERENCES sessions(id), sightings INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(memory_id,session_id)); UPDATE memory_records SET kind='fact' WHERE kind NOT IN ('fact','command','decision','preference','lesson'); UPDATE memory_records SET provenance='observed' WHERE provenance NOT IN ('user','instruction','observed','extracted');`
 
-var MemoryKinds = []string{"fact", "command", "decision", "preference", "lesson"}
-var MemoryProvenances = []string{"user", "instruction", "observed", "extracted"}
-
 func validMemoryKind(kind string) bool { return slices.Contains(MemoryKinds, kind) }
 func validMemoryProvenance(provenance string) bool {
 	return slices.Contains(MemoryProvenances, provenance)

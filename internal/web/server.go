@@ -2,14 +2,10 @@ package web
 
 import (
 	"context"
-	"database/sql"
 	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/ductone/orrery/agentproto"
-	"github.com/ductone/orrery/internal/core"
-	"github.com/ductone/orrery/internal/store"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -19,6 +15,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/ductone/orrery/agentproto"
+	"github.com/ductone/orrery/internal/core"
+	"github.com/ductone/orrery/internal/store"
+	"github.com/ductone/orrery/storage"
 
 	"github.com/google/uuid"
 )
@@ -107,7 +108,7 @@ func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 			integration = "squire"
 		}
 		x, err := s.engine.Store().SessionByExternalID(r.Context(), integration, externalID, q.Get("incarnation"))
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, storage.ErrNotFound) {
 			write(w, []store.Session{}, nil)
 			return
 		}
@@ -125,9 +126,11 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusServiceUnavailable, map[string]any{"status": "draining", "instance_id": s.instanceID}, nil)
 		return
 	}
-	if err := s.engine.Store().DB().PingContext(r.Context()); err != nil {
-		writeStatus(w, http.StatusServiceUnavailable, nil, err)
-		return
+	if p, ok := s.engine.Store().(storage.Pinger); ok {
+		if err := p.Ping(r.Context()); err != nil {
+			writeStatus(w, http.StatusServiceUnavailable, nil, err)
+			return
+		}
 	}
 	write(w, map[string]any{"status": "ready", "instance_id": s.instanceID}, nil)
 }
@@ -147,7 +150,7 @@ func (s *Server) versionInfo(w http.ResponseWriter, _ *http.Request) {
 }
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 	x, err := s.engine.Store().Session(r.Context(), r.PathValue("id"))
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, storage.ErrNotFound) {
 		writeStatus(w, http.StatusNotFound, nil, err)
 		return
 	}
@@ -159,7 +162,7 @@ func (s *Server) checkpoints(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) pendingInput(w http.ResponseWriter, r *http.Request) {
 	x, err := s.engine.Store().PendingInput(r.Context(), r.PathValue("id"))
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, storage.ErrNotFound) {
 		writeStatus(w, http.StatusNoContent, nil, nil)
 		return
 	}
@@ -339,7 +342,7 @@ func (s *Server) addBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	session, resumed, err := s.engine.AddBudget(context.Background(), r.PathValue("id"), in.AddUSD, nil)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, storage.ErrNotFound) {
 		writeStatus(w, http.StatusNotFound, nil, err)
 		return
 	}
@@ -357,7 +360,7 @@ func (s *Server) cancelTurn(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) terminate(w http.ResponseWriter, r *http.Request) {
 	err := s.engine.Terminate(r.Context(), r.PathValue("id"))
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, storage.ErrNotFound) {
 		writeStatus(w, http.StatusNotFound, nil, err)
 		return
 	}
@@ -365,7 +368,7 @@ func (s *Server) terminate(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	err := s.engine.Delete(r.Context(), r.PathValue("id"))
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, storage.ErrNotFound) {
 		writeStatus(w, http.StatusNotFound, nil, err)
 		return
 	}
