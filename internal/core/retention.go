@@ -77,6 +77,9 @@ func (e *Engine) MaintainStorage(ctx context.Context) (RetentionReport, error) {
 			return
 		}
 		rep.Deleted = append(rep.Deleted, s.ID)
+		if s.ParentSessionID == "" {
+			e.removeScratch(s.ID)
+		}
 	}
 
 	// 1. Expired worker and review sessions. Orphans (parent already gone)

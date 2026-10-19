@@ -91,10 +91,25 @@ type Engine struct {
 	// now is the clock retention measures session age against; nil means
 	// time.Now. Tests set it.
 	now func() time.Time
+	// scratchRoot holds the scratch directory of each session. scratchOwned
+	// is set when the host chose it (WithScratchRoot): the engine then owns
+	// everything in it, rather than sharing the default root with other
+	// engines in the process.
+	scratchRoot  string
+	scratchOwned bool
 }
 
-func New(cfg config.Config, s storage.Store, p *provider.Registry, mc *mcp.Manager) *Engine {
+// New constructs an Engine over store s. The engine closes only what it
+// creates: p and mc belong to the caller, who may share them between engines
+// and must close them itself.
+func New(cfg config.Config, s storage.Store, p *provider.Registry, mc *mcp.Manager, opts ...Option) *Engine {
 	e := &Engine{cfg: cfg, store: s, outcomes: outcomes.New(), providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), lsp: lsp.New(cfg.LSP), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}, writers: map[string]string{}, compactedLastTurn: map[string]bool{}, toolStates: map[string]*builtin.SessionState{}, memoryEpochs: map[string]*memoryEpoch{}}
+	for _, opt := range opts {
+		opt(e)
+	}
+	if e.scratchRoot == "" {
+		e.scratchRoot = builtin.ScratchRoot()
+	}
 	if s != nil {
 		e.cleanScratch(context.Background())
 	}
@@ -890,7 +905,16 @@ func (e *Engine) Delete(ctx context.Context, id string) error {
 	if active {
 		return errors.New("cannot delete a session with an active turn")
 	}
-	return e.store.DeleteSession(ctx, id)
+	// Workers use their top-level ancestor's scratch directory, which
+	// outlives them.
+	top := e.scratchOwner(ctx, id) == id
+	if err := e.store.DeleteSession(ctx, id); err != nil {
+		return err
+	}
+	if top {
+		e.removeScratch(id)
+	}
+	return nil
 }
 
 func (e *Engine) emit(ctx context.Context, sid, typ string, data any, emit EmitFunc) {

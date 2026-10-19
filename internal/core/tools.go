@@ -58,7 +58,7 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 	ws := e.sessionWorkspace(context.Background(), sid, req.Workspace)
 	r := builtin.NewForWorkspace(ws, state, string(dialect), req.Workspace.Mode == "read")
 	if ws.Dir != "" {
-		r.SetScratch(builtin.ScratchDir(e.scratchOwner(context.Background(), sid)))
+		r.SetScratch(e.scratchDir(e.scratchOwner(context.Background(), sid)))
 	}
 	if parentJob == "" {
 		memoryActions := []string{"propose", "confirm", "inspect", "correct", "forget"}
@@ -676,11 +676,27 @@ func (e *Engine) scratchOwner(ctx context.Context, sid string) string {
 // directory is deleted.
 const scratchTTL = 24 * time.Hour
 
+// scratchDir is the scratch directory of a top-level session.
+func (e *Engine) scratchDir(sid string) string { return filepath.Join(e.scratchRoot, sid) }
+
+// removeScratch deletes a top-level session's scratch directory.
+func (e *Engine) removeScratch(sid string) {
+	if sid == "" || sid != filepath.Base(sid) || sid == "." || sid == ".." {
+		return
+	}
+	_ = os.RemoveAll(e.scratchDir(sid))
+}
+
 // cleanScratch deletes scratch directories of sessions that have not been
 // running for scratchTTL. Sessions resume, so nothing is deleted at session end.
+//
+// The default root is shared by every engine in the process, so there only
+// directories of sessions this store knows to be finished are removed; a
+// directory it does not know may belong to another engine's live session.
+// A root chosen with WithScratchRoot is this engine's alone, and there
+// unknown directories are removed once their mtime is older than scratchTTL.
 func (e *Engine) cleanScratch(ctx context.Context) {
-	root := builtin.ScratchRoot()
-	ents, err := os.ReadDir(root)
+	ents, err := os.ReadDir(e.scratchRoot)
 	if err != nil {
 		return
 	}
@@ -692,11 +708,13 @@ func (e *Engine) cleanScratch(ctx context.Context) {
 		running := false
 		if s, err := e.store.Session(ctx, d.Name()); err == nil {
 			last, running = s.UpdatedAt, s.Status == "running"
+		} else if !e.scratchOwned {
+			continue
 		} else if info, err := d.Info(); err == nil {
 			last = info.ModTime()
 		}
 		if !running && time.Since(last) >= scratchTTL {
-			_ = os.RemoveAll(filepath.Join(root, d.Name()))
+			_ = os.RemoveAll(filepath.Join(e.scratchRoot, d.Name()))
 		}
 	}
 }

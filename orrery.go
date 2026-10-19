@@ -114,6 +114,15 @@ type Options struct {
 	Providers *Providers
 	// MCP is optional; without it the engine has no MCP tools.
 	MCP *MCPManager
+	// ScratchRoot is the directory holding session scratch directories
+	// (ScratchRoot/<session id>). Empty means the process-wide default under
+	// the OS temp directory, shared with every other engine that leaves it
+	// empty; the engine then removes only the old scratch directories of
+	// sessions its own Store shows as finished. A non-empty ScratchRoot is
+	// owned by this engine alone, and it also removes unknown directories
+	// there that are older than a day. Hosts running many engines in one
+	// process should give each its own.
+	ScratchRoot string
 }
 
 // New constructs an Engine. Install the model catalog first.
@@ -125,5 +134,9 @@ func New(opts Options) (*Engine, error) {
 	if p == nil {
 		p = NewProviders(opts.Config)
 	}
-	return core.New(opts.Config, opts.Store, p, opts.MCP), nil
+	var copts []core.Option
+	if opts.ScratchRoot != "" {
+		copts = append(copts, core.WithScratchRoot(opts.ScratchRoot))
+	}
+	return core.New(opts.Config, opts.Store, p, opts.MCP, copts...), nil
 }
