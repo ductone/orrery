@@ -349,6 +349,117 @@ func (e *Engine) CreateIdle(ctx context.Context, workspace string, budgetUSD flo
 	return e.store.Session(ctx, s.ID)
 }
 
+// resumeNote is the harness note that restarts an interrupted session. It is
+// not a person's request, so it must not replace the session's latest request.
+const resumeNote = "The previous run was interrupted before it finished. Continue the task from where it stopped."
+
+// ResumeInterrupted continues every top-level session left "interrupted" that
+// has work outstanding and returns the IDs it started. Call it once on wake,
+// after the store's MarkRunningInterrupted and with the engine constructed. It
+// returns once the runs are started, not when they finish; each run reports
+// through emit like a Continue.
+//
+// A session is resumed only if the process died mid-run: walking its event
+// log in order, a "turn.accepted" or "session.started" event starts a run, and
+// "session.terminal" (the run ended), "input.required" (it paused for the
+// person) or "session.restored" (a checkpoint rewound it) end one. A session
+// whose log ends with a run in progress is resumed. Everything else that is
+// "interrupted" is left for the person's next instruction: CreateIdle
+// placeholders (never ran), restored sessions, and sessions whose last run
+// finished before some other path marked them interrupted. Workers (sessions
+// with a parent) are never resumed here; their parent's run owns them.
+func (e *Engine) ResumeInterrupted(ctx context.Context, emit EmitFunc) ([]string, error) {
+	all, err := e.store.Sessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var resumed []string
+	for _, s := range all {
+		if s.Status != "interrupted" || s.ParentSessionID != "" {
+			continue
+		}
+		pending, err := e.hasOutstandingWork(ctx, s.ID)
+		if err != nil {
+			return resumed, err
+		}
+		if !pending {
+			continue
+		}
+		started, err := e.resumeSession(ctx, s, emit)
+		if err != nil {
+			return resumed, fmt.Errorf("resume session %s: %w", s.ID, err)
+		}
+		if started {
+			resumed = append(resumed, s.ID)
+		}
+	}
+	return resumed, nil
+}
+
+// hasOutstandingWork reports whether the session's event log ends with a run
+// in progress (see ResumeInterrupted).
+func (e *Engine) hasOutstandingWork(ctx context.Context, id string) (bool, error) {
+	events, err := e.store.EventsAfter(ctx, id, 0)
+	if err != nil {
+		return false, err
+	}
+	inProgress := false
+	for _, ev := range events {
+		switch ev.Type {
+		case "turn.accepted", "session.started":
+			inProgress = true
+		case "session.terminal", "input.required", "session.restored":
+			inProgress = false
+		}
+	}
+	return inProgress, nil
+}
+
+// resumeSession records the resume note as a harness message (leaving the
+// latest request alone) and launches the session's next run. It reports false
+// when a turn is already active for the session.
+func (e *Engine) resumeSession(ctx context.Context, s store.Session, emit EmitFunc) (bool, error) {
+	req := e.requestForSession(s, nil)
+	req.Budget.MaxUSD = s.BudgetUSD - s.SpentUSD
+	if req.Budget.MaxTokens <= 0 {
+		req.Budget.MaxTokens = e.sessionTokenLimit()
+	}
+	// The wall clock is per-run: the interrupted run's window is gone.
+	req.Budget.MaxWallClock = 2 * time.Hour
+	if req.Workspace.Path == "" {
+		cfg, _, _, _, _ := e.runtimeSnapshot()
+		req.Workspace.Path = cfg.WorkspaceRoot
+	}
+	requestID := uuid.NewString()
+	note := provider.Message{Role: "user", Harness: true, Content: resumeNote}
+	payloadHash := hashPayload(map[string]any{"content": resumeNote, "source": "resume"})
+	// Detach from the caller's context: the runs outlive this call.
+	turnID := uuid.NewString()
+	turnCtx, cancel := context.WithTimeout(withTurnID(context.WithoutCancel(ctx), turnID), req.Budget.MaxWallClock)
+	e.mu.Lock()
+	if _, active := e.cancels[s.ID]; active {
+		e.mu.Unlock()
+		cancel()
+		return false, nil
+	}
+	if _, err := e.store.AcceptMessage(ctx, s.ID, requestID, turnID, "resume", payloadHash, note, nil); err != nil {
+		e.mu.Unlock()
+		cancel()
+		return false, err
+	}
+	if err := e.store.SetSessionStatus(ctx, s.ID, "running"); err != nil {
+		e.mu.Unlock()
+		cancel()
+		return false, err
+	}
+	e.notePrevStatusLocked(s.ID, s.Status)
+	e.cancels[s.ID] = cancel
+	e.turnIDs[s.ID] = turnID
+	e.mu.Unlock()
+	e.launchExisting(turnCtx, cancel, s.ID, req, emit)
+	return true, nil
+}
+
 // maxBudgetIncreaseUSD bounds a single increase so a mistyped amount cannot
 // hand a session an effectively unbounded spend ceiling.
 const maxBudgetIncreaseUSD = 1000
@@ -951,8 +1062,15 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			}
 			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Cancelled, Outcome: outcome, Error: err.Error()}, emit)
 		}
-		// Turn boundary: deliver worker handoffs that arrived mid-turn.
+		// Turn boundary: deliver worker handoffs that arrived mid-turn, then
+		// make everything the previous step wrote (response, tool results,
+		// harness notes) durable. A step whose writes are not durable ends the
+		// run rather than building on state that could be lost.
 		e.drainHandoffs(ctx, sid)
+		if err := e.commit(ctx); err != nil {
+			progress.export(&outcome)
+			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "commit: " + err.Error()}, emit)
+		}
 		s, err := e.store.Session(ctx, sid)
 		if err != nil {
 			return agentproto.TaskResult{Status: agentproto.Fail, Error: err.Error()}
@@ -1731,6 +1849,15 @@ func (e *Engine) hasEfficientWorker() bool {
 	return false
 }
 
+// commit makes the store's writes durable when it needs an explicit commit
+// (storage.Committer); stores whose writes are already durable return nil.
+func (e *Engine) commit(ctx context.Context) error {
+	if c, ok := e.store.(storage.Committer); ok {
+		return c.Commit(ctx)
+	}
+	return nil
+}
+
 func (e *Engine) finish(sid string, result agentproto.TaskResult, emit EmitFunc) agentproto.TaskResult {
 	e.mu.Lock()
 	delete(e.toolStates, sid)
@@ -1764,7 +1891,24 @@ func (e *Engine) finish(sid string, result agentproto.TaskResult, emit EmitFunc)
 	for _, artifact := range result.Artifacts {
 		e.emit(context.Background(), sid, "artifact.created", artifact, emit)
 	}
+	// The run is not over until its writes are durable: commit before the
+	// terminal result is reported, and report a commit failure as a failure
+	// even when the run itself passed.
+	if err := e.commit(context.Background()); err != nil {
+		msg := "commit: " + err.Error()
+		if result.Error != "" {
+			msg = result.Error + "; " + msg
+		}
+		result.Status, result.Error = agentproto.Fail, msg
+		if s, serr := e.store.Session(context.Background(), sid); serr == nil && s.Status != "terminated" {
+			s.Status = string(agentproto.Fail)
+			_ = e.store.UpdateSession(context.Background(), s)
+		}
+	}
 	e.emit(context.Background(), sid, "session.terminal", result, emit)
+	// The terminal event itself is written after the commit above; make it
+	// durable too, best effort since the result is already decided.
+	defer func() { _ = e.commit(context.Background()) }()
 	if emit != nil {
 		emit(agentproto.AgentEvent{Type: "terminal", Data: result, Terminal: &result})
 	}
@@ -1774,6 +1918,11 @@ func (e *Engine) finish(sid string, result agentproto.TaskResult, emit EmitFunc)
 func (e *Engine) pauseForInput(sid string, input agentproto.InputRequest, outcome agentproto.Outcome, emit EmitFunc) agentproto.TaskResult {
 	result := agentproto.TaskResult{Status: agentproto.InputRequired, Result: map[string]any{"input": input}, Outcome: outcome}
 	_ = e.store.SetSessionStatus(context.Background(), sid, string(agentproto.InputRequired))
+	// The pending input and everything before it must be durable before the
+	// session waits: a restart while it waits resumes from stored state.
+	if err := e.commit(context.Background()); err != nil {
+		return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "commit: " + err.Error()}, emit)
+	}
 	e.emit(context.Background(), sid, "input.required", input, emit)
 	if emit != nil {
 		emit(agentproto.AgentEvent{Type: "input_required", Data: input, Terminal: &result})

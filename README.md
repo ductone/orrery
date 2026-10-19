@@ -80,6 +80,8 @@ result, err := eng.Run(ctx, agentproto.TaskRequest{
 
 The engine persists through the `storage.Store` interface, so a host can supply its own backend instead of SQLite. Run `storage/storagetest` against an implementation to check it against the documented contracts.
 
+When a host wakes after a stop or crash, interrupted sessions are continued in this order: open the store, call `MarkRunningInterrupted` (marks sessions the dead process left running as `interrupted`; a store with single-owner fencing may mark all of them), construct the engine, then call `eng.ResumeInterrupted(ctx, emit)`. It starts each top-level interrupted session that has messages or whose run had begun, adds a harness note ("The previous run was interrupted before it finished...") that does not replace the session's latest request, and returns the resumed IDs without waiting for the runs. Idle placeholders from `CreateIdle` are left alone. A store that is durable only on flush can implement `storage.Committer`; the engine calls `Commit` at each step boundary, before pausing for input and before reporting a run's result, and a failed commit fails the run.
+
 Workspaces are on disk by default. `Engine.UseWorkspaces` lets a host supply each session's files instead: a `workspace.Workspace` with only an `FS` (for example a moraine `vfs.FS`, or `workspace.NewMemory()`) gets the file tools and instruction discovery but not `exec`, language servers, verification commands or isolated worktrees, and an empty `Workspace` gets no file tools. Give such workspaces a URI path like `moraine://agent-1`; it identifies the workspace's memory.
 
 ### Model catalog and statistics

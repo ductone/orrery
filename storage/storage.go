@@ -9,6 +9,11 @@
 // transcript, todos and pending inputs). The internal SQLite store is the
 // reference implementation.
 //
+// A store whose writes become durable only when committed (an LSM flushed to
+// object storage, say) also implements Committer; the engine calls Commit at
+// step boundaries. Stores whose writes are already durable, like SQLite, need
+// not implement it.
+//
 // Methods that look up one record return an error matching ErrNotFound (via
 // errors.Is) when it does not exist. JSON-valued parameters typed any are
 // marshaled with encoding/json and read back as the raw JSON string fields of
@@ -38,6 +43,13 @@ type Store interface {
 	RouteStats
 }
 
+// Committer is implemented by stores whose writes become durable only when
+// committed. The engine calls Commit at step boundaries; when it returns
+// nil, everything written before the call must be durable.
+type Committer interface {
+	Commit(ctx context.Context) error
+}
+
 // Sessions holds session records, their status and their dollar accounting.
 type Sessions interface {
 	// CreateSession inserts a new session. Empty Phase, Status,
@@ -63,7 +75,10 @@ type Sessions interface {
 	SetSessionStatus(ctx context.Context, id, status string) error
 	// MarkRunningInterrupted marks sessions left "running" by a process that
 	// no longer exists as "interrupted", so they can be resumed. Sessions a
-	// live process is running are left alone.
+	// live process is running are left alone. A store with single-owner
+	// fencing (opening it fences out any previous owner) may mark every
+	// running session interrupted, since no other process can be running
+	// them.
 	MarkRunningInterrupted(ctx context.Context) error
 	// DeleteSession removes a session and everything recorded for it.
 	DeleteSession(ctx context.Context, id string) error
