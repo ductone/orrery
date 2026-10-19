@@ -46,6 +46,8 @@ type (
 	SessionOptions = core.SessionOptions
 	// ReviewOutcome is the result of Engine.ReviewChange.
 	ReviewOutcome = core.ReviewOutcome
+	// WorkspaceFunc resolves a session's workspace; see Engine.UseWorkspaces.
+	WorkspaceFunc = core.WorkspaceFunc
 	// Providers routes model calls to the configured providers.
 	Providers = provider.Registry
 	// MCPManager runs the configured MCP servers.

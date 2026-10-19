@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ductone/orrery/internal/hashline"
+	"github.com/ductone/orrery/workspace"
 )
 
 const writeDescription = "Write file content. Creates the file if it does not exist, or replaces its entire contents. Use this tool to create a new file instead of edit. The file becomes part of the session's file state, so a later edit must re-read it first."
@@ -34,7 +35,7 @@ func astGrepAvailable() bool {
 
 // resolvedPath is one file an editing tool will touch, with its provenance.
 type resolvedPath struct {
-	path     string
+	target
 	explicit bool // named literally, not expanded from a directory or glob
 }
 
@@ -44,16 +45,33 @@ type resolvedPath struct {
 // matched against workspace-relative paths with the search tool's globMatch,
 // so ** and {a,b} work as they do there. Files named literally on the command
 // line are marked explicit.
-func (r *Registry) expandEditPaths(raw []string) ([]resolvedPath, error) {
+func (r *Registry) expandEditPaths(ctx context.Context, raw []string) ([]resolvedPath, error) {
 	var out []resolvedPath
 	seen := map[string]bool{}
-	add := func(p string, explicit bool) {
-		key := filepath.Clean(p)
-		if seen[key] {
+	add := func(t target, explicit bool) {
+		if seen[t.key] {
 			return
 		}
-		seen[key] = true
-		out = append(out, resolvedPath{path: p, explicit: explicit})
+		seen[t.key] = true
+		out = append(out, resolvedPath{target: t, explicit: explicit})
+	}
+	// walk visits the regular files under dir, skipping ignored directories.
+	walk := func(dir target, visit func(target)) error {
+		return fs.WalkDir(workspace.IOFS(ctx, dir.fsys), dir.name, func(p string, d fs.DirEntry, e error) error {
+			if e != nil {
+				return nil
+			}
+			if d.IsDir() {
+				if p != dir.name && ignoredSearchDir(d.Name()) {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			if d.Type().IsRegular() {
+				visit(dir.child(p))
+			}
+			return nil
+		})
 	}
 	for _, rawPath := range raw {
 		if rawPath == "" {
@@ -61,67 +79,38 @@ func (r *Registry) expandEditPaths(raw []string) ([]resolvedPath, error) {
 		}
 		if strings.ContainsAny(rawPath, "*?[{") {
 			pattern := filepath.ToSlash(rawPath)
-			err := filepath.WalkDir(r.root, func(p string, d fs.DirEntry, e error) error {
-				if e != nil {
-					return nil
-				}
-				if d.IsDir() {
-					if p != r.root && ignoredSearchDir(d.Name()) {
-						return filepath.SkipDir
-					}
-					return nil
-				}
-				if !d.Type().IsRegular() {
-					return nil
-				}
-				rel, err := filepath.Rel(r.root, p)
-				if err != nil {
-					return nil
-				}
-				if globMatch(pattern, filepath.ToSlash(rel)) {
-					add(p, false)
-				}
-				return nil
-			})
+			root, err := r.resolve(".")
 			if err != nil {
+				return nil, err
+			}
+			if err := walk(root, func(t target) {
+				if globMatch(pattern, t.name) {
+					add(t, false)
+				}
+			}); err != nil {
 				return nil, err
 			}
 			continue
 		}
-		safe, err := r.safe(rawPath)
+		t, err := r.resolve(rawPath)
 		if err != nil {
 			return nil, err
 		}
-		info, err := os.Stat(safe)
+		info, err := t.fsys.Stat(ctx, t.name)
 		if err != nil {
 			return nil, fmt.Errorf("path %q: %w", rawPath, err)
 		}
 		if info.IsDir() {
-			err := filepath.WalkDir(safe, func(p string, d fs.DirEntry, e error) error {
-				if e != nil {
-					return nil
-				}
-				if d.IsDir() {
-					if p != safe && ignoredSearchDir(d.Name()) {
-						return filepath.SkipDir
-					}
-					return nil
-				}
-				if d.Type().IsRegular() {
-					add(p, false)
-				}
-				return nil
-			})
-			if err != nil {
+			if err := walk(t, func(c target) { add(c, false) }); err != nil {
 				return nil, err
 			}
 		} else if info.Mode().IsRegular() {
-			add(safe, true)
+			add(t, true)
 		} else {
 			return nil, fmt.Errorf("path %q is not a regular file or directory", rawPath)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
+	sort.Slice(out, func(i, j int) bool { return out[i].key < out[j].key })
 	return out, nil
 }
 
@@ -152,24 +141,27 @@ func asStringSlice(v any) []string {
 // refreshSnapshot records the file's current state as the version this session
 // last produced, so a following hashline edit sees fresh anchors. It must be
 // called with the file already written and the file lock released.
-func (r *Registry) refreshSnapshot(path string) error {
-	lines, err := hashline.ReadWithMode(path, r.dialect.mode())
+// It returns the file's fresh lines.
+func (r *Registry) refreshSnapshot(ctx context.Context, t target) ([]hashline.Line, error) {
+	data, err := t.fsys.ReadFile(ctx, t.name)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	currentVersion, err := fileVersion(path)
+	lines, err := hashline.Parse(data, r.dialect.mode())
 	if err != nil {
-		return err
+		return nil, err
 	}
+	currentVersion := contentVersion(data)
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
+	path := t.key
 	snapshot := r.state.snapshots[path]
 	snapshot.version = currentVersion
 	snapshot.content = lineText(lines)
 	snapshot.history = appendAnchorVersion(snapshot.history, currentVersion, true, lines)
 	snapshot.execChanged = false
 	r.state.snapshots[path] = snapshot
-	return nil
+	return lines, nil
 }
 
 // spannedLines returns the 1-based line numbers a needled occurrence at byte
@@ -233,15 +225,16 @@ func changedSpan(before, after []string) (int, int) {
 // contents. It goes through the same file-state path as edit: workspace
 // boundary check, changed-file snapshot, and fresh hashline anchors for later
 // edits.
-func (r *Registry) write(_ context.Context, a map[string]any) (any, error) {
+func (r *Registry) write(ctx context.Context, a map[string]any) (any, error) {
 	rawPath := asString(a["path"])
 	if rawPath == "" {
 		return nil, errors.New("path required")
 	}
-	safe, err := r.safe(rawPath)
+	t, err := r.resolve(rawPath)
 	if err != nil {
 		return nil, err
 	}
+	safe := t.key
 	content := asString(a["content"])
 	appendMode := false
 	if v, ok := a["append"].(bool); ok {
@@ -253,13 +246,13 @@ func (r *Registry) write(_ context.Context, a map[string]any) (any, error) {
 	defer lock.Unlock()
 
 	created := false
-	mode := os.FileMode(0o644)
-	if info, err := os.Stat(safe); err == nil {
+	mode := fs.FileMode(0o644)
+	if info, err := t.fsys.Stat(ctx, t.name); err == nil {
 		if info.IsDir() {
 			return nil, fmt.Errorf("path %q is a directory", rawPath)
 		}
 		mode = info.Mode()
-	} else if !errors.Is(err, os.ErrNotExist) {
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	} else {
 		created = true
@@ -267,7 +260,7 @@ func (r *Registry) write(_ context.Context, a map[string]any) (any, error) {
 
 	data := []byte(content)
 	if appendMode && !created {
-		b, err := os.ReadFile(safe)
+		b, err := t.fsys.ReadFile(ctx, t.name)
 		if err != nil {
 			return nil, err
 		}
@@ -283,13 +276,10 @@ func (r *Registry) write(_ context.Context, a map[string]any) (any, error) {
 	if len(data) == 0 || data[len(data)-1] != '\n' {
 		data = append(data, '\n')
 	}
-	if err := os.WriteFile(safe, data, mode); err != nil {
+	if err := t.fsys.WriteFile(ctx, t.name, data, mode); err != nil {
 		return nil, err
 	}
-	if err := r.refreshSnapshot(safe); err != nil {
-		return nil, err
-	}
-	lines, err := hashline.ReadWithMode(safe, r.dialect.mode())
+	lines, err := r.refreshSnapshot(ctx, t)
 	if err != nil {
 		return nil, err
 	}
@@ -307,7 +297,7 @@ func (r *Registry) write(_ context.Context, a map[string]any) (any, error) {
 // validated before anything is written, so a file that violates the
 // constraints (multiple matches without replace_all, or an explicitly named
 // file with no match) fails the call without leaving earlier files modified.
-func (r *Registry) replace(_ context.Context, a map[string]any) (any, error) {
+func (r *Registry) replace(ctx context.Context, a map[string]any) (any, error) {
 	oldString := asString(a["old_string"])
 	if oldString == "" {
 		return nil, errors.New("old_string must not be empty")
@@ -318,7 +308,7 @@ func (r *Registry) replace(_ context.Context, a map[string]any) (any, error) {
 	if len(rawPaths) == 0 {
 		return nil, errors.New("paths required")
 	}
-	resolved, err := r.expandEditPaths(rawPaths)
+	resolved, err := r.expandEditPaths(ctx, rawPaths)
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +317,7 @@ func (r *Registry) replace(_ context.Context, a map[string]any) (any, error) {
 	}
 
 	type filePlan struct {
-		path   string
+		target
 		count  int
 		before string
 		after  string
@@ -335,23 +325,23 @@ func (r *Registry) replace(_ context.Context, a map[string]any) (any, error) {
 	var plans []filePlan
 	var violations []string
 	for _, rp := range resolved {
-		lock := fileLock(rp.path)
+		lock := fileLock(rp.key)
 		lock.Lock()
-		raw, err := os.ReadFile(rp.path)
+		raw, err := rp.fsys.ReadFile(ctx, rp.name)
 		if err != nil {
 			lock.Unlock()
 			return nil, err
 		}
 		if !utf8.Valid(raw) {
 			lock.Unlock()
-			return nil, fmt.Errorf("replace: %s is not a UTF-8 text file", rp.path)
+			return nil, fmt.Errorf("replace: %s is not a UTF-8 text file", rp.key)
 		}
 		content := string(raw)
 		count := strings.Count(content, oldString)
 		if count == 0 {
 			lock.Unlock()
 			if rp.explicit {
-				violations = append(violations, fmt.Sprintf("%s: no matches of %q", rp.path, oldString))
+				violations = append(violations, fmt.Sprintf("%s: no matches of %q", rp.key, oldString))
 			}
 			continue
 		}
@@ -364,7 +354,7 @@ func (r *Registry) replace(_ context.Context, a map[string]any) (any, error) {
 				lines = append(lines, spannedLines(content, oldString, abs)...)
 				searchFrom = abs + len(oldString)
 			}
-			violations = append(violations, fmt.Sprintf("%s: %q matches %d times at lines %v (set replace_all=true or narrow the paths)", rp.path, oldString, count, lines))
+			violations = append(violations, fmt.Sprintf("%s: %q matches %d times at lines %v (set replace_all=true or narrow the paths)", rp.key, oldString, count, lines))
 			lock.Unlock()
 			continue
 		}
@@ -373,7 +363,7 @@ func (r *Registry) replace(_ context.Context, a map[string]any) (any, error) {
 		if after == content {
 			continue
 		}
-		plans = append(plans, filePlan{path: rp.path, count: count, before: content, after: after})
+		plans = append(plans, filePlan{target: rp.target, count: count, before: content, after: after})
 	}
 	if len(violations) > 0 {
 		return nil, fmt.Errorf("replace: %s", strings.Join(violations, "; "))
@@ -387,26 +377,26 @@ func (r *Registry) replace(_ context.Context, a map[string]any) (any, error) {
 	var written []filePlan
 	rollback := func() {
 		for _, w := range written {
-			lock := fileLock(w.path)
+			lock := fileLock(w.key)
 			lock.Lock()
-			_ = os.WriteFile(w.path, []byte(w.before), 0o644)
+			_ = w.fsys.WriteFile(ctx, w.name, []byte(w.before), 0o644)
 			lock.Unlock()
 		}
 	}
 	for _, pl := range plans {
-		lock := fileLock(pl.path)
+		lock := fileLock(pl.key)
 		lock.Lock()
-		current, err := os.ReadFile(pl.path)
+		current, err := pl.fsys.ReadFile(ctx, pl.name)
 		if err == nil && string(current) != pl.before {
 			err = errors.New("file changed since the match was verified")
 		}
 		if err == nil {
-			err = os.WriteFile(pl.path, []byte(pl.after), 0o644)
+			err = pl.fsys.WriteFile(ctx, pl.name, []byte(pl.after), 0o644)
 		}
 		lock.Unlock()
 		if err != nil {
 			rollback()
-			return nil, fmt.Errorf("replace: %s: %w; no files were modified, re-run replace", pl.path, err)
+			return nil, fmt.Errorf("replace: %s: %w; no files were modified, re-run replace", pl.key, err)
 		}
 		written = append(written, pl)
 	}
@@ -414,15 +404,12 @@ func (r *Registry) replace(_ context.Context, a map[string]any) (any, error) {
 	var results []map[string]any
 	total := 0
 	for _, pl := range plans {
-		if err := r.refreshSnapshot(pl.path); err != nil {
-			return nil, fmt.Errorf("replace wrote every file but could not refresh %s: %w", pl.path, err)
-		}
-		fresh, err := hashline.ReadWithMode(pl.path, r.dialect.mode())
+		fresh, err := r.refreshSnapshot(ctx, pl.target)
 		if err != nil {
-			return nil, fmt.Errorf("replace wrote every file but could not read %s: %w", pl.path, err)
+			return nil, fmt.Errorf("replace wrote every file but could not refresh %s: %w", pl.key, err)
 		}
 		results = append(results, map[string]any{
-			"path":          pl.path,
+			"path":          pl.key,
 			"count":         pl.count,
 			"changed_lines": changedLineEntries(strings.Split(pl.before, "\n"), strings.Split(pl.after, "\n"), fresh),
 		})
@@ -474,7 +461,7 @@ func (r *Registry) astEdit(ctx context.Context, a map[string]any) (any, error) {
 		return nil, errors.New("paths required")
 	}
 	lang := asString(a["lang"])
-	resolved, err := r.expandEditPaths(rawPaths)
+	resolved, err := r.expandEditPaths(ctx, rawPaths)
 	if err != nil {
 		return nil, err
 	}
@@ -482,10 +469,12 @@ func (r *Registry) astEdit(ctx context.Context, a map[string]any) (any, error) {
 		return nil, errors.New("no files matched the given paths")
 	}
 
+	// ast_edit is registered only for a workspace on disk, so every key is
+	// an absolute path ast-grep can open.
 	var perFile []map[string]any
 	total := 0
 	for _, rp := range resolved {
-		p := rp.path
+		p := rp.key
 		lock := fileLock(p)
 		lock.Lock()
 		original, err := os.ReadFile(p)
@@ -572,10 +561,7 @@ func (r *Registry) astEdit(ctx context.Context, a map[string]any) (any, error) {
 			return nil, err
 		}
 		lock.Unlock()
-		if err := r.refreshSnapshot(p); err != nil {
-			return nil, err
-		}
-		fresh, err := hashline.ReadWithMode(p, r.dialect.mode())
+		fresh, err := r.refreshSnapshot(ctx, rp.target)
 		if err != nil {
 			return nil, err
 		}

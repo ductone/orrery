@@ -80,6 +80,8 @@ result, err := eng.Run(ctx, agentproto.TaskRequest{
 
 The engine persists through the `storage.Store` interface, so a host can supply its own backend instead of SQLite. Run `storage/storagetest` against an implementation to check it against the documented contracts.
 
+Workspaces are on disk by default. `Engine.UseWorkspaces` lets a host supply each session's files instead: a `workspace.Workspace` with only an `FS` (for example a moraine `vfs.FS`, or `workspace.NewMemory()`) gets the file tools and instruction discovery but not `exec`, language servers, verification commands or isolated worktrees, and an empty `Workspace` gets no file tools. Give such workspaces a URI path like `moraine://agent-1`; it identifies the workspace's memory.
+
 ### Model catalog and statistics
 
 `orrery models` lists the startup catalog: discovered routes (or their cache), built-in routes, and config overrides. The aligned table shows route and canonical model IDs, tier, family, input/output prices per million tokens, context window, and discovered/overridden flags. Disabled config entries and override warnings appear below it.

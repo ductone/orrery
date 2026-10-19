@@ -2,6 +2,7 @@ package hashline
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -163,13 +164,17 @@ func hashes(text []string, mode AnchorMode) []Line {
 func Read(path string) ([]Line, error) { return ReadWithMode(path, AnchorLine) }
 
 func ReadWithMode(path string, mode AnchorMode) ([]Line, error) {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	return Parse(data, mode)
+}
+
+// Parse splits file content into hashed lines.
+func Parse(data []byte, mode AnchorMode) ([]Line, error) {
 	var text []string
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(bytes.NewReader(data))
 	buf := make([]byte, 64*1024)
 	sc.Buffer(buf, 8<<20)
 	for sc.Scan() {
@@ -199,6 +204,28 @@ func ApplyWithMode(p Patch, mode AnchorMode) (*ApplyResult, error) {
 	if err != nil && !newFile {
 		return nil, err
 	}
+	content, result, err := ApplyLines(lines, p, mode)
+	if err != nil {
+		return nil, err
+	}
+	fileMode := os.FileMode(0o644)
+	if !newFile {
+		info, statErr := os.Stat(p.Path)
+		if statErr != nil {
+			return nil, statErr
+		}
+		fileMode = info.Mode()
+	}
+	if err := os.WriteFile(p.Path, content, fileMode); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// ApplyLines applies p's hunks to a file's current lines (empty for a new
+// file) and returns the new file content and result without touching disk.
+// p.Path is ignored.
+func ApplyLines(lines []Line, p Patch, mode AnchorMode) ([]byte, *ApplyResult, error) {
 	raw := make([]string, len(lines))
 	for i, l := range lines {
 		raw[i] = l.Text
@@ -231,7 +258,7 @@ func ApplyWithMode(p Patch, mode AnchorMode) (*ApplyResult, error) {
 		}
 
 		if len(occurrences) == 0 {
-			return nil, &StaleError{h.Anchor, window(lines, 0)}
+			return nil, nil, &StaleError{h.Anchor, window(lines, 0)}
 		}
 
 		// Identical lines share a hash. The read's line number settles which
@@ -241,7 +268,7 @@ func ApplyWithMode(p Patch, mode AnchorMode) (*ApplyResult, error) {
 			if idx, ok := pickOccurrence(occurrences, h.Line, h.Delete > 0); ok {
 				occurrences = []int{idx}
 			} else if h.Delete > 0 {
-				return nil, ambiguous(h.Anchor, lines, occurrences, h.Anchor == newFileAnchor)
+				return nil, nil, ambiguous(h.Anchor, lines, occurrences, h.Anchor == newFileAnchor)
 			}
 		}
 
@@ -258,11 +285,11 @@ func ApplyWithMode(p Patch, mode AnchorMode) (*ApplyResult, error) {
 		if len(validOccurrences) == 0 {
 			// No in-bounds target. For a delete this is always a hard stale error
 			// (never relocate a destructive hunk). For an insert, the anchor is stale.
-			return nil, &StaleError{h.Anchor, window(lines, occurrences[0])}
+			return nil, nil, &StaleError{h.Anchor, window(lines, occurrences[0])}
 		}
 
 		if len(validOccurrences) > 1 {
-			return nil, ambiguous(h.Anchor, lines, validOccurrences, h.Anchor == newFileAnchor)
+			return nil, nil, ambiguous(h.Anchor, lines, validOccurrences, h.Anchor == newFileAnchor)
 		}
 
 		// Exactly one valid target - use it (auto-rebase if needed)
@@ -275,7 +302,7 @@ func ApplyWithMode(p Patch, mode AnchorMode) (*ApplyResult, error) {
 	slices.SortStableFunc(loc, func(a, b located) int { return a.at - b.at })
 	for i := 1; i < len(loc); i++ {
 		if loc[i].at < loc[i-1].at+loc[i-1].h.Delete {
-			return nil, errors.New("hashline: overlapping delete ranges")
+			return nil, nil, errors.New("hashline: overlapping delete ranges")
 		}
 	}
 	// Affected regions are in the new file's coordinates: a hunk moves by the
@@ -294,21 +321,10 @@ func ApplyWithMode(p Patch, mode AnchorMode) (*ApplyResult, error) {
 		raw = append(raw[:x.at], append(x.h.Insert, raw[x.at+x.h.Delete:]...)...)
 	}
 	if slices.Equal(raw, original) {
-		return nil, ErrNoChanges
-	}
-	fileMode := os.FileMode(0o644)
-	if !newFile {
-		info, statErr := os.Stat(p.Path)
-		if statErr != nil {
-			return nil, statErr
-		}
-		fileMode = info.Mode()
-	}
-	if err := os.WriteFile(p.Path, []byte(strings.Join(raw, "\n")+"\n"), fileMode); err != nil {
-		return nil, err
+		return nil, nil, ErrNoChanges
 	}
 	newLines := hashes(raw, mode)
-	return &ApplyResult{Lines: newLines, Affected: affected}, nil
+	return []byte(strings.Join(raw, "\n") + "\n"), &ApplyResult{Lines: newLines, Affected: affected}, nil
 }
 func window(lines []Line, at int) []Line {
 	lo := max(0, at-2)

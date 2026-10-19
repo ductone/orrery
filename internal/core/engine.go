@@ -34,6 +34,7 @@ import (
 	builtin "github.com/ductone/orrery/internal/tools"
 	"github.com/ductone/orrery/internal/webtools"
 	"github.com/ductone/orrery/storage"
+	"github.com/ductone/orrery/workspace"
 )
 
 type EmitFunc func(agentproto.AgentEvent)
@@ -59,6 +60,10 @@ type Engine struct {
 	compactedLastTurn  map[string]bool
 	toolStates         map[string]*builtin.SessionState
 	baselines          map[string]workspaceBaseline
+	// workspaces resolves a session's workspace; nil means the disk.
+	// sessionWorkspaces holds the workspace of each running session.
+	workspaces        WorkspaceFunc
+	sessionWorkspaces map[string]workspace.Workspace
 	// running counts in-flight runs per session; pendingHandoffs holds
 	// worker handoffs for sessions mid-turn; deliveredJobs are workers whose
 	// result reached the parent through job wait.
@@ -704,6 +709,11 @@ func workspaceKey(path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", errors.New("workspace path required")
 	}
+	// A URI such as moraine://agent-1 names a virtual workspace; it is its
+	// own identity, not a directory to resolve.
+	if strings.Contains(path, "://") {
+		return path, nil
+	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("resolve workspace: %w", err)
@@ -845,7 +855,22 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 	outcome := agentproto.Outcome{}
 	stall := router.StallSignals{}
 	progress := newProgressTracker()
-	discovery, err := e.instructionDiscovery(sid, req.Workspace.Path, req.Spec)
+	ws, err := e.resolveWorkspace(ctx, sid, req.Workspace)
+	if err != nil {
+		return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "workspace: " + err.Error()}, emit)
+	}
+	e.mu.Lock()
+	if e.sessionWorkspaces == nil {
+		e.sessionWorkspaces = map[string]workspace.Workspace{}
+	}
+	e.sessionWorkspaces[sid] = ws
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		delete(e.sessionWorkspaces, sid)
+		e.mu.Unlock()
+	}()
+	discovery, err := e.instructionDiscovery(sid, ws, req.Workspace.Path, req.Spec)
 	if err != nil {
 		return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "workspace instruction discovery: " + err.Error()}, emit)
 	}
@@ -854,7 +879,11 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 	// flagging them here would force a read-only task into a spurious
 	// verify/review loop. Verification is driven by edits this session makes,
 	// and review covers only what changed since this baseline.
-	e.setBaseline(sid, snapshotWorkspace(ctx, req.Workspace.Path))
+	// A virtual workspace has no git status to diff, so its changes are not
+	// tracked: verification and review that depend on them are skipped.
+	if ws.Dir != "" {
+		e.setBaseline(sid, snapshotWorkspace(ctx, ws.Dir))
+	}
 	defer e.clearBaseline(sid)
 	e.beginRun(sid)
 	defer func() {
@@ -1544,6 +1573,55 @@ func (e *Engine) relevanceClient() classify.Classifier {
 		return nil
 	}
 	return e.classifier()
+}
+
+// WorkspaceFunc resolves the files a session works on from its request's
+// workspace. Path identifies the workspace: memory is keyed by it. Give a
+// virtual workspace a URI path such as moraine://agent-1, which is used
+// verbatim; any other path is treated as a directory and made absolute.
+type WorkspaceFunc func(ctx context.Context, sessionID string, w agentproto.Workspace) (workspace.Workspace, error)
+
+// UseWorkspaces makes the engine ask f for each session's workspace instead
+// of treating the request's workspace path as a directory on disk. A
+// workspace without a directory (a virtual one) gets the file tools but not
+// exec, job, ast_edit, language servers, verification and review commands,
+// or isolated worker worktrees.
+func (e *Engine) UseWorkspaces(f WorkspaceFunc) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.workspaces = f
+}
+
+// resolveWorkspace returns the workspace for a session's request.
+func (e *Engine) resolveWorkspace(ctx context.Context, sid string, w agentproto.Workspace) (workspace.Workspace, error) {
+	if w.Path == "" {
+		cfg, _, _, _, _ := e.runtimeSnapshot()
+		w.Path = cfg.WorkspaceRoot
+	}
+	e.mu.Lock()
+	f := e.workspaces
+	e.mu.Unlock()
+	if f == nil {
+		return workspace.Disk(w.Path), nil
+	}
+	return f(ctx, sid, w)
+}
+
+// sessionWorkspace returns the workspace a running session resolved, or
+// resolves it again for a session that is not running.
+func (e *Engine) sessionWorkspace(ctx context.Context, sid string, w agentproto.Workspace) workspace.Workspace {
+	e.mu.Lock()
+	ws, ok := e.sessionWorkspaces[sid]
+	e.mu.Unlock()
+	if ok {
+		return ws
+	}
+	ws, err := e.resolveWorkspace(ctx, sid, w)
+	if err != nil {
+		slog.Error("resolve workspace", "session", sid, "error", err)
+		return workspace.Workspace{}
+	}
+	return ws
 }
 
 // UseClassifier makes every classifier-backed decision ask c instead of the

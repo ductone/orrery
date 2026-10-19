@@ -8,10 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/ductone/orrery/internal/hashline"
-	"github.com/ductone/orrery/internal/provider"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -25,6 +22,12 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/ductone/orrery/internal/hashline"
+	"github.com/ductone/orrery/internal/provider"
+	"github.com/ductone/orrery/workspace"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type Handler func(context.Context, map[string]any) (any, error)
@@ -37,7 +40,10 @@ func fileLock(path string) *sync.Mutex {
 }
 
 type Registry struct {
+	// root is the workspace's directory on disk, or "" for a virtual
+	// workspace whose files exist only in fsys.
 	root     string
+	fsys     workspace.FS
 	defs     []provider.Tool
 	handlers map[string]Handler
 	schemes  map[string]Handler
@@ -142,13 +148,10 @@ func (d anchorDialect) mode() hashline.AnchorMode {
 	return hashline.AnchorLine
 }
 
-func fileVersion(path string) (string, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
+// contentVersion identifies a version of a file's content.
+func contentVersion(b []byte) string {
 	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])[:16], nil
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 func lineText(lines []hashline.Line) []string {
@@ -190,25 +193,46 @@ func New(root string) *Registry {
 	return NewWithStateDialect(root, nil, string(anchorHashline))
 }
 
+// NewForWorkspace returns the tools for ws: the file tools over ws.FS, plus
+// exec, job and ast_edit when ws has a directory on disk. readOnly limits
+// them to read and search. A workspace without an FS gets no tools.
+func NewForWorkspace(ws workspace.Workspace, state *SessionState, dialect string, readOnly bool) *Registry {
+	r := newRegistry(ws, state, dialect)
+	if ws.FS == nil {
+		return r
+	}
+	r.addReadTools()
+	if !readOnly {
+		r.addWriteTools()
+	}
+	return r
+}
+
 func NewWithState(root string, state *SessionState) *Registry {
 	return NewWithStateDialect(root, state, string(anchorHashline))
 }
 
 func NewWithStateDialect(root string, state *SessionState, dialect string) *Registry {
-	r := NewReadOnlyWithStateDialect(root, state, dialect)
+	return NewForWorkspace(workspace.Disk(root), state, dialect, false)
+}
+
+func (r *Registry) addWriteTools() {
 	anchor := map[string]any{"type": "string", "pattern": "^[0-9a-f]{8}$", "description": "Exact 8-character hash copied from the latest read result. Never use line text, a line number, or a placeholder."}
 	if r.dialect == anchorText {
 		anchor = map[string]any{"type": "string", "description": "Complete exact line text copied from the latest read result. Never use a line number or placeholder."}
 	}
 	r.add("edit", editDescription(r.dialect), schema(map[string]any{"path": str(), "hunks": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"anchor": anchor, "line": map[string]any{"type": "integer", "description": "The anchor's line number from the latest read. Needed only when identical lines share a hash."}, "offset": num(), "delete": num(), "insert": map[string]any{"type": "array", "items": str()}}, "required": []string{"anchor", "delete", "insert"}, "additionalProperties": false}}}, "path", "hunks"), r.edit)
-	r.add("exec", "Run a shell command in the workspace. Use background=true for long jobs.", schema(map[string]any{"command": str(), "background": boolean(), "timeout_seconds": num()}, "command"), r.run)
+	if r.root != "" {
+		r.add("exec", "Run a shell command in the workspace. Use background=true for long jobs.", schema(map[string]any{"command": str(), "background": boolean(), "timeout_seconds": num()}, "command"), r.run)
+	}
 	r.add("write", writeDescription, schema(map[string]any{"path": str(), "content": str(), "append": boolean()}, "path", "content"), r.write)
 	r.add("replace", replaceDescription, schema(map[string]any{"old_string": str(), "new_string": str(), "paths": map[string]any{"type": "array", "items": str()}, "replace_all": boolean()}, "old_string", "new_string", "paths"), r.replace)
-	if astGrepAvailable() {
+	if r.root != "" && astGrepAvailable() {
 		r.add("ast_edit", astEditDescription, schema(map[string]any{"ops": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"pattern": str(), "rewrite": str()}, "required": []string{"pattern", "rewrite"}, "additionalProperties": false}}, "paths": map[string]any{"type": "array", "items": str()}, "lang": str()}, "ops", "paths"), r.astEdit)
 	}
-	r.add("job", "Wait for, cancel, or read logs from an exec command, or wait for (or check on) a worker job started by spawn. Accepts this session's cmd-… IDs, including the basename without .log from foreground exec log paths.", schema(map[string]any{"id": str(), "action": map[string]any{"type": "string", "enum": []string{"wait", "cancel", "logs"}}}, "id", "action"), r.job)
-	return r
+	if r.root != "" {
+		r.add("job", "Wait for, cancel, or read logs from an exec command, or wait for (or check on) a worker job started by spawn. Accepts this session's cmd-… IDs, including the basename without .log from foreground exec log paths.", schema(map[string]any{"id": str(), "action": map[string]any{"type": "string", "enum": []string{"wait", "cancel", "logs"}}}, "id", "action"), r.job)
+	}
 }
 
 func NewReadOnly(root string) *Registry {
@@ -220,6 +244,10 @@ func NewReadOnlyWithState(root string, state *SessionState) *Registry {
 }
 
 func NewReadOnlyWithStateDialect(root string, state *SessionState, dialect string) *Registry {
+	return NewForWorkspace(workspace.Disk(root), state, dialect, true)
+}
+
+func newRegistry(ws workspace.Workspace, state *SessionState, dialect string) *Registry {
 	if state == nil {
 		state = &SessionState{}
 	}
@@ -234,10 +262,16 @@ func NewReadOnlyWithStateDialect(root string, state *SessionState, dialect strin
 		state.jobs = map[string]*commandJob{}
 	}
 	state.mu.Unlock()
-	r := &Registry{root: root, handlers: map[string]Handler{}, schemes: map[string]Handler{}, state: state, dialect: anchorDialect(dialect)}
+	root := ws.Dir
+	if root != "" {
+		root = filepath.Clean(root)
+	}
+	return &Registry{root: root, fsys: ws.FS, handlers: map[string]Handler{}, schemes: map[string]Handler{}, state: state, dialect: anchorDialect(dialect)}
+}
+
+func (r *Registry) addReadTools() {
 	r.add("read", readDescription(r.dialect), schema(map[string]any{"path": str(), "start": num(), "limit": num(), "around_line": num()}, "path"), r.read)
 	r.add("search", searchDescription, searchSchema(false), r.search)
-	return r
 }
 func (r *Registry) add(n, d string, s map[string]any, h Handler) {
 	r.defs = append(r.defs, provider.Tool{Name: n, Description: d, InputSchema: s})
@@ -347,6 +381,56 @@ func (r *Registry) safe(path string) (string, error) {
 	}
 	return path, nil
 }
+
+// target is a resolved path: the filesystem holding it, its name there, and
+// its key. The key identifies the file in locks, edit snapshots and results:
+// the absolute path for a file on disk, the workspace-relative path in a
+// virtual workspace.
+type target struct {
+	fsys workspace.FS
+	name string
+	key  string
+	// base is the directory on disk fsys is rooted at, or "" when virtual.
+	base string
+}
+
+// child returns the target for name inside the same filesystem.
+func (t target) child(name string) target {
+	key := name
+	if t.base != "" {
+		key = filepath.Join(t.base, filepath.FromSlash(name))
+	}
+	return target{fsys: t.fsys, name: name, key: key, base: t.base}
+}
+
+// resolve maps a path a model supplied to the file it names, enforcing the
+// workspace boundary (and allowing the scratch directory on disk).
+func (r *Registry) resolve(p string) (target, error) {
+	if r.root == "" {
+		if strings.Contains(p, "\x00") {
+			return target{}, errors.New("invalid path")
+		}
+		name := path.Clean(strings.TrimPrefix(filepath.ToSlash(p), "/"))
+		if name == "" {
+			name = "."
+		}
+		if !fs.ValidPath(name) {
+			return target{}, errors.New("path escapes workspace; paths outside the workspace cannot be read or edited")
+		}
+		return target{fsys: r.fsys, name: name, key: name}, nil
+	}
+	abs, err := r.safe(p)
+	if err != nil {
+		return target{}, err
+	}
+	base, fsys := r.root, r.fsys
+	if rel, err := filepath.Rel(r.root, abs); err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
+		base, fsys = r.scratch, workspace.OS(r.scratch)
+	}
+	rel, _ := filepath.Rel(base, abs)
+	return target{fsys: fsys, name: filepath.ToSlash(rel), key: abs, base: base}, nil
+}
+
 func (r *Registry) read(ctx context.Context, a map[string]any) (any, error) {
 	rawPath := asString(a["path"])
 	if parts := strings.SplitN(rawPath, "://", 2); len(parts) == 2 {
@@ -355,16 +439,16 @@ func (r *Registry) read(ctx context.Context, a map[string]any) (any, error) {
 		}
 		return nil, fmt.Errorf("unknown internal scheme %q", parts[0])
 	}
-	p, err := r.safe(rawPath)
+	t, err := r.resolve(rawPath)
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(p)
+	info, err := t.fsys.Stat(ctx, t.name)
 	if err != nil {
 		return nil, err
 	}
 	if info.IsDir() {
-		ents, err := os.ReadDir(p)
+		ents, err := t.fsys.ReadDir(ctx, t.name)
 		if err != nil {
 			return nil, err
 		}
@@ -374,17 +458,19 @@ func (r *Registry) read(ctx context.Context, a map[string]any) (any, error) {
 		}
 		return out, nil
 	}
+	p := t.key
 	lock := fileLock(p)
 	lock.Lock()
 	defer lock.Unlock()
-	lines, err := hashline.ReadWithMode(p, r.dialect.mode())
+	data, err := t.fsys.ReadFile(ctx, t.name)
 	if err != nil {
 		return nil, err
 	}
-	currentVersion, err := fileVersion(p)
+	lines, err := hashline.Parse(data, r.dialect.mode())
 	if err != nil {
 		return nil, err
 	}
+	currentVersion := contentVersion(data)
 	r.state.mu.Lock()
 	snapshot := r.state.snapshots[p]
 	snapshot.version = currentVersion
@@ -473,17 +559,17 @@ func globMatch(pattern, name string) bool {
 	b.WriteString("$")
 	return regexp.MustCompile(b.String()).MatchString(name)
 }
-func (r *Registry) edit(_ context.Context, a map[string]any) (any, error) {
+func (r *Registry) edit(ctx context.Context, a map[string]any) (any, error) {
 	b, _ := json.Marshal(a)
 	var p hashline.Patch
 	if err := json.Unmarshal(b, &p); err != nil {
 		return nil, err
 	}
-	safe, err := r.safe(p.Path)
+	t, err := r.resolve(p.Path)
 	if err != nil {
 		return nil, err
 	}
-	p.Path = safe
+	p.Path = t.key
 	signature := string(b)
 	lock := fileLock(p.Path)
 	lock.Lock()
@@ -493,18 +579,22 @@ func (r *Registry) edit(_ context.Context, a map[string]any) (any, error) {
 	if r.state.noop.signature != signature {
 		r.state.noop = noopState{}
 	}
-	current, readErr := hashline.ReadWithMode(p.Path, r.dialect.mode())
-	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+	currentData, readErr := t.fsys.ReadFile(ctx, t.name)
+	if readErr != nil && !errors.Is(readErr, fs.ErrNotExist) {
 		return nil, readErr
+	}
+	newFile := readErr != nil
+	var current []hashline.Line
+	if !newFile {
+		if current, err = hashline.Parse(currentData, r.dialect.mode()); err != nil {
+			return nil, err
+		}
 	}
 	var pending any
 	var pendingErr error
 	var pendingNote string
-	if readErr == nil {
-		currentVersion, err := fileVersion(p.Path)
-		if err != nil {
-			return nil, err
-		}
+	if !newFile {
+		currentVersion := contentVersion(currentData)
 		snapshot, ok := r.state.snapshots[p.Path]
 		if !ok {
 			pendingNote = "file was not read by this registry; every anchor resolved uniquely in the current file"
@@ -541,7 +631,16 @@ func (r *Registry) edit(_ context.Context, a map[string]any) (any, error) {
 	if translated, err = r.translateStaleAnchors(&p, current); err != nil {
 		return nil, err
 	}
-	result, err := hashline.ApplyWithMode(p, r.dialect.mode())
+	content, result, err := hashline.ApplyLines(current, p, r.dialect.mode())
+	if err == nil {
+		mode := fs.FileMode(0o644)
+		if !newFile {
+			if info, statErr := t.fsys.Stat(ctx, t.name); statErr == nil {
+				mode = info.Mode()
+			}
+		}
+		err = t.fsys.WriteFile(ctx, t.name, content, mode)
+	}
 	if err != nil && pendingErr != nil {
 		return pending, pendingErr
 	}
@@ -569,7 +668,7 @@ func (r *Registry) edit(_ context.Context, a map[string]any) (any, error) {
 			key := p.Path + "|" + stale.Anchor
 			r.state.anchorFailures[key]++
 			if r.state.anchorFailures[key] > 1 {
-				lines, _ := hashline.ReadWithMode(p.Path, r.dialect.mode())
+				lines := current
 				occurrences := []int{}
 				for _, line := range lines {
 					if r.anchorMatches(line.Hash, stale.Anchor) {
@@ -592,10 +691,7 @@ func (r *Registry) edit(_ context.Context, a map[string]any) (any, error) {
 		return nil, err
 	}
 	r.state.anchorFailures = map[string]int{}
-	currentVersion, err := fileVersion(p.Path)
-	if err != nil {
-		return nil, err
-	}
+	currentVersion := contentVersion(content)
 	snapshot := r.state.snapshots[p.Path]
 	snapshot.version = currentVersion
 	snapshot.content = lineText(result.Lines)
@@ -874,7 +970,8 @@ func (r *Registry) markExecChanged() {
 		if snapshot.version == "" {
 			continue
 		}
-		if v, err := fileVersion(path); err == nil && v != snapshot.version {
+		// exec only runs in a workspace on disk, where keys are absolute paths.
+		if b, err := os.ReadFile(path); err == nil && contentVersion(b) != snapshot.version {
 			snapshot.execChanged = true
 			r.state.snapshots[path] = snapshot
 		}

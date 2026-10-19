@@ -54,13 +54,11 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		e.toolStates[sid] = state
 	}
 	e.mu.Unlock()
-	var r *builtin.Registry
-	if req.Workspace.Mode == "read" {
-		r = builtin.NewReadOnlyWithStateDialect(root, state, string(dialect))
-	} else {
-		r = builtin.NewWithStateDialect(root, state, string(dialect))
+	ws := e.sessionWorkspace(context.Background(), sid, req.Workspace)
+	r := builtin.NewForWorkspace(ws, state, string(dialect), req.Workspace.Mode == "read")
+	if ws.Dir != "" {
+		r.SetScratch(builtin.ScratchDir(e.scratchOwner(context.Background(), sid)))
 	}
-	r.SetScratch(builtin.ScratchDir(e.scratchOwner(context.Background(), sid)))
 	if parentJob == "" {
 		memoryActions := []string{"propose", "confirm", "inspect", "correct", "forget"}
 		memoryDesc := "Control workspace memory. Propose evidence-backed candidates; inspect, correct, or forget records. Set contradicted=true to correct or forget a record this session showed to be wrong; otherwise correct and forget need user_confirmed."
@@ -252,7 +250,7 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		}
 		return runtimeWeb.Fetch(ctx, fmt.Sprint(a["url"]), start)
 	})
-	if e.lsp != nil && e.lsp.Configured() {
+	if ws.Dir != "" && e.lsp != nil && e.lsp.Configured() {
 		r.Add("lsp", "Query configured language servers for semantic navigation and diagnostics. line is 1-based and character is 0-based. This tool is read-only; use hashline edit for changes.", obj(map[string]any{"operation": map[string]any{"type": "string", "enum": []string{"definition", "references", "hover", "document_symbols", "workspace_symbols", "diagnostics"}}, "path": str(), "line": map[string]any{"type": "integer"}, "character": map[string]any{"type": "integer"}, "query": str(), "server": str()}, "operation"), func(ctx context.Context, a map[string]any) (any, error) {
 			line := 0
 			if n, ok := a["line"].(float64); ok && n > 0 {
@@ -312,9 +310,15 @@ func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq ag
 	schema, _ := a["result_schema"].(map[string]any)
 	review, _ := a["review"].(bool)
 	id := uuid.NewString()
-	jobDir := filepath.Join(parentReq.Workspace.Path, ".orrery", "jobs", id)
-	if err := os.MkdirAll(jobDir, 0700); err != nil {
-		return nil, err
+	// On disk, a job's spec and result are also written under .orrery/jobs
+	// for people inspecting the workspace; the store holds the job either way.
+	ws := e.sessionWorkspace(ctx, sid, parentReq.Workspace)
+	jobDir := ""
+	if ws.Dir != "" {
+		jobDir = filepath.Join(ws.Dir, ".orrery", "jobs", id)
+		if err := os.MkdirAll(jobDir, 0700); err != nil {
+			return nil, err
+		}
 	}
 	parentSession, _ := e.store.Session(ctx, sid)
 	reserved, _ := e.store.ReservedJobUSD(ctx, sid)
@@ -352,7 +356,7 @@ func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq ag
 	}
 	isoBranch, isoBase, isolatedPath := "", "", ""
 	if workspaceMode == "isolated" {
-		if !isGitWorkspace(ctx, parentReq.Workspace.Path) {
+		if ws.Dir == "" || !isGitWorkspace(ctx, parentReq.Workspace.Path) {
 			workspaceMode = "shared-write"
 		} else {
 			wtPath := filepath.Join(parentReq.Workspace.Path, ".orrery", "worktrees", id)
@@ -419,7 +423,9 @@ func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq ag
 	if err := e.store.CreateJob(ctx, j); err != nil {
 		return nil, err
 	}
-	_ = os.WriteFile(filepath.Join(jobDir, "spec.json"), []byte(store.JSON(child)), 0600)
+	if jobDir != "" {
+		_ = os.WriteFile(filepath.Join(jobDir, "spec.json"), []byte(store.JSON(child)), 0600)
+	}
 	e.emit(ctx, sid, "job.started", map[string]any{"id": id, "parent_session_id": sid, "parent_job_id": parent, "spec": spec, "model": jobDecision.Model.ID, "workspace_mode": workspaceMode, "review": review, "explanation": jobWhy}, emit)
 	runJob := func(runCtx context.Context) agentproto.TaskResult {
 		childSID := uuid.NewString()
@@ -434,8 +440,10 @@ func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq ag
 		_ = e.store.FinishJob(context.Background(), id, string(result.Status), result.Result, result.Outcome)
 		_ = e.store.AddSpend(context.Background(), sid, result.Outcome.CostUSD)
 		_ = e.store.UpdateLatestJobRoutingOutcome(context.Background(), sid, result)
-		_ = os.WriteFile(filepath.Join(jobDir, "result.json"), []byte(store.JSON(result)), 0600)
-		_ = os.WriteFile(filepath.Join(jobDir, "status"), []byte(string(result.Status)+"\n"), 0600)
+		if jobDir != "" {
+			_ = os.WriteFile(filepath.Join(jobDir, "result.json"), []byte(store.JSON(result)), 0600)
+			_ = os.WriteFile(filepath.Join(jobDir, "status"), []byte(string(result.Status)+"\n"), 0600)
+		}
 		if injectHandoff {
 			e.deliverHandoff(context.Background(), sid, id, provider.Message{Role: "user", Harness: true, Content: "Worker job " + id + " completed. Treat this durable result as a worker handoff and advance the todo without repeating completed work: " + store.JSON(result)})
 		}

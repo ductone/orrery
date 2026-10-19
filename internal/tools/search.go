@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/ductone/orrery/internal/classify"
 	"github.com/ductone/orrery/internal/jev"
+	"github.com/ductone/orrery/workspace"
 )
 
 const (
@@ -108,7 +108,10 @@ type searchScan struct {
 // for the ranker.
 func (r *Registry) scan(ctx context.Context, re *regexp.Regexp, glob string, keep int, ranking bool) (searchScan, error) {
 	var out searchScan
-	err := filepath.WalkDir(r.root, func(p string, d fs.DirEntry, e error) error {
+	if r.fsys == nil {
+		return out, nil
+	}
+	err := fs.WalkDir(workspace.IOFS(ctx, r.fsys), ".", func(p string, d fs.DirEntry, e error) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -116,19 +119,19 @@ func (r *Registry) scan(ctx context.Context, re *regexp.Regexp, glob string, kee
 			return nil
 		}
 		if d.IsDir() {
-			if ignoredSearchDir(d.Name()) {
-				return filepath.SkipDir
+			if p != "." && ignoredSearchDir(d.Name()) {
+				return fs.SkipDir
 			}
 			return nil
 		}
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		rel, _ := filepath.Rel(r.root, p)
-		if glob != "" && !globMatch(glob, filepath.ToSlash(rel)) {
+		rel := p
+		if glob != "" && !globMatch(glob, rel) {
 			return nil
 		}
-		b, e := os.ReadFile(p)
+		b, e := r.fsys.ReadFile(ctx, p)
 		if e != nil || len(b) > 4<<20 {
 			return nil
 		}

@@ -178,6 +178,13 @@ func (e *Engine) runChanges(ctx context.Context, sid, root string) ([]string, ma
 // reviewDiff returns the diff an independent review should cover: this run's
 // changes when they are knowable, otherwise the whole workspace as before.
 func (e *Engine) reviewDiff(ctx context.Context, sid, root string) ([]byte, []string, error) {
+	e.mu.Lock()
+	ws, running := e.sessionWorkspaces[sid]
+	e.mu.Unlock()
+	if running && ws.Dir == "" {
+		// A virtual workspace has no diff to review.
+		return nil, nil, nil
+	}
 	paths, current, ok := e.runChanges(ctx, sid, root)
 	if !ok {
 		diff, err := collectWorkspaceDiff(ctx, root)

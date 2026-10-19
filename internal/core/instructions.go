@@ -1,10 +1,12 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/ductone/orrery/internal/provider"
 	builtin "github.com/ductone/orrery/internal/tools"
+	"github.com/ductone/orrery/workspace"
 	"gopkg.in/yaml.v3"
 )
 
@@ -34,7 +37,10 @@ type workspaceSkill struct {
 }
 
 type instructionDiscovery struct {
+	// root is the workspace directory; for a virtual workspace it is "/" and
+	// files are read from fsys instead of the disk.
 	root         string
+	fsys         workspace.FS
 	bootstrap    string
 	skills       []workspaceSkill
 	loadedPaths  map[string]bool
@@ -43,14 +49,24 @@ type instructionDiscovery struct {
 	mu           sync.Mutex
 }
 
-func (e *Engine) instructionDiscovery(sessionID, root, spec string) (*instructionDiscovery, error) {
+func (e *Engine) instructionDiscovery(sessionID string, ws workspace.Workspace, root, spec string) (*instructionDiscovery, error) {
 	e.mu.Lock()
 	if existing := e.discovery[sessionID]; existing != nil {
 		e.mu.Unlock()
 		return existing, nil
 	}
 	e.mu.Unlock()
-	discovery, err := newInstructionDiscovery(root, spec)
+	var discovery *instructionDiscovery
+	var err error
+	switch {
+	case ws.FS == nil:
+		// A workspace with no files has no instructions to discover.
+		discovery, err = newInstructionDiscovery("", spec)
+	case ws.Dir == "":
+		discovery, err = newVirtualInstructionDiscovery(ws.FS, spec)
+	default:
+		discovery, err = newInstructionDiscovery(ws.Dir, spec)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -72,12 +88,26 @@ func newInstructionDiscovery(root, spec string) (*instructionDiscovery, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &instructionDiscovery{root: filepath.Clean(abs), loadedPaths: map[string]bool{}, loadedSkills: map[string]bool{}}
+	return (&instructionDiscovery{root: filepath.Clean(abs), loadedPaths: map[string]bool{}, loadedSkills: map[string]bool{}}).load(spec)
+}
+
+// newVirtualInstructionDiscovery discovers instructions in a workspace that
+// exists only in fsys. Paths are handled as if the workspace were mounted at
+// "/".
+func newVirtualInstructionDiscovery(fsys workspace.FS, spec string) (*instructionDiscovery, error) {
+	return (&instructionDiscovery{root: "/", fsys: fsys, loadedPaths: map[string]bool{}, loadedSkills: map[string]bool{}}).load(spec)
+}
+
+func (d *instructionDiscovery) load(spec string) (*instructionDiscovery, error) {
 	rootDocs, err := d.rootInstructions()
 	if err != nil {
 		return nil, err
 	}
-	d.skills, err = discoverWorkspaceSkills(d.root)
+	if d.fsys != nil {
+		d.skills, err = discoverVirtualSkills(d.fsys)
+	} else {
+		d.skills, err = discoverWorkspaceSkills(d.root)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +239,7 @@ func (d *instructionDiscovery) forPath(raw string, forceFile bool) []workspaceIn
 	dir := clean
 	if forceFile {
 		dir = filepath.Dir(clean)
-	} else if info, statErr := os.Stat(clean); statErr == nil && !info.IsDir() {
+	} else if info, statErr := d.stat(clean); statErr == nil && !info.IsDir() {
 		dir = filepath.Dir(clean)
 	} else if statErr != nil && filepath.Ext(clean) != "" {
 		dir = filepath.Dir(clean)
@@ -237,7 +267,7 @@ func (d *instructionDiscovery) forPath(raw string, forceFile bool) []workspaceIn
 		if d.loadedPaths[relPath] {
 			continue
 		}
-		content, readErr := readWorkspaceInstruction(d.root, candidate)
+		content, readErr := d.read(candidate)
 		if readErr != nil {
 			if errors.Is(readErr, os.ErrNotExist) {
 				continue
@@ -276,7 +306,7 @@ func (d *instructionDiscovery) rootInstructions() ([]workspaceInstruction, error
 	paths := []string{filepath.ToSlash(filepath.Join(".github", "copilot-instructions.md")), "CLAUDE.md", "AGENTS.md"}
 	var out []workspaceInstruction
 	for _, rel := range paths {
-		content, err := readWorkspaceInstruction(d.root, filepath.Join(d.root, filepath.FromSlash(rel)))
+		content, err := d.read(filepath.Join(d.root, filepath.FromSlash(rel)))
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
@@ -312,12 +342,7 @@ func discoverWorkspaceSkills(root string) ([]workspaceSkill, error) {
 		out = append(out, workspaceSkill{Name: name, Description: description, Path: filepath.ToSlash(rel), Content: content})
 		return nil
 	})
-	sort.Slice(out, func(i, j int) bool {
-		if strings.EqualFold(out[i].Name, out[j].Name) {
-			return out[i].Path < out[j].Path
-		}
-		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
-	})
+	sortSkills(out)
 	return out, err
 }
 
@@ -359,6 +384,90 @@ func firstDescription(content string) string {
 func explicitlyRequestsSkill(spec, name string) bool {
 	spec, name = strings.ToLower(spec), strings.ToLower(strings.TrimSpace(name))
 	return name != "" && (strings.Contains(spec, "$"+name) || strings.Contains(spec, "skill:"+name) || strings.Contains(spec, "use the "+name+" skill") || strings.Contains(spec, "use "+name+" skill"))
+}
+
+// virtualName maps an absolute path under the pseudo-root "/" to its name in
+// the virtual workspace.
+func virtualName(path string) string {
+	name := strings.TrimPrefix(filepath.ToSlash(path), "/")
+	if name == "" {
+		return "."
+	}
+	return name
+}
+
+func (d *instructionDiscovery) stat(path string) (fs.FileInfo, error) {
+	if d.fsys != nil {
+		return d.fsys.Stat(context.Background(), virtualName(path))
+	}
+	return os.Stat(path)
+}
+
+// read returns an instruction file's content, enforcing the size and UTF-8
+// limits; on disk it also refuses files that resolve outside the workspace.
+func (d *instructionDiscovery) read(path string) (string, error) {
+	if d.fsys == nil {
+		return readWorkspaceInstruction(d.root, path)
+	}
+	return readVirtualInstruction(d.fsys, virtualName(path))
+}
+
+func readVirtualInstruction(fsys workspace.FS, name string) (string, error) {
+	ctx := context.Background()
+	info, err := fsys.Stat(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("instruction file %s is not a regular file", name)
+	}
+	if info.Size() > maxInstructionBytes {
+		return "", fmt.Errorf("instruction file %s exceeds %d bytes", name, maxInstructionBytes)
+	}
+	content, err := fsys.ReadFile(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	if !utf8.Valid(content) {
+		return "", fmt.Errorf("instruction file %s is not UTF-8", name)
+	}
+	return string(content), nil
+}
+
+func discoverVirtualSkills(fsys workspace.FS) ([]workspaceSkill, error) {
+	var out []workspaceSkill
+	err := fs.WalkDir(workspace.IOFS(context.Background(), fsys), ".", func(p string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if entry.IsDir() {
+			if p != "." && ignoredInstructionDir(entry.Name()) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if entry.Name() != "SKILL.md" || !entry.Type().IsRegular() || len(out) >= 64 {
+			return nil
+		}
+		content, err := readVirtualInstruction(fsys, p)
+		if err != nil {
+			return err
+		}
+		name, description := skillMetadata(content, path.Base(path.Dir(p)))
+		out = append(out, workspaceSkill{Name: name, Description: description, Path: p, Content: content})
+		return nil
+	})
+	sortSkills(out)
+	return out, err
+}
+
+func sortSkills(out []workspaceSkill) {
+	sort.Slice(out, func(i, j int) bool {
+		if strings.EqualFold(out[i].Name, out[j].Name) {
+			return out[i].Path < out[j].Path
+		}
+		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+	})
 }
 
 func readInstructionFile(path string) (string, error) {
