@@ -24,8 +24,8 @@ func TestVirtualWorkspaceTools(t *testing.T) {
 		names = append(names, d.Name)
 	}
 	got := strings.Join(names, ",")
-	if strings.Contains(got, "exec") || strings.Contains(got, "job") || strings.Contains(got, "ast_edit") || !strings.Contains(got, "edit") || !strings.Contains(got, "search") {
-		t.Fatalf("tools = %s; want file tools without exec, job or ast_edit", got)
+	if strings.Contains(got, "exec") || strings.Contains(got, "ast_edit") || !strings.Contains(got, "edit") || !strings.Contains(got, "search") || !strings.Contains(got, "job") {
+		t.Fatalf("tools = %s; want file tools and job, without exec or ast_edit", got)
 	}
 
 	if _, err := r.Call(ctx, "write", map[string]any{"path": "notes/plan.md", "content": "alpha\nbeta\ngamma"}); err != nil {

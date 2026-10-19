@@ -177,13 +177,37 @@ func (e *Engine) runChanges(ctx context.Context, sid, root string) ([]string, ma
 
 // reviewDiff returns the diff an independent review should cover: this run's
 // changes when they are knowable, otherwise the whole workspace as before.
+// reviewDiffContext is how many unchanged lines surround each change in a
+// review diff, matching the git diff reviews of disk workspaces use.
+const reviewDiffContext = 40
+
 func (e *Engine) reviewDiff(ctx context.Context, sid, root string) ([]byte, []string, error) {
 	e.mu.Lock()
 	ws, running := e.sessionWorkspaces[sid]
+	mark, marked := e.changeMarks[sid]
 	e.mu.Unlock()
 	if running && ws.Dir == "" {
-		// A virtual workspace has no diff to review.
-		return nil, nil, nil
+		// A virtual workspace has no git; its ChangeTracker, if any, reports
+		// what this run changed.
+		if !marked || ws.Changes == nil {
+			return nil, nil, nil
+		}
+		changes, err := ws.Changes.ChangedSince(ctx, mark)
+		if err != nil {
+			return nil, nil, err
+		}
+		var diff []byte
+		var paths []string
+		for _, c := range changes {
+			paths = append(paths, c.Path)
+			if len(diff) < maxReviewDiff {
+				diff = append(diff, unifiedDiff(c.Path, c.Before, c.After, reviewDiffContext)...)
+			}
+		}
+		if len(diff) > maxReviewDiff {
+			diff = diff[:maxReviewDiff]
+		}
+		return diff, paths, nil
 	}
 	paths, current, ok := e.runChanges(ctx, sid, root)
 	if !ok {

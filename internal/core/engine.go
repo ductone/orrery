@@ -64,6 +64,9 @@ type Engine struct {
 	// sessionWorkspaces holds the workspace of each running session.
 	workspaces        WorkspaceFunc
 	sessionWorkspaces map[string]workspace.Workspace
+	// changeMarks holds, for running sessions in a virtual workspace with a
+	// ChangeTracker, the mark taken when the run started.
+	changeMarks map[string]string
 	// running counts in-flight runs per session; pendingHandoffs holds
 	// worker handoffs for sessions mid-turn; deliveredJobs are workers whose
 	// result reached the parent through job wait.
@@ -855,21 +858,40 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 	outcome := agentproto.Outcome{}
 	stall := router.StallSignals{}
 	progress := newProgressTracker()
-	ws, err := e.resolveWorkspace(ctx, sid, req.Workspace)
-	if err != nil {
-		return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "workspace: " + err.Error()}, emit)
-	}
+	// An isolated worker's workspace is set by spawn before the run starts.
 	e.mu.Lock()
-	if e.sessionWorkspaces == nil {
-		e.sessionWorkspaces = map[string]workspace.Workspace{}
-	}
-	e.sessionWorkspaces[sid] = ws
+	ws, preset := e.sessionWorkspaces[sid]
 	e.mu.Unlock()
+	if !preset {
+		var err error
+		if ws, err = e.resolveWorkspace(ctx, sid, req.Workspace); err != nil {
+			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "workspace: " + err.Error()}, emit)
+		}
+		e.setSessionWorkspace(sid, ws)
+	}
 	defer func() {
 		e.mu.Lock()
 		delete(e.sessionWorkspaces, sid)
 		e.mu.Unlock()
 	}()
+	if ws.Dir == "" && ws.Changes != nil {
+		if mark, err := ws.Changes.Mark(ctx); err != nil {
+			slog.Warn("mark workspace", "session", sid, "error", err)
+		} else {
+			e.mu.Lock()
+			if e.changeMarks == nil {
+				e.changeMarks = map[string]string{}
+			}
+			e.changeMarks[sid] = mark
+			e.mu.Unlock()
+			defer func() {
+				e.mu.Lock()
+				delete(e.changeMarks, sid)
+				e.mu.Unlock()
+				_ = ws.Changes.Release(context.Background(), mark)
+			}()
+		}
+	}
 	discovery, err := e.instructionDiscovery(sid, ws, req.Workspace.Path, req.Spec)
 	if err != nil {
 		return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "workspace instruction discovery: " + err.Error()}, emit)
@@ -1605,6 +1627,16 @@ func (e *Engine) resolveWorkspace(ctx context.Context, sid string, w agentproto.
 		return workspace.Disk(w.Path), nil
 	}
 	return f(ctx, sid, w)
+}
+
+// setSessionWorkspace records the workspace a session runs in.
+func (e *Engine) setSessionWorkspace(sid string, ws workspace.Workspace) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.sessionWorkspaces == nil {
+		e.sessionWorkspaces = map[string]workspace.Workspace{}
+	}
+	e.sessionWorkspaces[sid] = ws
 }
 
 // sessionWorkspace returns the workspace a running session resolved, or

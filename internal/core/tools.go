@@ -23,6 +23,7 @@ import (
 	"github.com/ductone/orrery/internal/router"
 	"github.com/ductone/orrery/internal/store"
 	builtin "github.com/ductone/orrery/internal/tools"
+	"github.com/ductone/orrery/workspace"
 	"github.com/google/uuid"
 )
 
@@ -184,7 +185,7 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		})
 	}
 	if req.Workspace.Mode != "read" {
-		r.Add("spawn", "Create an in-process worker with isolated session state and a hard budget slice. Read workers run asynchronously. Shared-write workers run synchronously so the parent cannot mutate the checkout at the same time. Isolated workers run asynchronously in a git worktree (.orrery/worktrees) seeded from the parent's HEAD plus uncommitted changes; their commits are applied back to the parent checkout and the result reports branch, commits, files and any conflicting files. Non-git workspaces fall back to shared-write.", obj(map[string]any{"spec": str(), "result_schema": map[string]any{"type": "object"}, "budget_fraction": map[string]any{"type": "number"}, "review": map[string]any{"type": "boolean"}, "phase": map[string]any{"type": "string", "enum": []string{"explore", "plan", "implement", "diagnose", "review", "wrap-up"}}, "workspace_mode": map[string]any{"type": "string", "enum": []string{"read", "shared-write", "isolated"}}}, "spec"), func(ctx context.Context, a map[string]any) (any, error) {
+		r.Add("spawn", "Create an in-process worker with isolated session state and a hard budget slice. Read workers run asynchronously. Shared-write workers run synchronously so the parent cannot mutate the checkout at the same time. Isolated workers run asynchronously in their own copy of the workspace seeded with the parent's current files (on disk, a git worktree in .orrery/worktrees); their changes are applied back to the parent and the result reports the files changed and any conflicting files. Workspaces that cannot be copied fall back to shared-write.", obj(map[string]any{"spec": str(), "result_schema": map[string]any{"type": "object"}, "budget_fraction": map[string]any{"type": "number"}, "review": map[string]any{"type": "boolean"}, "phase": map[string]any{"type": "string", "enum": []string{"explore", "plan", "implement", "diagnose", "review", "wrap-up"}}, "workspace_mode": map[string]any{"type": "string", "enum": []string{"read", "shared-write", "isolated"}}}, "spec"), func(ctx context.Context, a map[string]any) (any, error) {
 			if req.Depth == 0 {
 				return nil, errors.New("spawn forbidden at depth 0")
 			}
@@ -355,6 +356,17 @@ func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq ag
 		childUSD = reviewChildBudget(childUSD, available, cfg.Budget.ReviewFloorUSD())
 	}
 	isoBranch, isoBase, isolatedPath := "", "", ""
+	// A virtual workspace isolates a worker through its Isolator.
+	var isoWorkspace workspace.Workspace
+	var isoFinish workspace.FinishFunc
+	if workspaceMode == "isolated" && ws.Dir == "" && ws.Isolator != nil {
+		child, finish, err := ws.Isolator.Isolate(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("isolate worker: %w", err)
+		}
+		isoWorkspace, isoFinish = child, finish
+		workspaceMode = "shared-write"
+	}
 	if workspaceMode == "isolated" {
 		if ws.Dir == "" || !isGitWorkspace(ctx, parentReq.Workspace.Path) {
 			workspaceMode = "shared-write"
@@ -434,6 +446,9 @@ func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq ag
 		}
 		jobCtx, cancel := context.WithTimeout(runCtx, child.Budget.MaxWallClock)
 		defer cancel()
+		if isoFinish != nil {
+			e.setSessionWorkspace(childSID, isoWorkspace)
+		}
 		return e.run(jobCtx, childSID, id, child, nil)
 	}
 	finishJob := func(result agentproto.TaskResult, injectHandoff bool) {
@@ -449,7 +464,7 @@ func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq ag
 		}
 		e.emit(context.Background(), sid, "job.terminal", map[string]any{"id": id, "parent_session_id": sid, "parent_job_id": parent, "result": result}, emit)
 	}
-	if workspaceMode == "shared-write" && isoBranch == "" {
+	if workspaceMode == "shared-write" && isoBranch == "" && isoFinish == nil {
 		result := runJob(ctx)
 		finishJob(result, false)
 		return map[string]any{"id": id, "status": result.Status, "result": result, "uri": "job://" + id + "/result"}, nil
@@ -458,6 +473,9 @@ func (e *Engine) spawnWith(ctx context.Context, sid, parent string, parentReq ag
 		result := runJob(context.Background())
 		if isoBranch != "" {
 			result = finalizeIsolatedJob(context.Background(), parentReq.Workspace.Path, child.Workspace.Path, isoBranch, isoBase, result)
+		}
+		if isoFinish != nil {
+			result = finalizeVirtualJob(context.Background(), isoFinish, result)
 		}
 		finishJob(result, true)
 	}()

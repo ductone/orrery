@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ductone/orrery/agentproto"
+	"github.com/ductone/orrery/workspace"
 )
 
 // createIsolatedWorktree creates a git worktree at worktreePath based on the
@@ -96,6 +97,31 @@ func removeIsolatedWorktree(ctx context.Context, parentWorkspace, worktreePath, 
 func gitOutput(ctx context.Context, dir string, args ...string) string {
 	out, _ := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).Output()
 	return strings.TrimSpace(string(out))
+}
+
+// finalizeVirtualJob merges an isolated worker's changes back into a virtual
+// workspace and reports the outcome in the same result fields as
+// finalizeIsolatedJob. On a conflict the parent is left untouched and the
+// worker's copy is kept.
+func finalizeVirtualJob(ctx context.Context, finish workspace.FinishFunc, result agentproto.TaskResult) agentproto.TaskResult {
+	if result.Result == nil {
+		result.Result = map[string]any{}
+	}
+	mr, err := finish(ctx, true)
+	if err != nil {
+		result.Result["merged"] = false
+		result.Result["merge_error"] = err.Error()
+		result.Result["note"] = "the worker's changes could not be merged into the workspace"
+		return result
+	}
+	result.Result["files"] = mr.Changed
+	result.Result["merged"] = mr.Merged
+	if !mr.Merged && len(mr.Changed) > 0 {
+		result.Result["conflicting_files"] = mr.Conflicting
+		result.Result["kept"] = mr.Kept
+		result.Result["note"] = "the workspace also changed these files while the worker ran, so none of the worker's changes were merged; its copy is kept at " + mr.Kept
+	}
+	return result
 }
 
 // finalizeIsolatedJob commits the worker's changes on its branch, applies them

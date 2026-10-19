@@ -45,6 +45,13 @@ type Workspace struct {
 	// Dir is the workspace's directory on disk, or "" for a virtual
 	// workspace. When set, FS must present the same files.
 	Dir string
+	// Isolator, when set on a virtual workspace, gives isolated workers
+	// their own copy of the files. Without it they share the workspace.
+	// Workspaces on disk isolate workers with git worktrees instead.
+	Isolator Isolator
+	// Changes, when set on a virtual workspace, reports what a run changed,
+	// so review can see it. Workspaces on disk use git instead.
+	Changes ChangeTracker
 }
 
 // Disk returns the workspace rooted at dir on the local disk.
@@ -52,9 +59,72 @@ func Disk(dir string) Workspace {
 	return Workspace{FS: OS(dir), Dir: dir}
 }
 
-// Virtual returns a workspace whose files live only in fsys.
+// Virtual returns a workspace whose files live only in fsys. If fsys also
+// implements Isolator or ChangeTracker, the workspace uses them.
 func Virtual(fsys FS) Workspace {
-	return Workspace{FS: fsys}
+	ws := Workspace{FS: fsys}
+	ws.Isolator, _ = fsys.(Isolator)
+	ws.Changes, _ = fsys.(ChangeTracker)
+	return ws
+}
+
+// Isolator gives a worker its own copy of a workspace.
+type Isolator interface {
+	// Isolate copies the workspace for the worker job jobID. The worker
+	// works in the returned workspace; finish ends the copy.
+	Isolate(ctx context.Context, jobID string) (child Workspace, finish FinishFunc, err error)
+}
+
+// FinishFunc ends an isolated copy. With merge set, it applies the worker's
+// changes to the parent workspace, all or nothing: if any path the worker
+// changed was also changed in the parent since the copy was made (the same
+// path, or one inside the other), nothing is merged and the copy is kept so
+// the work is not lost. Without merge, the copy is discarded.
+type FinishFunc func(ctx context.Context, merge bool) (MergeResult, error)
+
+// MergeResult reports how an isolated copy ended.
+type MergeResult struct {
+	// Changed lists the paths the worker added, modified or removed.
+	Changed []string
+	Merged  bool
+	// Conflicting lists the changed paths the parent also changed.
+	Conflicting []string
+	// Kept names where an unmerged copy remains, for a person to resolve.
+	Kept string
+}
+
+// ChangeTracker reports what changed in a workspace since a mark.
+type ChangeTracker interface {
+	// Mark records the workspace's current state and returns a handle to it.
+	Mark(ctx context.Context) (string, error)
+	// ChangedSince returns the files that differ from the marked state,
+	// sorted by path.
+	ChangedSince(ctx context.Context, mark string) ([]FileChange, error)
+	// Release discards a mark.
+	Release(ctx context.Context, mark string) error
+}
+
+// FileChange is one file that differs from a marked state. Before is nil
+// for an added file and After is nil for a removed one.
+type FileChange struct {
+	Path          string
+	Before, After []byte
+}
+
+// Conflicts returns the paths in changed that overlap a path in other: the
+// same path, or one inside the other. Isolator implementations use it to
+// decide whether a merge is safe.
+func Conflicts(changed, other []string) []string {
+	var out []string
+	for _, p := range changed {
+		for _, q := range other {
+			if p == q || strings.HasPrefix(q, p+"/") || strings.HasPrefix(p, q+"/") {
+				out = append(out, p)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // OS returns an FS for the directory tree rooted at dir. Names are resolved

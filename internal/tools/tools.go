@@ -230,9 +230,8 @@ func (r *Registry) addWriteTools() {
 	if r.root != "" && astGrepAvailable() {
 		r.add("ast_edit", astEditDescription, schema(map[string]any{"ops": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"pattern": str(), "rewrite": str()}, "required": []string{"pattern", "rewrite"}, "additionalProperties": false}}, "paths": map[string]any{"type": "array", "items": str()}, "lang": str()}, "ops", "paths"), r.astEdit)
 	}
-	if r.root != "" {
-		r.add("job", "Wait for, cancel, or read logs from an exec command, or wait for (or check on) a worker job started by spawn. Accepts this session's cmd-… IDs, including the basename without .log from foreground exec log paths.", schema(map[string]any{"id": str(), "action": map[string]any{"type": "string", "enum": []string{"wait", "cancel", "logs"}}}, "id", "action"), r.job)
-	}
+	// job also waits for worker jobs, which any workspace can have.
+	r.add("job", "Wait for, cancel, or read logs from an exec command, or wait for (or check on) a worker job started by spawn. Accepts this session's cmd-… IDs, including the basename without .log from foreground exec log paths.", schema(map[string]any{"id": str(), "action": map[string]any{"type": "string", "enum": []string{"wait", "cancel", "logs"}}}, "id", "action"), r.job)
 }
 
 func NewReadOnly(root string) *Registry {
