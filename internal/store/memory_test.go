@@ -214,7 +214,7 @@ func TestMemoryReviewRegressions(t *testing.T) {
 			updated = &listed[i]
 		}
 	}
-	if updated == nil || updated.Scope != "workspace" || updated.EvidenceRefs != "[]" {
+	if updated == nil || updated.Scope != "agent" || updated.EvidenceRefs != "[]" {
 		t.Fatalf("update defaults not applied: %+v", listed)
 	}
 	if err := s.UpdateMemory(ctx, MemoryRecord{ID: live.ID, WorkspaceID: w.ID, Kind: "fact", Text: "live3", Provenance: "observed", Confidence: .5, Status: "superseded", SupersededBy: foreign.ID}); err == nil {
@@ -302,5 +302,43 @@ func TestApplyMemoryMutationEventPreconditionsAndPersistedRows(t *testing.T) {
 	}
 	if forgotten.Status != "deleted" {
 		t.Fatalf("forget returned status %q, want deleted", forgotten.Status)
+	}
+}
+
+func TestMemoryScopeBoundaryAndColumnMigration(t *testing.T) {
+	ctx := context.Background()
+	path := t.TempDir() + "/db.sqlite"
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := s.EnsureWorkspace(ctx, "repo:a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := s.CommitMemory(ctx, MemoryRecord{WorkspaceID: w.ID, Scope: "agent", Kind: "fact", Text: "t", Provenance: "user", Confidence: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := s.db.QueryRow(`SELECT scope FROM memory_records WHERE memory_id=?`, rec.ID).Scan(&stored); err != nil || stored != "workspace" {
+		t.Fatalf("stored scope = %q, %v (want legacy name at the SQLite boundary)", stored, err)
+	}
+	// A database created before provenance and shadow columns existed gains
+	// them on open and keeps its rows.
+	for _, col := range []string{"session_id", "origin", "shadows"} {
+		if _, err := s.db.Exec(`ALTER TABLE memory_records DROP COLUMN ` + col); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	listed, err := s.ListMemory(ctx, MemoryFilter{WorkspaceID: w.ID, Scopes: []string{"agent"}})
+	if err != nil || len(listed) != 1 || listed[0].Scope != "agent" || listed[0].SessionID != "" || listed[0].Shadows != "" {
+		t.Fatalf("migrated list = %+v, %v", listed, err)
 	}
 }

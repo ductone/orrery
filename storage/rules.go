@@ -15,11 +15,28 @@ import (
 // the same way. They operate on plain values so a backend can call them
 // inside its own transaction.
 
+// NormalizeMemoryScope maps the earlier scope names to the canonical ones
+// (workspace to agent, project to group, user to global) and leaves every
+// other value, including canonical names, unchanged.
+func NormalizeMemoryScope(scope string) string {
+	switch scope {
+	case "workspace":
+		return ScopeAgent
+	case "project":
+		return ScopeGroup
+	case "user":
+		return ScopeGlobal
+	}
+	return scope
+}
+
 // ApplyMemoryDefaults fills in a memory record's optional fields: Scope
-// "workspace", Status "active", EvidenceRefs "[]".
+// "agent" (old scope names are normalized), Status "active", EvidenceRefs
+// "[]".
 func ApplyMemoryDefaults(x *MemoryRecord) {
+	x.Scope = NormalizeMemoryScope(x.Scope)
 	if x.Scope == "" {
-		x.Scope = "workspace"
+		x.Scope = ScopeAgent
 	}
 	if x.Status == "" {
 		x.Status = "active"
@@ -36,8 +53,16 @@ func ValidateMemoryRecord(x MemoryRecord) error {
 	if x.WorkspaceID == "" {
 		return errors.New("workspace id is required")
 	}
-	if x.Scope != "workspace" && x.Scope != "project" {
-		return errors.New("memory scope must be workspace or project")
+	switch x.Scope {
+	case ScopeAgent, ScopeGroup, ScopeGlobal:
+	default:
+		return errors.New("memory scope must be agent, group or global")
+	}
+	if x.Shadows != "" && x.Scope != ScopeAgent {
+		return errors.New("only agent-scope memory may shadow another record")
+	}
+	if x.Shadows != "" && x.Shadows == x.ID {
+		return errors.New("a memory record cannot shadow itself")
 	}
 	switch x.Status {
 	case "pending", "active", "superseded", "expired":
@@ -76,6 +101,18 @@ func ValidateMemoryRecord(x MemoryRecord) error {
 		return errors.New("only superseded memory may name a replacement")
 	}
 	return nil
+}
+
+// MemoryFilterScopes returns the canonical scopes f selects, merging Scope and
+// Scopes. Empty means all scopes.
+func MemoryFilterScopes(f MemoryFilter) []string {
+	var out []string
+	for _, s := range append([]string{f.Scope}, f.Scopes...) {
+		if s = NormalizeMemoryScope(s); s != "" && !slices.Contains(out, s) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // MemoryExpired reports whether ListMemory should treat x as expired at now:

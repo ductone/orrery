@@ -12,6 +12,7 @@ import (
 	"github.com/ductone/orrery/config"
 	"github.com/ductone/orrery/internal/provider"
 	"github.com/ductone/orrery/internal/store"
+	"github.com/ductone/orrery/storage"
 )
 
 func TestMemoryExtractionQuestionSkipsProvider(t *testing.T) {
@@ -108,6 +109,9 @@ func TestMemoryCompletionAndCatchUp(t *testing.T) {
 	records, err := e.store.ListMemory(ctx, store.MemoryFilter{WorkspaceID: w.ID})
 	if err != nil || len(records) != 1 || records[0].Status != "pending" || records[0].Provenance != "extracted" || !strings.Contains(records[0].EvidenceRefs, terminal.EventID) {
 		t.Fatalf("records=%+v err=%v", records, err)
+	}
+	if records[0].SessionID != "s1" || records[0].Origin != workspaceIdentityKey(e.cfg.WorkspaceRoot) || records[0].Scope != storage.ScopeAgent {
+		t.Fatalf("extraction provenance = %+v", records[0])
 	}
 	e.catchUpMemory(ctx)
 	e.waitBackground()

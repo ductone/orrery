@@ -86,6 +86,15 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
+	for name, definition := range map[string]string{
+		"session_id": "TEXT NOT NULL DEFAULT ''",
+		"origin":     "TEXT NOT NULL DEFAULT ''",
+		"shadows":    "TEXT NOT NULL DEFAULT ''",
+	} {
+		if err := s.ensureColumn("memory_records", name, definition); err != nil {
+			return err
+		}
+	}
 	_, err = s.db.Exec(modelStatsSchema + modelOutcomesSchema)
 	if err != nil {
 		return err

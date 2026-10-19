@@ -139,6 +139,16 @@ type Workspace struct {
 	CreatedAt, UpdatedAt time.Time
 }
 
+// Memory scopes. Only ScopeAgent is written today; ScopeGroup and ScopeGlobal
+// are reserved for cross-agent promotion. The names "workspace", "project" and
+// "user" are the earlier spellings of agent, group and global and are accepted
+// on input (see NormalizeMemoryScope).
+const (
+	ScopeAgent  = "agent"
+	ScopeGroup  = "group"
+	ScopeGlobal = "global"
+)
+
 type MemoryRecord struct {
 	ID, WorkspaceID, Scope, Kind, Text, Provenance string
 	Confidence                                     float64
@@ -147,11 +157,24 @@ type MemoryRecord struct {
 	CreatedAt, UpdatedAt                           time.Time
 	ExpiresAt                                      *time.Time
 	SupersededBy                                   string
+	// SessionID is the session that created the record and Origin the
+	// workspace identity key (agent identity) of its writer. Both are empty
+	// for records written before provenance was tracked.
+	SessionID, Origin string
+	// Shadows is the ID of a broader-scope (group or global) record this
+	// agent-scope record overrides for its own agent. Only agent-scope
+	// records may set it.
+	Shadows string
 }
 
 type MemoryFilter struct {
-	WorkspaceID    string
-	Scope          string
+	WorkspaceID string
+	// Scope restricts to one scope; kept for compatibility, equivalent to
+	// Scopes with a single entry. Old scope names are accepted.
+	Scope string
+	// Scopes restricts to any of the named scopes; empty (with Scope empty)
+	// means all scopes.
+	Scopes         []string
 	Status         string
 	IncludeExpired bool
 	// IncludeDeleted also returns forget tombstones, so extraction can avoid

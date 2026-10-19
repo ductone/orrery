@@ -17,6 +17,7 @@ import (
 	"github.com/ductone/orrery/internal/provider"
 	"github.com/ductone/orrery/internal/router"
 	"github.com/ductone/orrery/internal/store"
+	"github.com/ductone/orrery/storage"
 )
 
 const memoryExtractionPrompt = `Extract zero to a few durable workspace memory proposals. Return JSON {"memory_candidates":[{"kind":"fact|command|decision|preference|lesson","text":"...","evidence_refs":["session/event or repository path"]}]}. Only propose evidence-backed facts true of the repository or the person beyond the current task, never session progress, speculative claims, secrets or copied tool output. Use supplied evidence pointers, not copied evidence content. Existing records and user corrections take precedence. Text must fit max_record_bytes. A question is not an instruction or a preference.`
@@ -177,6 +178,11 @@ func (e *Engine) persistMemoryCandidates(ctx context.Context, sid, path string, 
 			if !memoryDuplicate(records[i].Text, candidate.Text) {
 				continue
 			}
+			if records[i].Scope != storage.ScopeAgent {
+				// Already known from a broader scope; do not duplicate it.
+				blocked = true
+				break
+			}
 			if records[i].Status == "deleted" || records[i].Status == "superseded" || records[i].Status == "expired" {
 				blocked = true
 				break
@@ -199,7 +205,7 @@ func (e *Engine) persistMemoryCandidates(ctx context.Context, sid, path string, 
 			candidate.EvidenceRefs = slices.Compact(candidate.EvidenceRefs)
 			operation, eventType = "update", "memory.updated"
 		} else {
-			rec = store.MemoryRecord{WorkspaceID: w.ID, Scope: "workspace", Kind: candidate.Kind, Text: candidate.Text, Provenance: "extracted", Confidence: confidence, Status: "pending"}
+			rec = store.MemoryRecord{WorkspaceID: w.ID, Scope: storage.ScopeAgent, Kind: candidate.Kind, Text: candidate.Text, Provenance: "extracted", Confidence: confidence, Status: "pending", SessionID: sid, Origin: w.IdentityKey}
 			if triaged && score >= memoryActivateScore {
 				rec.Status = "active"
 				if old := e.conflictingMemory(ctx, jcfg, candidate, records); old != nil {

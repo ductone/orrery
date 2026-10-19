@@ -39,6 +39,7 @@ func Run(t *testing.T, newStore func(t *testing.T) storage.Store) {
 		{"AcceptMessage", testAcceptMessage},
 		{"Jobs", testJobs},
 		{"Memory", testMemory},
+		{"MemoryScopes", testMemoryScopes},
 		{"MemoryWatermarkAndSightings", testMemoryWatermarkAndSightings},
 		{"Routing", testRouting},
 		{"RouteStats", testRouteStats},
@@ -508,6 +509,81 @@ func testMemory(t *testing.T, s storage.Store) {
 	events, _ := s.EventsAfter(ctx, "s", 0)
 	if rec.Text != "via event" || len(events) != 1 || events[0].Type != "memory.committed" {
 		t.Fatalf("ApplyMemoryMutationEvent: record %+v, %d events", rec, len(events))
+	}
+}
+
+func testMemoryScopes(t *testing.T, s storage.Store) {
+	ctx := context.Background()
+	w, err := s.EnsureWorkspace(ctx, "repo-scopes")
+	must(t, err)
+	newSession(t, s, "sc")
+	commit := func(scope, text, shadows string) storage.MemoryRecord {
+		t.Helper()
+		rec, err := s.CommitMemory(ctx, storage.MemoryRecord{WorkspaceID: w.ID, Scope: scope, Kind: "fact", Text: text, Provenance: "observed", Confidence: 1, SessionID: "sc", Origin: "agent:a", Shadows: shadows})
+		must(t, err)
+		return rec
+	}
+	def := commit("", "default", "")
+	if def.Scope != storage.ScopeAgent {
+		t.Fatalf("default scope = %q, want agent", def.Scope)
+	}
+	old := commit("workspace", "old name", "")
+	if old.Scope != storage.ScopeAgent {
+		t.Fatalf("workspace not normalized: %q", old.Scope)
+	}
+	group := commit("project", "group fact", "")
+	global := commit(storage.ScopeGlobal, "global fact", "")
+	if group.Scope != storage.ScopeGroup || global.Scope != storage.ScopeGlobal {
+		t.Fatalf("scopes = %q, %q", group.Scope, global.Scope)
+	}
+
+	count := func(f storage.MemoryFilter) int {
+		t.Helper()
+		f.WorkspaceID = w.ID
+		list, err := s.ListMemory(ctx, f)
+		must(t, err)
+		return len(list)
+	}
+	if n := count(storage.MemoryFilter{}); n != 4 {
+		t.Fatalf("all scopes = %d, want 4", n)
+	}
+	if n := count(storage.MemoryFilter{Scopes: []string{storage.ScopeAgent}}); n != 2 {
+		t.Fatalf("agent scope = %d, want 2", n)
+	}
+	if n := count(storage.MemoryFilter{Scopes: []string{storage.ScopeGroup, storage.ScopeGlobal}}); n != 2 {
+		t.Fatalf("group+global = %d, want 2", n)
+	}
+	if n := count(storage.MemoryFilter{Scope: "project"}); n != 1 {
+		t.Fatalf("legacy Scope=project = %d, want 1", n)
+	}
+	if n := count(storage.MemoryFilter{Scopes: []string{"user", "workspace"}}); n != 3 {
+		t.Fatalf("legacy names in Scopes = %d, want 3", n)
+	}
+
+	shadow := commit(storage.ScopeAgent, "local override", group.ID)
+	if shadow.Shadows != group.ID || shadow.SessionID != "sc" || shadow.Origin != "agent:a" {
+		t.Fatalf("provenance/shadows not round-tripped: %+v", shadow)
+	}
+	list, err := s.ListMemory(ctx, storage.MemoryFilter{WorkspaceID: w.ID, Scopes: []string{storage.ScopeAgent}})
+	must(t, err)
+	found := false
+	for _, r := range list {
+		if r.ID == shadow.ID {
+			found = r.Shadows == group.ID && r.SessionID == "sc" && r.Origin == "agent:a"
+		}
+	}
+	if !found {
+		t.Fatalf("listed record lost provenance/shadows: %+v", list)
+	}
+
+	if _, err := s.CommitMemory(ctx, storage.MemoryRecord{WorkspaceID: w.ID, Scope: storage.ScopeGroup, Kind: "fact", Text: "bad", Provenance: "observed", Confidence: 1, Shadows: global.ID}); err == nil {
+		t.Fatal("shadows accepted on a non-agent record")
+	}
+	if _, err := s.CommitMemory(ctx, storage.MemoryRecord{WorkspaceID: w.ID, Scope: storage.ScopeAgent, Kind: "fact", Text: "bad", Provenance: "observed", Confidence: 1, Shadows: "missing"}); err == nil {
+		t.Fatal("shadows of a missing record accepted")
+	}
+	if _, err := s.CommitMemory(ctx, storage.MemoryRecord{WorkspaceID: w.ID, Scope: "bogus", Kind: "fact", Text: "bad", Provenance: "observed", Confidence: 1}); err == nil {
+		t.Fatal("unknown scope accepted")
 	}
 }
 

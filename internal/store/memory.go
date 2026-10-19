@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ductone/orrery/storage"
@@ -57,7 +58,7 @@ func (s *Store) CommitMemory(ctx context.Context, x MemoryRecord) (MemoryRecord,
 		x.ExpiresAt = &expires
 		expiry = expires.Format(time.RFC3339Nano)
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO memory_records(memory_id,workspace_id,scope,kind,text,provenance,confidence,status,evidence_refs,created_at,updated_at,expires_at,superseded_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.WorkspaceID, x.Scope, x.Kind, x.Text, x.Provenance, x.Confidence, x.Status, x.EvidenceRefs, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), expiry, nullIfEmpty(x.SupersededBy))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO memory_records(memory_id,workspace_id,scope,kind,text,provenance,confidence,status,evidence_refs,created_at,updated_at,expires_at,superseded_by,session_id,origin,shadows) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.WorkspaceID, storedMemoryScope(x.Scope), x.Kind, x.Text, x.Provenance, x.Confidence, x.Status, x.EvidenceRefs, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), expiry, nullIfEmpty(x.SupersededBy), x.SessionID, x.Origin, x.Shadows)
 	if err != nil {
 		return MemoryRecord{}, err
 	}
@@ -79,7 +80,7 @@ func (s *Store) UpdateMemory(ctx context.Context, x MemoryRecord) error {
 	if x.ExpiresAt != nil {
 		expiry = x.ExpiresAt.UTC().Format(time.RFC3339Nano)
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE memory_records SET scope=?,kind=?,text=?,provenance=?,confidence=?,status=?,evidence_refs=?,updated_at=?,expires_at=?,superseded_by=? WHERE memory_id=? AND workspace_id=? AND status!='deleted' AND status!='superseded'`, x.Scope, x.Kind, x.Text, x.Provenance, x.Confidence, x.Status, x.EvidenceRefs, time.Now().UTC().Format(time.RFC3339Nano), expiry, nullIfEmpty(x.SupersededBy), x.ID, x.WorkspaceID)
+	res, err := s.db.ExecContext(ctx, `UPDATE memory_records SET scope=?,kind=?,text=?,provenance=?,confidence=?,status=?,evidence_refs=?,updated_at=?,expires_at=?,superseded_by=?,shadows=? WHERE memory_id=? AND workspace_id=? AND status!='deleted' AND status!='superseded'`, storedMemoryScope(x.Scope), x.Kind, x.Text, x.Provenance, x.Confidence, x.Status, x.EvidenceRefs, time.Now().UTC().Format(time.RFC3339Nano), expiry, nullIfEmpty(x.SupersededBy), x.Shadows, x.ID, x.WorkspaceID)
 	if err != nil {
 		return err
 	}
@@ -195,10 +196,10 @@ func (s *Store) ApplyMemoryMutationEvent(ctx context.Context, sid, turnID, event
 	switch m.Operation {
 	case "commit":
 		x.CreatedAt, x.UpdatedAt = now, now
-		_, err = tx.ExecContext(ctx, `INSERT INTO memory_records(memory_id,workspace_id,scope,kind,text,provenance,confidence,status,evidence_refs,created_at,updated_at,expires_at,superseded_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.WorkspaceID, x.Scope, x.Kind, x.Text, x.Provenance, x.Confidence, x.Status, x.EvidenceRefs, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), expiry, nullIfEmpty(x.SupersededBy))
+		_, err = tx.ExecContext(ctx, `INSERT INTO memory_records(memory_id,workspace_id,scope,kind,text,provenance,confidence,status,evidence_refs,created_at,updated_at,expires_at,superseded_by,session_id,origin,shadows) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.WorkspaceID, storedMemoryScope(x.Scope), x.Kind, x.Text, x.Provenance, x.Confidence, x.Status, x.EvidenceRefs, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), expiry, nullIfEmpty(x.SupersededBy), x.SessionID, x.Origin, x.Shadows)
 	case "update":
 		var res sql.Result
-		res, err = tx.ExecContext(ctx, `UPDATE memory_records SET scope=?,kind=?,text=?,provenance=?,confidence=?,status=?,evidence_refs=?,updated_at=?,expires_at=?,superseded_by=? WHERE memory_id=? AND workspace_id=? AND status!='deleted' AND status!='superseded'`, x.Scope, x.Kind, x.Text, x.Provenance, x.Confidence, x.Status, x.EvidenceRefs, now.Format(time.RFC3339Nano), expiry, nullIfEmpty(x.SupersededBy), x.ID, x.WorkspaceID)
+		res, err = tx.ExecContext(ctx, `UPDATE memory_records SET scope=?,kind=?,text=?,provenance=?,confidence=?,status=?,evidence_refs=?,updated_at=?,expires_at=?,superseded_by=?,shadows=? WHERE memory_id=? AND workspace_id=? AND status!='deleted' AND status!='superseded'`, storedMemoryScope(x.Scope), x.Kind, x.Text, x.Provenance, x.Confidence, x.Status, x.EvidenceRefs, now.Format(time.RFC3339Nano), expiry, nullIfEmpty(x.SupersededBy), x.Shadows, x.ID, x.WorkspaceID)
 		if err == nil {
 			var n int64
 			n, err = res.RowsAffected()
@@ -208,7 +209,7 @@ func (s *Store) ApplyMemoryMutationEvent(ctx context.Context, sid, turnID, event
 		}
 	case "correct":
 		x.CreatedAt, x.UpdatedAt = now, now
-		_, err = tx.ExecContext(ctx, `INSERT INTO memory_records(memory_id,workspace_id,scope,kind,text,provenance,confidence,status,evidence_refs,created_at,updated_at,expires_at,superseded_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.WorkspaceID, x.Scope, x.Kind, x.Text, x.Provenance, x.Confidence, x.Status, x.EvidenceRefs, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), expiry, nil)
+		_, err = tx.ExecContext(ctx, `INSERT INTO memory_records(memory_id,workspace_id,scope,kind,text,provenance,confidence,status,evidence_refs,created_at,updated_at,expires_at,superseded_by,session_id,origin,shadows) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, x.ID, x.WorkspaceID, storedMemoryScope(x.Scope), x.Kind, x.Text, x.Provenance, x.Confidence, x.Status, x.EvidenceRefs, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), expiry, nil, x.SessionID, x.Origin, x.Shadows)
 		if err == nil {
 			var res sql.Result
 			res, err = tx.ExecContext(ctx, `UPDATE memory_records SET status='superseded',superseded_by=?,updated_at=? WHERE memory_id=? AND workspace_id=? AND status!='deleted' AND status!='superseded'`, x.ID, now.Format(time.RFC3339Nano), m.OldID, m.WorkspaceID)
@@ -269,13 +270,14 @@ func readMemoryTx(ctx context.Context, tx *sql.Tx, id string) (MemoryRecord, err
 	var x MemoryRecord
 	var created, updated string
 	var expires sql.NullString
-	row := tx.QueryRowContext(ctx, `SELECT memory_id,workspace_id,scope,kind,text,provenance,confidence,status,evidence_refs,created_at,updated_at,expires_at,COALESCE(superseded_by,'') FROM memory_records WHERE memory_id=?`, id)
-	if err := row.Scan(&x.ID, &x.WorkspaceID, &x.Scope, &x.Kind, &x.Text, &x.Provenance, &x.Confidence, &x.Status, &x.EvidenceRefs, &created, &updated, &expires, &x.SupersededBy); err != nil {
+	row := tx.QueryRowContext(ctx, `SELECT memory_id,workspace_id,scope,kind,text,provenance,confidence,status,evidence_refs,created_at,updated_at,expires_at,COALESCE(superseded_by,''),COALESCE(session_id,''),COALESCE(origin,''),COALESCE(shadows,'') FROM memory_records WHERE memory_id=?`, id)
+	if err := row.Scan(&x.ID, &x.WorkspaceID, &x.Scope, &x.Kind, &x.Text, &x.Provenance, &x.Confidence, &x.Status, &x.EvidenceRefs, &created, &updated, &expires, &x.SupersededBy, &x.SessionID, &x.Origin, &x.Shadows); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return MemoryRecord{}, fmt.Errorf("%w: %s", ErrMemoryNotFound, id)
 		}
 		return MemoryRecord{}, err
 	}
+	x.Scope = storage.NormalizeMemoryScope(x.Scope)
 	var err error
 	if x.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
 		return MemoryRecord{}, fmt.Errorf("parse memory created_at: %w", err)
@@ -302,14 +304,16 @@ func (s *Store) ListMemory(ctx context.Context, f MemoryFilter) ([]MemoryRecord,
 	if _, err := s.db.ExecContext(ctx, `UPDATE memory_records SET status='expired',updated_at=? WHERE workspace_id=? AND status IN ('active','pending') AND expires_at IS NOT NULL AND julianday(expires_at)<=julianday(?)`, time.Now().UTC().Format(time.RFC3339Nano), f.WorkspaceID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return nil, err
 	}
-	query := `SELECT memory_id,workspace_id,scope,kind,text,provenance,confidence,status,evidence_refs,created_at,updated_at,expires_at,COALESCE(superseded_by,'') FROM memory_records WHERE workspace_id=?`
+	query := `SELECT memory_id,workspace_id,scope,kind,text,provenance,confidence,status,evidence_refs,created_at,updated_at,expires_at,COALESCE(superseded_by,''),COALESCE(session_id,''),COALESCE(origin,''),COALESCE(shadows,'') FROM memory_records WHERE workspace_id=?`
 	if !f.IncludeDeleted {
 		query += ` AND status!='deleted'`
 	}
 	args := []any{f.WorkspaceID}
-	if f.Scope != "" {
-		query += ` AND scope=?`
-		args = append(args, f.Scope)
+	if scopes := storage.MemoryFilterScopes(f); len(scopes) > 0 {
+		query += ` AND scope IN (?` + strings.Repeat(`,?`, len(scopes)-1) + `)`
+		for _, scope := range scopes {
+			args = append(args, storedMemoryScope(scope))
+		}
 	}
 	if f.Status != "" {
 		query += ` AND status=?`
@@ -328,9 +332,10 @@ func (s *Store) ListMemory(ctx context.Context, f MemoryFilter) ([]MemoryRecord,
 		var x MemoryRecord
 		var created, updated string
 		var expires sql.NullString
-		if err := rows.Scan(&x.ID, &x.WorkspaceID, &x.Scope, &x.Kind, &x.Text, &x.Provenance, &x.Confidence, &x.Status, &x.EvidenceRefs, &created, &updated, &expires, &x.SupersededBy); err != nil {
+		if err := rows.Scan(&x.ID, &x.WorkspaceID, &x.Scope, &x.Kind, &x.Text, &x.Provenance, &x.Confidence, &x.Status, &x.EvidenceRefs, &created, &updated, &expires, &x.SupersededBy, &x.SessionID, &x.Origin, &x.Shadows); err != nil {
 			return nil, err
 		}
+		x.Scope = storage.NormalizeMemoryScope(x.Scope)
 		x.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
 		if err != nil {
 			return nil, fmt.Errorf("parse memory created_at: %w", err)
@@ -371,6 +376,22 @@ func (s *Store) validateMemoryReferences(ctx context.Context, x MemoryRecord) er
 		}
 		return err
 	}
+	if x.Shadows != "" {
+		var workspaceID, scope string
+		err := s.db.QueryRowContext(ctx, `SELECT workspace_id,scope FROM memory_records WHERE memory_id=?`, x.Shadows).Scan(&workspaceID, &scope)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: %s", ErrMemoryNotFound, x.Shadows)
+		}
+		if err != nil {
+			return err
+		}
+		if workspaceID != x.WorkspaceID {
+			return errors.New("a shadowed memory record must be in the same workspace")
+		}
+		if storage.NormalizeMemoryScope(scope) == storage.ScopeAgent {
+			return errors.New("a memory record may only shadow a group or global record")
+		}
+	}
 	if x.SupersededBy == "" {
 		return nil
 	}
@@ -389,6 +410,23 @@ func (s *Store) validateMemoryReferences(ctx context.Context, x MemoryRecord) er
 		return fmt.Errorf("%w: replacement status is %s", ErrMemoryNotSupersedable, status)
 	}
 	return nil
+}
+
+// The memory_records CHECK constraint predates the canonical scope names and
+// SQLite cannot alter a CHECK without rebuilding the table, so the table keeps
+// the original names and the store translates at its boundary: reads
+// normalize through storage.NormalizeMemoryScope and writes and filters map
+// back with storedMemoryScope. Existing databases need no migration.
+func storedMemoryScope(scope string) string {
+	switch scope {
+	case storage.ScopeAgent:
+		return "workspace"
+	case storage.ScopeGroup:
+		return "project"
+	case storage.ScopeGlobal:
+		return "user"
+	}
+	return scope
 }
 
 func nullIfEmpty(s string) any {

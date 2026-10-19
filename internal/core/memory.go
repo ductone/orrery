@@ -12,6 +12,7 @@ import (
 	"github.com/ductone/orrery/agentproto"
 	"github.com/ductone/orrery/config"
 	"github.com/ductone/orrery/internal/store"
+	"github.com/ductone/orrery/storage"
 )
 
 // memoryEpoch is the pinned, workspace-scoped memory set for one cache epoch
@@ -147,7 +148,7 @@ func (e *Engine) refreshMemory(ctx context.Context, sid, workspacePath, query, p
 		e.emitMemoryRetrieved(ctx, sid, cfg, nil, "", "workspace_unavailable", reason, emit)
 		return
 	}
-	records, err := e.store.ListMemory(ctx, store.MemoryFilter{WorkspaceID: w.ID, Status: "active"})
+	records, err := e.recallMemory(ctx, w.ID, nil)
 	if err != nil {
 		e.emitMemoryRetrieved(ctx, sid, cfg, nil, "", "store_unavailable", reason, emit)
 		return
@@ -164,6 +165,50 @@ func (e *Engine) refreshMemory(ctx context.Context, sid, workspacePath, query, p
 		reason2 = "no_active_records"
 	}
 	e.emitMemoryRetrieved(ctx, sid, cfg, selected, boundaryID, reason2, reason, emit)
+}
+
+// defaultMemoryScopes is the recall set for prompt injection: an agent sees
+// its own memory only until group and global scopes are written.
+var defaultMemoryScopes = []string{storage.ScopeAgent}
+
+// recallMemory returns the active records of a workspace visible in scopes
+// (nil means defaultMemoryScopes). Every returned record carries its Scope so
+// the model and host can see where it came from. A broader (group or global)
+// record is dropped when an active agent-scope record shadows it, even if the
+// agent scope is not itself among scopes.
+func (e *Engine) recallMemory(ctx context.Context, workspaceID string, scopes []string) ([]store.MemoryRecord, error) {
+	records, err := e.store.ListMemory(ctx, store.MemoryFilter{WorkspaceID: workspaceID, Status: "active"})
+	if err != nil {
+		return nil, err
+	}
+	return visibleMemory(records, scopes), nil
+}
+
+// visibleMemory filters active records to scopes (nil means
+// defaultMemoryScopes) and removes records shadowed by an active agent-scope
+// record. Shadowing is evaluated over all records, not just the requested
+// scopes.
+func visibleMemory(records []store.MemoryRecord, scopes []string) []store.MemoryRecord {
+	if len(scopes) == 0 {
+		scopes = defaultMemoryScopes
+	}
+	want := map[string]bool{}
+	for _, s := range scopes {
+		want[storage.NormalizeMemoryScope(s)] = true
+	}
+	shadowed := map[string]bool{}
+	for _, r := range records {
+		if r.Scope == storage.ScopeAgent && r.Status == "active" && r.Shadows != "" {
+			shadowed[r.Shadows] = true
+		}
+	}
+	out := make([]store.MemoryRecord, 0, len(records))
+	for _, r := range records {
+		if want[r.Scope] && !shadowed[r.ID] {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // memoryForRequest returns the rendered memory block for the request's
@@ -283,9 +328,11 @@ const memoryRetrievedEventVersion = 1
 
 func (e *Engine) emitMemoryRetrieved(ctx context.Context, sid string, cfg config.Config, selected []store.MemoryRecord, boundaryID, reasonCode, boundaryReason string, emit EmitFunc) {
 	ids := make([]string, 0, len(selected))
+	scopes := make([]string, 0, len(selected))
 	tokens := 0
 	for _, r := range selected {
 		ids = append(ids, r.ID)
+		scopes = append(scopes, r.Scope)
 		tokens += estimate(r.Text)
 	}
 	outcome := "ok"
@@ -298,6 +345,7 @@ func (e *Engine) emitMemoryRetrieved(ctx context.Context, sid string, cfg config
 	e.emit(ctx, sid, "memory.retrieved", map[string]any{
 		"version":           memoryRetrievedEventVersion,
 		"ids":               ids,
+		"scopes":            scopes,
 		"source":            "deterministic",
 		"reason":            reasonCode,
 		"boundary_reason":   boundaryReason,
@@ -422,6 +470,9 @@ func (e *Engine) controlMemory(ctx context.Context, sid, workspacePath, action s
 		if memoryExpired(rec) {
 			return store.MemoryRecord{}, errors.New("memory record has expired and cannot be modified")
 		}
+		if rec.Scope != storage.ScopeAgent {
+			return store.MemoryRecord{}, errors.New("only agent-scope memory can be modified here")
+		}
 		return rec, nil
 	}
 	expiry := func() *time.Time {
@@ -451,8 +502,8 @@ func (e *Engine) controlMemory(ctx context.Context, sid, workspacePath, action s
 		if err != nil {
 			return nil, err
 		}
-		data := map[string]any{"status": "active", "kind": kind, "scope": "workspace"}
-		rec, err := mutate("memory.committed", data, store.MemoryMutation{Operation: "commit", Record: store.MemoryRecord{WorkspaceID: w.ID, Scope: "workspace", Kind: kind, Text: text, Provenance: "observed", Confidence: 1, Status: "active", EvidenceRefs: refs, ExpiresAt: expiry()}})
+		data := map[string]any{"status": "active", "kind": kind, "scope": storage.ScopeAgent}
+		rec, err := mutate("memory.committed", data, store.MemoryMutation{Operation: "commit", Record: store.MemoryRecord{WorkspaceID: w.ID, Scope: storage.ScopeAgent, Kind: kind, Text: text, Provenance: "observed", Confidence: 1, Status: "active", EvidenceRefs: refs, ExpiresAt: expiry(), SessionID: sid, Origin: w.IdentityKey}})
 		if err != nil {
 			return nil, err
 		}
@@ -503,7 +554,7 @@ func (e *Engine) controlMemory(ctx context.Context, sid, workspacePath, action s
 			return nil, fmt.Errorf("memory text exceeds max_record_bytes (%d)", cfg.Memory.RecordBytes())
 		}
 		data := map[string]any{"id": old.ID, "from_status": old.Status, "to_status": "superseded"}
-		replacement, err := mutate("memory.updated", data, store.MemoryMutation{Operation: "correct", WorkspaceID: w.ID, OldID: old.ID, Record: store.MemoryRecord{WorkspaceID: w.ID, Scope: old.Scope, Kind: old.Kind, Text: text, Provenance: "user", Confidence: 1, Status: "active", EvidenceRefs: old.EvidenceRefs, ExpiresAt: expiry()}})
+		replacement, err := mutate("memory.updated", data, store.MemoryMutation{Operation: "correct", WorkspaceID: w.ID, OldID: old.ID, Record: store.MemoryRecord{WorkspaceID: w.ID, Scope: old.Scope, Kind: old.Kind, Text: text, Provenance: "user", Confidence: 1, Status: "active", EvidenceRefs: old.EvidenceRefs, ExpiresAt: expiry(), SessionID: sid, Origin: w.IdentityKey, Shadows: old.Shadows}})
 		if err != nil {
 			return nil, err
 		}

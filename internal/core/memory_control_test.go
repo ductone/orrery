@@ -9,6 +9,7 @@ import (
 	"github.com/ductone/orrery/config"
 	"github.com/ductone/orrery/internal/provider"
 	"github.com/ductone/orrery/internal/store"
+	"github.com/ductone/orrery/storage"
 )
 
 func memoryEngine(t *testing.T, cfg config.MemoryConfig) *Engine {
@@ -410,4 +411,90 @@ func mustMemoryWorkspace(t *testing.T, e *Engine, root string) string {
 		t.Fatal("memory workspace unavailable")
 	}
 	return w.ID
+}
+
+func TestMemoryToolRecordsProvenanceAndAgentScope(t *testing.T) {
+	ctx := context.Background()
+	e := memoryEngine(t, config.MemoryConfig{})
+	root := t.TempDir()
+	got, err := e.controlMemory(ctx, "s1", root, "propose", map[string]any{
+		"kind": "fact", "text": "provenance check", "evidence_refs": []any{"a.go"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := got.(store.MemoryRecord)
+	if rec.Status != "active" || rec.Scope != storage.ScopeAgent || rec.SessionID != "s1" || rec.Origin != workspaceIdentityKey(root) {
+		t.Fatalf("record = %+v", rec)
+	}
+	fixed, err := e.controlMemory(ctx, "s2", root, "correct", map[string]any{"id": rec.ID, "text": "provenance fixed", "user_confirmed": true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := fixed.(store.MemoryRecord); r.SessionID != "s2" || r.Origin != workspaceIdentityKey(root) || r.Scope != storage.ScopeAgent {
+		t.Fatalf("correction = %+v", r)
+	}
+}
+
+func TestMemoryRecallScopesAndShadowing(t *testing.T) {
+	ctx := context.Background()
+	e := memoryEngine(t, config.MemoryConfig{})
+	root := t.TempDir()
+	w, _ := e.ensureMemoryWorkspace(ctx, root)
+	commit := func(scope, text, shadows string) store.MemoryRecord {
+		t.Helper()
+		rec, err := e.store.CommitMemory(ctx, store.MemoryRecord{WorkspaceID: w.ID, Scope: scope, Kind: "fact", Text: text, Provenance: "observed", Confidence: 1, Shadows: shadows})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rec
+	}
+	commit("workspace", "agent note", "")
+	group := commit("project", "group note", "")
+	commit("user", "global note", "")
+
+	texts := func(scopes []string) map[string]string {
+		t.Helper()
+		recs, err := e.recallMemory(ctx, w.ID, scopes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		for _, r := range recs {
+			out[r.Text] = r.Scope
+		}
+		return out
+	}
+	if got := texts(nil); len(got) != 1 || got["agent note"] != storage.ScopeAgent {
+		t.Fatalf("default recall = %v", got)
+	}
+	got := texts([]string{"agent", "group", "global"})
+	if len(got) != 3 || got["group note"] != storage.ScopeGroup || got["global note"] != storage.ScopeGlobal {
+		t.Fatalf("multi-scope recall = %v", got)
+	}
+	if got := texts([]string{"project"}); len(got) != 1 || got["group note"] != storage.ScopeGroup {
+		t.Fatalf("old scope name recall = %v", got)
+	}
+	if rendered := renderMemory(mustRecall(t, e, w.ID, []string{"agent", "group"})); !strings.Contains(rendered, "[fact/group] group note") {
+		t.Fatalf("source scope not rendered: %s", rendered)
+	}
+
+	commit("agent", "local override", group.ID)
+	got = texts([]string{"agent", "group", "global"})
+	if _, ok := got["group note"]; ok || len(got) != 3 {
+		t.Fatalf("shadowed group record still visible: %v", got)
+	}
+	// Shadowing applies even when the agent scope is not requested.
+	if got := texts([]string{"group"}); len(got) != 0 {
+		t.Fatalf("shadowed record visible via group-only recall: %v", got)
+	}
+}
+
+func mustRecall(t *testing.T, e *Engine, workspaceID string, scopes []string) []store.MemoryRecord {
+	t.Helper()
+	recs, err := e.recallMemory(context.Background(), workspaceID, scopes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return recs
 }
