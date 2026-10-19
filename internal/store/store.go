@@ -11,14 +11,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ductone/orrery/storage"
 	"github.com/google/uuid"
 
 	_ "modernc.org/sqlite"
 )
 
 type Store struct {
-	db       *sql.DB
-	outcomes *outcomeProjector
+	db *sql.DB
 }
 
 func Open(path string) (*Store, error) {
@@ -33,7 +33,7 @@ func Open(path string) (*Store, error) {
 	// worker goroutines deterministic transaction ordering without SQLITE_BUSY.
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	s := &Store{db: db, outcomes: newOutcomeProjector()}
+	s := &Store{db: db}
 	if err = s.migrate(); err != nil {
 		db.Close()
 		return nil, err
@@ -572,8 +572,8 @@ func (s *Store) DeliverQueuedMessage(ctx context.Context, sid, requestID, turnID
 	// A harness note is not a person's request. Review, compaction and the
 	// task section lead with latest_request, so a budget or limit choice must
 	// not replace it.
-	if !harnessContent(content) {
-		if _, err = tx.ExecContext(ctx, `UPDATE sessions SET latest_request=? WHERE id=?`, messageText(content), sid); err != nil {
+	if text, isRequest := storage.RequestText(content); isRequest {
+		if _, err = tx.ExecContext(ctx, `UPDATE sessions SET latest_request=? WHERE id=?`, text, sid); err != nil {
 			return RequestReceipt{}, err
 		}
 	}
@@ -937,19 +937,11 @@ func (s *Store) SetTodos(ctx context.Context, sid string, todos []Todo) error {
 	return tx.Commit()
 }
 
-// workItemKey groups work items by normalized objective and phase so equal
-// objectives in different phases are matched separately.
-func workItemKey(objective, phase string) string {
-	return strings.ToLower(strings.TrimSpace(objective)) + "\x00" + strings.ToLower(strings.TrimSpace(phase))
-}
-
 // syncWorkItemsTx reconciles the continuation ledger to the todo plan in the
-// same transaction. Work items are keyed by normalized objective and phase so
-// their IDs and lifecycle timestamps survive todo reordering; completed items
-// are kept even when removed from the plan so the report obligation stays
-// concrete.
+// same transaction, using storage.SyncWorkItems. Existing rows are updated in
+// place so their creation order, which matching depends on, is preserved.
 func (s *Store) syncWorkItemsTx(ctx context.Context, tx *sql.Tx, sid string, todos []Todo) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id,objective,status,phase,position,created_at,completed_at FROM work_items WHERE session_id=?`, sid)
+	rows, err := tx.QueryContext(ctx, `SELECT id,objective,status,phase,position,created_at,completed_at FROM work_items WHERE session_id=? ORDER BY rowid`, sid)
 	if err != nil {
 		return err
 	}
@@ -970,176 +962,45 @@ func (s *Store) syncWorkItemsTx(ctx context.Context, tx *sql.Tx, sid string, tod
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	// Retained completed rows only re-assert the report obligation if it was
-	// already owed before this sync; an acknowledged report stays cleared.
 	priorReportRequired := false
 	if err = tx.QueryRowContext(ctx, `SELECT final_report_required FROM continuation WHERE session_id=?`, sid).Scan(&priorReportRequired); err != nil && err != sql.ErrNoRows {
 		return err
 	}
 	now := time.Now().UTC()
-	nowStr := now.Format(time.RFC3339Nano)
-	planNonCompleted := map[string]int{}
-	for _, t := range todos {
-		if strings.TrimSpace(t.Text) != "" && t.Status != "completed" {
-			planNonCompleted[workItemKey(t.Text, t.Phase)]++
+	sync := storage.SyncWorkItems(sid, todos, existing, priorReportRequired, now)
+
+	stamp := func(t time.Time) any {
+		if t.IsZero() {
+			return nil
 		}
+		return t.UTC().Format(time.RFC3339Nano)
 	}
-	consumed := map[string]bool{}
-	byPosition := map[int]string{}
-	var activeID string
-	anyCompleted := false
-	for i, t := range todos {
-		if strings.TrimSpace(t.Text) == "" {
+	kept := map[string]bool{}
+	for _, wi := range existing {
+		kept[wi.ID] = false
+	}
+	for _, wi := range sync.Items {
+		if _, ok := kept[wi.ID]; ok {
+			kept[wi.ID] = true
+			if _, err = tx.ExecContext(ctx, `UPDATE work_items SET status=?,phase=?,position=?,completed_at=? WHERE id=?`, wi.Status, wi.Phase, wi.Position, stamp(wi.CompletedAt), wi.ID); err != nil {
+				return err
+			}
 			continue
 		}
-		key := workItemKey(t.Text, t.Phase)
-		idx := -1
-		if t.Status == "completed" {
-			// Promote a live row that is being removed from the plan (its work
-			// was just completed) before matching a retained completed row. A
-			// live row is being removed when there are more live rows with this
-			// key than the plan has non-completed todos for it.
-			liveCount := 0
-			for j := range existing {
-				c := &existing[j]
-				if !consumed[c.ID] && workItemKey(c.Objective, c.Phase) == key && c.Status != "completed" {
-					liveCount++
-				}
-			}
-			if liveCount > planNonCompleted[key] {
-				for j := range existing {
-					c := &existing[j]
-					if !consumed[c.ID] && workItemKey(c.Objective, c.Phase) == key && c.Status != "completed" {
-						idx = j
-						break
-					}
-				}
-			}
-			// Otherwise match a completed row at the same position (idempotent
-			// re-submission), then any completed row, then a live row.
-			if idx < 0 {
-				for j := range existing {
-					c := &existing[j]
-					if consumed[c.ID] || workItemKey(c.Objective, c.Phase) != key || c.Status != "completed" || c.Position != i {
-						continue
-					}
-					idx = j
-					break
-				}
-			}
-			if idx < 0 {
-				for j := range existing {
-					c := &existing[j]
-					if consumed[c.ID] || workItemKey(c.Objective, c.Phase) != key || c.Status != "completed" {
-						continue
-					}
-					idx = j
-					break
-				}
-			}
-			// A completed todo never consumes a live row here: live rows are
-			// reserved for the plan's remaining non-completed todos. If no
-			// completed row matches, a new completed row is inserted below.
-		} else {
-			// Non-completed todo: match a live row at the same position, then
-			// any live row; never consume a completed row.
-			for j := range existing {
-				c := &existing[j]
-				if consumed[c.ID] || workItemKey(c.Objective, c.Phase) != key || c.Status == "completed" || c.Position != i {
-					continue
-				}
-				idx = j
-				break
-			}
-			if idx < 0 {
-				for j := range existing {
-					c := &existing[j]
-					if consumed[c.ID] || workItemKey(c.Objective, c.Phase) != key || c.Status == "completed" {
-						continue
-					}
-					idx = j
-					break
-				}
-			}
-		}
-		// A non-completed todo consumes one of the plan's non-completed slots
-		// for this key, so a later completed todo compares against the
-		// remaining count.
-		if t.Status != "completed" {
-			planNonCompleted[key]--
-		}
-		var wi WorkItem
-		wasCompleted := false
-		if idx >= 0 {
-			wi = existing[idx]
-			wasCompleted = wi.Status == "completed"
-			consumed[wi.ID] = true
-			var completedAt any
-			if t.Status == "completed" {
-				if wi.Status != "completed" {
-					completedAt = nowStr
-				} else {
-					completedAt = wi.CompletedAt.UTC().Format(time.RFC3339Nano)
-				}
-			}
-			if _, err = tx.ExecContext(ctx, `UPDATE work_items SET status=?,phase=?,position=?,completed_at=? WHERE id=?`, t.Status, t.Phase, i, completedAt, wi.ID); err != nil {
-				return err
-			}
-		} else {
-			wi = WorkItem{ID: uuid.NewString(), SessionID: sid, Objective: strings.TrimSpace(t.Text), Status: t.Status, Phase: t.Phase, Position: i, CreatedAt: now}
-			var completedAt any
-			if t.Status == "completed" {
-				completedAt = nowStr
-			}
-			if _, err = tx.ExecContext(ctx, `INSERT INTO work_items(id,session_id,objective,status,phase,position,created_at,completed_at) VALUES(?,?,?,?,?,?,?,?)`, wi.ID, sid, wi.Objective, wi.Status, wi.Phase, wi.Position, nowStr, completedAt); err != nil {
-				return err
-			}
-		}
-		byPosition[i] = wi.ID
-		if t.Status == "in_progress" && activeID == "" {
-			activeID = wi.ID
-		}
-		// A completed todo creates a fresh obligation only when it is a new
-		// completion (the work item was not already completed) or the prior
-		// obligation was still owed; an idempotent resubmission of an
-		// acknowledged completion does not re-open it.
-		if t.Status == "completed" && (!wasCompleted || priorReportRequired) {
-			anyCompleted = true
+		if _, err = tx.ExecContext(ctx, `INSERT INTO work_items(id,session_id,objective,status,phase,position,created_at,completed_at) VALUES(?,?,?,?,?,?,?,?)`, wi.ID, sid, wi.Objective, wi.Status, wi.Phase, wi.Position, stamp(wi.CreatedAt), stamp(wi.CompletedAt)); err != nil {
+			return err
 		}
 	}
-	// Unconsumed work items are no longer in the plan; drop them unless they
-	// are completed, which are retained as report subjects.
-	for _, wi := range existing {
-		if !consumed[wi.ID] && wi.Status != "completed" {
-			if _, err = tx.ExecContext(ctx, `DELETE FROM work_items WHERE id=?`, wi.ID); err != nil {
+	for id, ok := range kept {
+		if !ok {
+			if _, err = tx.ExecContext(ctx, `DELETE FROM work_items WHERE id=?`, id); err != nil {
 				return err
 			}
 		}
 	}
-	// Completed work items are retained even when removed from the plan, so the
-	// report obligation must survive a cleared todo list — unless the report was
-	// already acknowledged, in which case retained rows do not re-open it.
-	if !anyCompleted && priorReportRequired {
-		for _, wi := range existing {
-			if !consumed[wi.ID] && wi.Status == "completed" {
-				anyCompleted = true
-				break
-			}
-		}
-	}
-	if activeID == "" {
-		for i, t := range todos {
-			if t.Status == "pending" && byPosition[i] != "" {
-				activeID = byPosition[i]
-				break
-			}
-		}
-	}
-	finalReportRequired := anyCompleted || activeID != ""
-	if _, err = tx.ExecContext(ctx, `INSERT INTO continuation(session_id,active_work_item_id,final_report_required,resolved_request_ids_json,updated_at) VALUES(?,?,?,COALESCE((SELECT resolved_request_ids_json FROM continuation WHERE session_id=?),'[]'),?) ON CONFLICT(session_id) DO UPDATE SET active_work_item_id=excluded.active_work_item_id,final_report_required=excluded.final_report_required,updated_at=excluded.updated_at`, sid, activeID, finalReportRequired, sid, nowStr); err != nil {
-		return err
-	}
-	return nil
+	nowStr := now.Format(time.RFC3339Nano)
+	_, err = tx.ExecContext(ctx, `INSERT INTO continuation(session_id,active_work_item_id,final_report_required,resolved_request_ids_json,updated_at) VALUES(?,?,?,COALESCE((SELECT resolved_request_ids_json FROM continuation WHERE session_id=?),'[]'),?) ON CONFLICT(session_id) DO UPDATE SET active_work_item_id=excluded.active_work_item_id,final_report_required=excluded.final_report_required,updated_at=excluded.updated_at`, sid, sync.ActiveWorkItemID, sync.FinalReportRequired, sid, nowStr)
+	return err
 }
 
 func (s *Store) Todos(ctx context.Context, sid string) ([]Todo, error) {
@@ -1287,9 +1148,6 @@ func (s *Store) addEventTx(ctx context.Context, tx *sql.Tx, sid, turnID, typ str
 	if _, err = tx.ExecContext(ctx, `INSERT INTO events(session_id,seq,turn_id,type,data_json,created_at)VALUES(?,?,?,?,?,?)`, sid, seq, turnID, typ, string(b), now.Format(time.RFC3339Nano)); err != nil {
 		return Event{}, err
 	}
-	if err = s.outcomes.apply(ctx, tx, sid, typ, b); err != nil {
-		return Event{}, err
-	}
 	return Event{SchemaVersion: 1, EventID: fmt.Sprintf("%s:%d", sid, seq), Seq: seq, SessionID: sid, TurnID: turnID, Type: typ, Data: b, CreatedAt: now}, nil
 }
 func (s *Store) EventsAfter(ctx context.Context, sid string, after int) ([]Event, error) {
@@ -1357,8 +1215,8 @@ func (s *Store) AcceptMessage(ctx context.Context, sid, requestID, turnID, kind,
 	// A harness note is not a person's request. Review, compaction and the
 	// task section lead with latest_request, so a budget or limit choice must
 	// not replace it.
-	if !harnessContent(content) {
-		if _, err = tx.ExecContext(ctx, `UPDATE sessions SET latest_request=? WHERE id=?`, messageText(content), sid); err != nil {
+	if text, isRequest := storage.RequestText(content); isRequest {
+		if _, err = tx.ExecContext(ctx, `UPDATE sessions SET latest_request=? WHERE id=?`, text, sid); err != nil {
 			return RequestReceipt{}, err
 		}
 	}
@@ -1434,24 +1292,6 @@ func (s *Store) UpdateRoutingOutcome(ctx context.Context, id, field string, v an
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE routing_records SET `+field+`=? WHERE id=?`, JSON(v), id)
 	return err
-}
-
-// harnessContent reports a stored harness note, which is not the person's request.
-func harnessContent(content any) bool {
-	var m struct {
-		Harness bool `json:"harness"`
-	}
-	_ = json.Unmarshal([]byte(JSON(content)), &m)
-	return m.Harness
-}
-
-// messageText extracts a stored message's text content.
-func messageText(content any) string {
-	var m struct {
-		Content string `json:"content"`
-	}
-	_ = json.Unmarshal([]byte(JSON(content)), &m)
-	return m.Content
 }
 
 // LatestRequest returns the most recent message a person sent to the session.

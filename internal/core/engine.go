@@ -27,6 +27,7 @@ import (
 	"github.com/ductone/orrery/internal/lsp"
 	"github.com/ductone/orrery/internal/mcp"
 	"github.com/ductone/orrery/internal/model"
+	"github.com/ductone/orrery/internal/outcomes"
 	"github.com/ductone/orrery/internal/provider"
 	"github.com/ductone/orrery/internal/router"
 	"github.com/ductone/orrery/internal/store"
@@ -40,6 +41,7 @@ type EmitFunc func(agentproto.AgentEvent)
 type Engine struct {
 	cfg       config.Config
 	store     storage.Store
+	outcomes  *outcomes.Projector
 	providers *provider.Registry
 	policy    router.Policy
 	mcp       *mcp.Manager
@@ -81,7 +83,7 @@ type Engine struct {
 }
 
 func New(cfg config.Config, s storage.Store, p *provider.Registry, mc *mcp.Manager) *Engine {
-	e := &Engine{cfg: cfg, store: s, providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), lsp: lsp.New(cfg.LSP), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}, writers: map[string]string{}, compactedLastTurn: map[string]bool{}, toolStates: map[string]*builtin.SessionState{}, memoryEpochs: map[string]*memoryEpoch{}}
+	e := &Engine{cfg: cfg, store: s, outcomes: outcomes.New(), providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), lsp: lsp.New(cfg.LSP), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}, writers: map[string]string{}, compactedLastTurn: map[string]bool{}, toolStates: map[string]*builtin.SessionState{}, memoryEpochs: map[string]*memoryEpoch{}}
 	if s != nil {
 		e.cleanScratch(context.Background())
 	}
@@ -771,7 +773,13 @@ func (e *Engine) emit(ctx context.Context, sid, typ string, data any, emit EmitF
 		turnID = e.turnIDs[sid]
 		e.mu.Unlock()
 	}
-	_, _ = e.store.AddEventForTurn(ctx, sid, turnID, typ, data)
+	if ev, err := e.store.AddEventForTurn(ctx, sid, turnID, typ, data); err == nil {
+		if deltas := e.outcomes.Apply(sid, typ, ev.Data); len(deltas) > 0 {
+			if err := e.store.RecordModelOutcomes(ctx, deltas); err != nil {
+				slog.Warn("record model outcomes", "session", sid, "error", err)
+			}
+		}
+	}
 	if emit != nil {
 		emit(agentproto.AgentEvent{Type: typ, Data: data})
 	}

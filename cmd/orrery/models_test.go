@@ -13,6 +13,7 @@ import (
 	"github.com/ductone/orrery/config"
 	"github.com/ductone/orrery/internal/catalog"
 	"github.com/ductone/orrery/internal/model"
+	"github.com/ductone/orrery/internal/outcomes"
 	"github.com/ductone/orrery/internal/store"
 )
 
@@ -352,6 +353,7 @@ func TestModelsStatsOutcomeColumns(t *testing.T) {
 	if err := rt.store.CreateSession(ctx, store.Session{ID: "a", BudgetUSD: 1}); err != nil {
 		t.Fatal(err)
 	}
+	projector := outcomes.New()
 	for _, ev := range []struct {
 		kind string
 		data any
@@ -362,7 +364,12 @@ func TestModelsStatsOutcomeColumns(t *testing.T) {
 		{"assistant.message", map[string]any{"model": "xai/grok-4.6"}},
 		{"session.terminal", map[string]any{"status": "pass"}},
 	} {
-		if _, err := rt.store.AddEvent(ctx, "a", ev.kind, ev.data); err != nil {
+		// Project outcomes as the engine does for each stored event.
+		stored, err := rt.store.AddEvent(ctx, "a", ev.kind, ev.data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := rt.store.RecordModelOutcomes(ctx, projector.Apply("a", ev.kind, stored.Data)); err != nil {
 			t.Fatal(err)
 		}
 	}

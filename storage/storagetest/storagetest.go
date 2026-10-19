@@ -30,6 +30,7 @@ func Run(t *testing.T, newStore func(t *testing.T) storage.Store) {
 		{"CreateSessionAccepted", testCreateSessionAccepted},
 		{"ForkSession", testForkSession},
 		{"Messages", testMessages},
+		{"TodosAndWorkItems", testTodosAndWorkItems},
 		{"ApplyCompaction", testApplyCompaction},
 		{"Checkpoints", testCheckpoints},
 		{"Events", testEvents},
@@ -575,7 +576,65 @@ func testRouteStats(t *testing.T, s storage.Store) {
 	if !found {
 		t.Fatalf("ModelStats has no route-a: %+v", stats)
 	}
-	if _, err := s.ModelOutcomes(ctx); err != nil {
-		t.Fatal(err)
+
+	must(t, s.RecordModelOutcomes(ctx, []storage.ModelOutcome{{Route: "route-a", AuthoredFail: 0.5, Reviews: 1}, {Route: "route-b", RunPass: 1}}))
+	must(t, s.RecordModelOutcomes(ctx, []storage.ModelOutcome{{Route: "route-a", AuthoredPass: 0.5, AuthoredFail: -0.5, Overturned: 1}}))
+	outcomes, err := s.ModelOutcomes(ctx)
+	must(t, err)
+	if len(outcomes) != 2 || outcomes[0].Route != "route-a" || outcomes[1].Route != "route-b" {
+		t.Fatalf("ModelOutcomes = %+v, want route-a and route-b in order", outcomes)
+	}
+	if a := outcomes[0]; a.AuthoredPass != 0.5 || a.AuthoredFail != 0 || a.Reviews != 1 || a.Overturned != 1 {
+		t.Fatalf("route-a = %+v, want the deltas summed", a)
+	}
+}
+
+func testTodosAndWorkItems(t *testing.T, s storage.Store) {
+	ctx := context.Background()
+	newSession(t, s, "s")
+	if c, err := s.Continuation(ctx, "s"); err != nil || c.SessionID != "" || c.FinalReportRequired {
+		t.Fatalf("Continuation before any todos = %+v, %v; want the zero value", c, err)
+	}
+	must(t, s.SetTodos(ctx, "s", []storage.Todo{
+		{Text: "write it", Phase: "act", Status: "in_progress"},
+		{Text: "test it", Phase: "verify", Status: "pending"},
+	}))
+	todos, err := s.Todos(ctx, "s")
+	must(t, err)
+	items, err := s.WorkItems(ctx, "s")
+	must(t, err)
+	c, err := s.Continuation(ctx, "s")
+	must(t, err)
+	if len(todos) != 2 || todos[1].Position != 1 || len(items) != 2 || c.ActiveWorkItemID != items[0].ID || !c.FinalReportRequired {
+		t.Fatalf("after plan: todos %+v, items %+v, continuation %+v", todos, items, c)
+	}
+	first := items[0].ID
+
+	// Reordering keeps work-item identity; completing and dropping keeps the
+	// completed item as a report subject.
+	must(t, s.SetTodos(ctx, "s", []storage.Todo{
+		{Text: "test it", Phase: "verify", Status: "in_progress"},
+		{Text: "write it", Phase: "act", Status: "completed"},
+	}))
+	must(t, s.SetTodos(ctx, "s", []storage.Todo{{Text: "test it", Phase: "verify", Status: "completed"}}))
+	items, _ = s.WorkItems(ctx, "s")
+	var kept bool
+	for _, wi := range items {
+		kept = kept || (wi.ID == first && wi.Status == "completed" && !wi.CompletedAt.IsZero())
+	}
+	if len(items) != 2 || !kept {
+		t.Fatalf("work items = %+v, want both, with the first completed under its original ID", items)
+	}
+
+	must(t, s.AcknowledgeReport(ctx, "s", "reported"))
+	c, _ = s.Continuation(ctx, "s")
+	sess, _ := s.Session(ctx, "s")
+	if c.FinalReportRequired || c.ActiveWorkItemID != "" || sess.DurableSummary != "reported" {
+		t.Fatalf("after AcknowledgeReport: continuation %+v, summary %q", c, sess.DurableSummary)
+	}
+	// Resubmitting the acknowledged plan does not re-open the obligation.
+	must(t, s.SetTodos(ctx, "s", []storage.Todo{{Text: "test it", Phase: "verify", Status: "completed"}}))
+	if c, _ = s.Continuation(ctx, "s"); c.FinalReportRequired {
+		t.Fatal("an acknowledged report was re-opened by an identical plan")
 	}
 }

@@ -3,13 +3,12 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
+	"github.com/ductone/orrery/storage"
 	"github.com/google/uuid"
 )
 
@@ -40,11 +39,11 @@ func (s *Store) EnsureWorkspace(ctx context.Context, identityKey string) (Worksp
 
 // CommitMemory inserts a durable record. New records are active unless status is explicitly pending.
 func (s *Store) CommitMemory(ctx context.Context, x MemoryRecord) (MemoryRecord, error) {
-	applyMemoryDefaults(&x)
+	storage.ApplyMemoryDefaults(&x)
 	if x.ID == "" {
 		x.ID = uuid.NewString()
 	}
-	if err := validateMemoryRecord(x); err != nil {
+	if err := storage.ValidateMemoryRecord(x); err != nil {
 		return MemoryRecord{}, err
 	}
 	if err := s.validateMemoryReferences(ctx, x); err != nil {
@@ -66,11 +65,11 @@ func (s *Store) CommitMemory(ctx context.Context, x MemoryRecord) (MemoryRecord,
 }
 
 func (s *Store) UpdateMemory(ctx context.Context, x MemoryRecord) error {
-	applyMemoryDefaults(&x)
+	storage.ApplyMemoryDefaults(&x)
 	if x.ID == "" {
 		return errors.New("memory id is required")
 	}
-	if err := validateMemoryRecord(x); err != nil {
+	if err := storage.ValidateMemoryRecord(x); err != nil {
 		return err
 	}
 	if err := s.validateMemoryReferences(ctx, x); err != nil {
@@ -161,22 +160,22 @@ func (s *Store) ForgetMemory(ctx context.Context, workspaceID, id string) error 
 func (s *Store) ApplyMemoryMutationEvent(ctx context.Context, sid, turnID, eventType string, eventData any, m MemoryMutation) (MemoryRecord, error) {
 	x := m.Record
 	if m.Operation == "commit" || m.Operation == "correct" {
-		applyMemoryDefaults(&x)
+		storage.ApplyMemoryDefaults(&x)
 		if x.ID == "" {
 			x.ID = uuid.NewString()
 		}
-		if err := validateMemoryRecord(x); err != nil {
+		if err := storage.ValidateMemoryRecord(x); err != nil {
 			return MemoryRecord{}, err
 		}
 		if err := s.validateMemoryReferences(ctx, x); err != nil {
 			return MemoryRecord{}, err
 		}
 	} else if m.Operation == "update" {
-		applyMemoryDefaults(&x)
+		storage.ApplyMemoryDefaults(&x)
 		if x.ID == "" {
 			return MemoryRecord{}, errors.New("memory id is required")
 		}
-		if err := validateMemoryRecord(x); err != nil {
+		if err := storage.ValidateMemoryRecord(x); err != nil {
 			return MemoryRecord{}, err
 		}
 		if err := s.validateMemoryReferences(ctx, x); err != nil {
@@ -362,64 +361,6 @@ func (s *Store) ListMemory(ctx context.Context, f MemoryFilter) ([]MemoryRecord,
 		return out[i].UpdatedAt.After(out[j].UpdatedAt)
 	})
 	return out, nil
-}
-
-func applyMemoryDefaults(x *MemoryRecord) {
-	if x.Scope == "" {
-		x.Scope = "workspace"
-	}
-	if x.Status == "" {
-		x.Status = "active"
-	}
-	if x.EvidenceRefs == "" {
-		x.EvidenceRefs = "[]"
-	}
-}
-
-func validateMemoryRecord(x MemoryRecord) error {
-	if x.WorkspaceID == "" {
-		return errors.New("workspace id is required")
-	}
-	if x.Scope != "workspace" && x.Scope != "project" {
-		return errors.New("memory scope must be workspace or project")
-	}
-	switch x.Status {
-	case "pending", "active", "superseded", "expired":
-	default:
-		return errors.New("invalid memory status")
-	}
-	if x.Kind == "" {
-		return errors.New("memory kind is required")
-	}
-	if x.Text == "" {
-		return errors.New("memory text is required")
-	}
-	if x.Provenance == "" {
-		return errors.New("memory provenance is required")
-	}
-	if !validMemoryKind(x.Kind) {
-		return fmt.Errorf("memory kind must be one of %s", strings.Join(MemoryKinds, ", "))
-	}
-	if !validMemoryProvenance(x.Provenance) {
-		return fmt.Errorf("memory provenance must be one of %s", strings.Join(MemoryProvenances, ", "))
-	}
-	if x.Confidence < 0 || x.Confidence > 1 {
-		return errors.New("memory confidence must be between 0 and 1")
-	}
-	var evidence any
-	if err := json.Unmarshal([]byte(x.EvidenceRefs), &evidence); err != nil {
-		return errors.New("memory evidence refs must be a JSON array")
-	}
-	if _, ok := evidence.([]any); !ok {
-		return errors.New("memory evidence refs must be a JSON array")
-	}
-	if x.Status == "superseded" && x.SupersededBy == "" {
-		return errors.New("superseded memory requires a replacement")
-	}
-	if x.Status != "superseded" && x.SupersededBy != "" {
-		return errors.New("only superseded memory may name a replacement")
-	}
-	return nil
 }
 
 func (s *Store) validateMemoryReferences(ctx context.Context, x MemoryRecord) error {

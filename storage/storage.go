@@ -101,14 +101,15 @@ type Transcript interface {
 	// AcknowledgeReport clears the continuation's report obligation and
 	// active work item after a final report and replaces the durable summary.
 	AcknowledgeReport(ctx context.Context, sid, durableSummary string) error
-	// SetTodos replaces the todo list and, in the same transaction, syncs the
-	// work-item ledger and continuation from it (see the SQLite store's
-	// syncWorkItemsTx for the matching rules).
+	// SetTodos replaces the todo list and, in the same transaction, applies
+	// SyncWorkItems: it stores the returned work items (deleting the rest)
+	// and sets the continuation's ActiveWorkItemID and FinalReportRequired,
+	// keeping its ResolvedRequestIDs.
 	SetTodos(ctx context.Context, sid string, todos []Todo) error
 	Todos(ctx context.Context, sid string) ([]Todo, error)
 	WorkItems(ctx context.Context, sid string) ([]WorkItem, error)
-	// Continuation returns the session's continuation ledger, or a zero value
-	// with SessionID set when none exists.
+	// Continuation returns the session's continuation ledger, or the zero
+	// value when none exists.
 	Continuation(ctx context.Context, sid string) (Continuation, error)
 	// CreateCheckpoint snapshots the session, messages, todos, pending inputs,
 	// work items and continuation.
@@ -123,8 +124,6 @@ type Transcript interface {
 // Events is the session's append-only event log.
 type Events interface {
 	// AddEvent appends an event with the session's next sequence number.
-	// The SQLite store also projects review and run events into
-	// ModelOutcomes in the same transaction (see its outcomeProjector).
 	AddEvent(ctx context.Context, sid, typ string, data any) (Event, error)
 	AddEventForTurn(ctx context.Context, sid, turnID, typ string, data any) (Event, error)
 	// EventsAfter returns events with sequence greater than after, in order.
@@ -157,8 +156,8 @@ type Inbox interface {
 	DeliverQueuedMessage(ctx context.Context, sid, requestID, turnID, kind, payloadHash string, content, request any) (RequestReceipt, error)
 	// AcceptMessage atomically records the request receipt, appends content
 	// as a user message, appends the events "turn.accepted" and
-	// "user.message", and sets LatestRequest to content's "content" field
-	// unless content is marked "harness": true. A retry with the same
+	// "user.message", and sets LatestRequest as RequestText directs. A retry
+	// with the same
 	// request ID and payload returns the original receipt with Duplicate set
 	// and writes nothing; reusing the ID for different content is an error.
 	AcceptMessage(ctx context.Context, sid, requestID, turnID, kind, payloadHash string, content, request any) (RequestReceipt, error)
@@ -184,8 +183,11 @@ type Memory interface {
 	EnsureWorkspace(ctx context.Context, identityKey string) (Workspace, error)
 	// MemoryWorkspaces lists every workspace that has memory records.
 	MemoryWorkspaces(ctx context.Context) ([]Workspace, error)
-	// CommitMemory inserts a record; it is active unless Status is "pending".
+	// CommitMemory inserts a record after ApplyMemoryDefaults and
+	// ValidateMemoryRecord, generating an ID if it has none.
 	CommitMemory(ctx context.Context, x MemoryRecord) (MemoryRecord, error)
+	// UpdateMemory rewrites a record after ApplyMemoryDefaults and
+	// ValidateMemoryRecord.
 	UpdateMemory(ctx context.Context, x MemoryRecord) error
 	// SupersedeMemory marks oldID superseded by newID; both must belong to
 	// workspaceID.
@@ -196,8 +198,8 @@ type Memory interface {
 	// ApplyMemoryMutationEvent commits a memory change and its session event
 	// atomically.
 	ApplyMemoryMutationEvent(ctx context.Context, sid, turnID, eventType string, eventData any, m MemoryMutation) (MemoryRecord, error)
-	// ListMemory returns the workspace's records matching f. It first marks
-	// active and pending records past ExpiresAt as "expired".
+	// ListMemory returns the workspace's records matching f. It first stores
+	// "expired" as the status of every record MemoryExpired reports.
 	ListMemory(ctx context.Context, f MemoryFilter) ([]MemoryRecord, error)
 	// ObserveMemory records that session sid saw memory id and returns the
 	// number of distinct sessions that have.
@@ -233,6 +235,9 @@ type Routing interface {
 // running many agents can back it with one shared implementation and
 // delegate to it from each agent's Store.
 type RouteStats interface {
+	// RecordModelOutcomes adds each delta's counts to its route's totals.
+	// The engine derives the deltas from session events.
+	RecordModelOutcomes(ctx context.Context, deltas []ModelOutcome) error
 	RecordModelCall(ctx context.Context, route string, latency time.Duration, outputTokens int, truncated bool, inputTokens, cacheReadTokens int) error
 	RecordModelFailure(ctx context.Context, route, kind string) error
 	ModelStats(ctx context.Context) ([]ModelStat, error)

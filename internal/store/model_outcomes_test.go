@@ -5,6 +5,8 @@ import (
 	"math"
 	"path/filepath"
 	"testing"
+
+	"github.com/ductone/orrery/internal/outcomes"
 )
 
 func outcomeEvents(t *testing.T, s *Store) {
@@ -41,8 +43,23 @@ func outcomeEvents(t *testing.T, s *Store) {
 		{"completion.answer_check", map[string]any{"off_topic": false}},
 		{"session.terminal", map[string]any{"status": "pass"}},
 	}
+	addProjected(t, s, "a", events)
+}
+
+// addProjected stores events and records their outcomes, as the engine does.
+func addProjected(t *testing.T, s *Store, sid string, events []struct {
+	kind string
+	data any
+}) {
+	t.Helper()
+	ctx := context.Background()
+	p := outcomes.New()
 	for _, ev := range events {
-		if _, err := s.AddEvent(ctx, "a", ev.kind, ev.data); err != nil {
+		stored, err := s.AddEvent(ctx, sid, ev.kind, ev.data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.RecordModelOutcomes(ctx, p.Apply(sid, ev.kind, stored.Data)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -106,7 +123,7 @@ func TestModelOutcomesOverturn(t *testing.T) {
 	if err := s.CreateSession(ctx, Session{ID: "a", BudgetUSD: 1}); err != nil {
 		t.Fatal(err)
 	}
-	for _, ev := range []struct {
+	addProjected(t, s, "a", []struct {
 		kind string
 		data any
 	}{
@@ -115,11 +132,7 @@ func TestModelOutcomesOverturn(t *testing.T) {
 		{"job.started", map[string]any{"review": true, "model": "r/rev"}},
 		{"review.outcome", map[string]any{"pass": false}},
 		{"review.outcome", map[string]any{"pass": true, "disputed": true}},
-	} {
-		if _, err := s.AddEvent(ctx, "a", ev.kind, ev.data); err != nil {
-			t.Fatal(err)
-		}
-	}
+	})
 	got, _ := s.ModelOutcomes(ctx)
 	m := map[string]ModelOutcome{}
 	for _, o := range got {

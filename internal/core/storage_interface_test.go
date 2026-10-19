@@ -55,4 +55,16 @@ func TestEngineRunsOnAnyStore(t *testing.T) {
 	if ws.messages.Load() == 0 {
 		t.Fatal("the engine wrote no messages through the wrapped store")
 	}
+	// The engine attributes the run's outcome to the route that answered.
+	got, err := ws.ModelOutcomes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	passes := 0
+	for _, o := range got {
+		passes += o.RunPass
+	}
+	if passes != 1 {
+		t.Fatalf("model outcomes = %+v, want one run pass", got)
+	}
 }
