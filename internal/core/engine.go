@@ -102,6 +102,9 @@ type Engine struct {
 	closeOnce sync.Once
 	// logger receives the engine's log output; nil means slog.Default.
 	logger *slog.Logger
+	// profile is the domain part of the system prompt; the zero value is
+	// CodingProfile.
+	profile Profile
 }
 
 // log is the engine's logger.
@@ -1268,7 +1271,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			system := systemPrompt(promptContext{
 				decision: d, depth: req.Depth, workspace: req.Workspace.Path, resultSchema: req.ResultSchema,
 				tools: names, readOnlyWorker: req.Workspace.Mode == "read", efficientWorker: efficientWorker,
-				deployment: runtimeCfg.Instructions, bootstrap: discovery.Bootstrap(),
+				deployment: runtimeCfg.Instructions, bootstrap: discovery.Bootstrap(), profile: e.profile,
 			})
 			history = append(history, provider.Message{Role: "user", Content: currentRequest(s, latestRequest)})
 			history = mode.apply(history)

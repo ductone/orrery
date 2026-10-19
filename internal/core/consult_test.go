@@ -53,7 +53,7 @@ func TestConsultAsksAStrongerModelWithTheSession(t *testing.T) {
 		case strings.Contains(instructions, "senior engineer consulted"):
 			consultBody = body
 			_ = json.NewEncoder(w).Encode(responsesText("Use a cursor that encodes the last ID; reject unknown cursors with 400."))
-		case !strings.Contains(instructions, systemPromptLead):
+		case !strings.Contains(instructions, harnessMarker):
 			_ = json.NewEncoder(w).Encode(responsesText("Title"))
 		default:
 			turns++

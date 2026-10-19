@@ -24,7 +24,7 @@ func TestGatewayRateLimitReroutesWithinTheSameKey(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if instructions, _ := body["instructions"].(string); !strings.Contains(instructions, systemPromptLead) {
+		if instructions, _ := body["instructions"].(string); !strings.Contains(instructions, harnessMarker) {
 			_ = json.NewEncoder(w).Encode(responsesText("Title"))
 			return
 		}
@@ -144,7 +144,7 @@ func TestReasoningOnlyTruncationEscalatesToAnotherModel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if instructions, _ := body["instructions"].(string); !strings.Contains(instructions, systemPromptLead) {
+		if instructions, _ := body["instructions"].(string); !strings.Contains(instructions, harnessMarker) {
 			_ = json.NewEncoder(w).Encode(responsesText("Title"))
 			return
 		}

@@ -21,3 +21,10 @@ func WithScratchRoot(dir string) Option {
 func WithLogger(l *slog.Logger) Option {
 	return func(e *Engine) { e.logger = l }
 }
+
+// WithProfile sets the domain part of the engine's system prompt, replacing
+// the default CodingProfile. The engine's own harness rules are always
+// included.
+func WithProfile(p Profile) Option {
+	return func(e *Engine) { e.profile = p }
+}

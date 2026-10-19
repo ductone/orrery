@@ -48,6 +48,10 @@ type (
 	ReviewOutcome = core.ReviewOutcome
 	// WorkspaceFunc resolves a session's workspace; see Engine.UseWorkspaces.
 	WorkspaceFunc = core.WorkspaceFunc
+	// Profile is the domain part of the system prompt.
+	Profile = core.Profile
+	// ProfileSection is a titled list of rules in a Profile.
+	ProfileSection = core.ProfileSection
 	// Providers routes model calls to the configured providers.
 	Providers = provider.Registry
 	// MCPManager runs the configured MCP servers.
@@ -145,7 +149,19 @@ type Options struct {
 	// slog.Default(). Give each engine its own, tagged with the agent, when
 	// running many in one process.
 	Logger *slog.Logger
+	// Profile sets the domain part of the system prompt: who the agent is and
+	// its guidance for the work. Nil means CodingProfile(); a host running a
+	// non-coding agent passes GeneralProfile() or its own. The engine's
+	// harness rules are always included.
+	Profile *Profile
 }
+
+// CodingProfile is the default system prompt profile: an autonomous coding
+// agent working in a checkout.
+func CodingProfile() Profile { return core.CodingProfile() }
+
+// GeneralProfile is a domain-neutral profile for a persistent assistant.
+func GeneralProfile() Profile { return core.GeneralProfile() }
 
 // New constructs an Engine. Install the model catalog first.
 //
@@ -170,6 +186,9 @@ func New(opts Options) (*Engine, error) {
 	}
 	if opts.Logger != nil {
 		copts = append(copts, core.WithLogger(opts.Logger))
+	}
+	if opts.Profile != nil {
+		copts = append(copts, core.WithProfile(*opts.Profile))
 	}
 	return core.New(opts.Config, opts.Store, p, opts.MCP, copts...), nil
 }
