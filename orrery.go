@@ -48,6 +48,8 @@ type (
 	SessionOptions = core.SessionOptions
 	// ReviewOutcome is the result of Engine.ReviewChange.
 	ReviewOutcome = core.ReviewOutcome
+	// RetentionReport is the result of Engine.MaintainStorage.
+	RetentionReport = core.RetentionReport
 	// WorkspaceFunc resolves a session's workspace; see Engine.UseWorkspaces.
 	WorkspaceFunc = core.WorkspaceFunc
 	// Profile is the domain part of the system prompt.
