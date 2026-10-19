@@ -86,6 +86,8 @@ When a host wakes after a stop or crash, interrupted sessions are continued in t
 
 Workspaces are on disk by default. `Engine.UseWorkspaces` lets a host supply each session's files instead: a `workspace.Workspace` with only an `FS` (for example a moraine `vfs.FS`, or `workspace.NewMemory()`) gets the file tools and instruction discovery but not `exec`, language servers, verification commands or isolated worktrees, and an empty `Workspace` gets no file tools. Give such workspaces a URI path like `moraine://agent-1`; it identifies the workspace's memory.
 
+A host can add its own tools with `Options.Tools`: each is a name, description, JSON Schema and a `Handler(ctx, ToolCall)` that receives the session ID and arguments, and its result is marshaled to JSON for the model (an error or panic is reported as a failed call). Host tools are offered to top-level sessions only unless `Workers` is set, and to read-only sessions only if `ReadOnly` is set; `orrery.New` rejects a name that is empty, repeated or a built-in's (a host tool also wins over an MCP tool of the same name). `EnabledTools`, `DisabledTools` and `ToolFilter` restrict what the model is offered, across file, engine, MCP and host tools, and a removed tool is also left out of the system prompt. Nothing in the engine requires a particular tool, but removing one changes behavior: without `ask` the agent cannot pause for input, without `spawn` it runs no workers, and without `job` it cannot wait on workers or `exec` background commands.
+
 ### Hosting many agents
 
 A host that runs one agent per store in one process creates an engine when an agent wakes and closes it when the agent sleeps:

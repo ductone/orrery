@@ -28,3 +28,25 @@ func WithLogger(l *slog.Logger) Option {
 func WithProfile(p Profile) Option {
 	return func(e *Engine) { e.profile = p }
 }
+
+// WithTools offers host-provided tools to the model; see Tool. It panics on a
+// tool with no name or handler, a name used twice, or a name a built-in tool
+// uses (ValidateTools reports these as an error instead).
+func WithTools(tools ...Tool) Option {
+	if err := ValidateTools(tools); err != nil {
+		panic(err)
+	}
+	return func(e *Engine) { e.hostTools = append(e.hostTools, tools...) }
+}
+
+// WithToolFilter keeps only the tools for which allow returns true, among
+// every tool offered to the model: file tools, engine tools, MCP tools and
+// host tools. Filtered tools are absent from the request and the system
+// prompt, and cannot be called. Several filters all must allow a tool.
+func WithToolFilter(allow func(name string) bool) Option {
+	return func(e *Engine) {
+		if allow != nil {
+			e.toolFilters = append(e.toolFilters, allow)
+		}
+	}
+}

@@ -283,7 +283,24 @@ func (r *Registry) add(n, d string, s map[string]any, h Handler) {
 	r.handlers[n] = h
 }
 func (r *Registry) Add(n, d string, s map[string]any, h Handler) { r.add(n, d, s, h) }
-func (r *Registry) AddScheme(name string, h Handler)             { r.schemes[name] = h }
+
+// Has reports whether a tool of that name is registered.
+func (r *Registry) Has(name string) bool { _, ok := r.handlers[name]; return ok }
+
+// Filter removes every tool for which keep returns false, so it is neither
+// offered to the model nor callable.
+func (r *Registry) Filter(keep func(name string) bool) {
+	kept := r.defs[:0]
+	for _, d := range r.defs {
+		if keep(d.Name) {
+			kept = append(kept, d)
+		} else {
+			delete(r.handlers, d.Name)
+		}
+	}
+	r.defs = kept
+}
+func (r *Registry) AddScheme(name string, h Handler) { r.schemes[name] = h }
 
 // AddFileScheme exposes an exact, read-only set of supervisor-provided files
 // without widening the workspace boundary. Keys become <name>://<key>.

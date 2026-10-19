@@ -22,7 +22,9 @@ package orrery
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/ductone/orrery/config"
 	"github.com/ductone/orrery/internal/catalog"
@@ -59,6 +61,10 @@ type (
 	// Classifier answers the engine's classifier-backed decisions; see
 	// Engine.UseClassifier.
 	Classifier = classify.Classifier
+	// Tool is a host-provided tool offered to the model; see Options.Tools.
+	Tool = core.Tool
+	// ToolCall is one invocation of a host Tool.
+	ToolCall = core.ToolCall
 	// SQLiteStore is the SQLite-backed session store.
 	SQLiteStore = store.Store
 )
@@ -154,6 +160,23 @@ type Options struct {
 	// non-coding agent passes GeneralProfile() or its own. The engine's
 	// harness rules are always included.
 	Profile *Profile
+	// Tools are host-provided tools offered to the model alongside the
+	// built-in ones. New fails on a tool whose name is empty, repeated, or a
+	// built-in tool's. A host tool takes precedence over an MCP tool of the
+	// same name.
+	Tools []Tool
+	// EnabledTools, when non-empty, limits the model to the named tools:
+	// built-in, engine and MCP tools not listed are not offered. Host Tools
+	// are always offered unless listed in DisabledTools.
+	EnabledTools []string
+	// DisabledTools names tools never offered to the model. Together with
+	// EnabledTools and ToolFilter, a tool must pass all of them. Tools the
+	// engine's own flow does not depend on can be removed freely; see the
+	// README for the few that change behavior.
+	DisabledTools []string
+	// ToolFilter, when set, is called with each tool's name and reports
+	// whether to offer it. It applies to all tools, host tools included.
+	ToolFilter func(name string) bool
 }
 
 // CodingProfile is the default system prompt profile: an autonomous coding
@@ -189,6 +212,27 @@ func New(opts Options) (*Engine, error) {
 	}
 	if opts.Profile != nil {
 		copts = append(copts, core.WithProfile(*opts.Profile))
+	}
+	if err := core.ValidateTools(opts.Tools); err != nil {
+		return nil, fmt.Errorf("orrery: %w", err)
+	}
+	if len(opts.Tools) > 0 {
+		copts = append(copts, core.WithTools(opts.Tools...))
+	}
+	if len(opts.EnabledTools) > 0 || len(opts.DisabledTools) > 0 || opts.ToolFilter != nil {
+		host := map[string]bool{}
+		for _, t := range opts.Tools {
+			host[t.Name] = true
+		}
+		copts = append(copts, core.WithToolFilter(func(name string) bool {
+			if slices.Contains(opts.DisabledTools, name) {
+				return false
+			}
+			if len(opts.EnabledTools) > 0 && !host[name] && !slices.Contains(opts.EnabledTools, name) {
+				return false
+			}
+			return opts.ToolFilter == nil || opts.ToolFilter(name)
+		}))
 	}
 	return core.New(opts.Config, opts.Store, p, opts.MCP, copts...), nil
 }

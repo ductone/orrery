@@ -105,6 +105,9 @@ type Engine struct {
 	// profile is the domain part of the system prompt; the zero value is
 	// CodingProfile.
 	profile Profile
+	// hostTools and toolFilters come from WithTools and WithToolFilter.
+	hostTools   []Tool
+	toolFilters []func(name string) bool
 }
 
 // log is the engine's logger.

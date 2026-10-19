@@ -265,6 +265,7 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 			return e.lsp.Call(ctx, root, lsp.Request{Operation: fmt.Sprint(a["operation"]), Path: fmt.Sprint(a["path"]), Line: line, Character: character, Query: fmt.Sprint(a["query"]), Server: fmt.Sprint(a["server"])})
 		})
 	}
+	e.addHostTools(r, sid, parentJob, req.Workspace.Mode == "read")
 	if runtimeMCP != nil {
 		definitions := runtimeMCP.Definitions()
 		if req.Workspace.Mode == "read" {
@@ -272,10 +273,25 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		}
 		for _, d := range definitions {
 			def := d
+			if r.Has(def.Name) {
+				// A host tool or built-in already has the name.
+				e.log().Warn("MCP tool shadowed by another tool", "tool", def.Name)
+				continue
+			}
 			r.Add(def.Name, def.Description, def.InputSchema, func(ctx context.Context, a map[string]any) (any, error) {
 				return runtimeMCP.CallForSession(ctx, sid, def.Name, a)
 			})
 		}
+	}
+	if len(e.toolFilters) > 0 {
+		r.Filter(func(name string) bool {
+			for _, allow := range e.toolFilters {
+				if !allow(name) {
+					return false
+				}
+			}
+			return true
+		})
 	}
 	return r
 }
