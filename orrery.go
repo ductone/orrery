@@ -110,9 +110,27 @@ type Options struct {
 	// Store holds sessions, transcripts, events, jobs and memory: OpenSQLite,
 	// or any storage.Store implementation. Required.
 	Store storage.Store
-	// Providers defaults to NewProviders(Config).
+	// Providers defaults to NewProviders(Config). Safe to share between
+	// engines in one process, and cheaper than building one per engine:
+	// it holds only credentials, the HTTP clients and the rate-limit and
+	// refusal state of those credentials, all guarded for concurrent use, and
+	// nothing per session or per engine. Sharing means that cooling of a key
+	// or a refused model applies to every engine using it, which is right
+	// when they share credentials; give engines that use different accounts
+	// different registries. Do not call SetRefusalHook on a registry already
+	// in use. The engine never closes it.
 	Providers *Providers
-	// MCP is optional; without it the engine has no MCP tools.
+	// MCP is optional; without it the engine has no MCP tools. Safe to share
+	// between engines: the manager keeps no per-session state (a session ID
+	// is only forwarded to servers configured as Squire bridges, and session
+	// IDs are UUIDs), and its servers' clients serialize their own I/O. Two
+	// caveats: tool definitions refresh at phase boundaries, so one engine's
+	// boundary can change the tool list another engine's next request sees
+	// (a prompt-cache concern, not a correctness one); and an MCP server that
+	// is itself stateful per connection sees all engines as one client.
+	// Engines that need isolated MCP servers, such as per-agent credentials,
+	// need their own manager. The engine never closes it, and ReplaceRuntime
+	// hands back the manager it replaced for the host to close.
 	MCP *MCPManager
 	// ScratchRoot is the directory holding session scratch directories
 	// (ScratchRoot/<session id>). Empty means the process-wide default under
@@ -126,6 +144,14 @@ type Options struct {
 }
 
 // New constructs an Engine. Install the model catalog first.
+//
+// The model catalog is process-global (InstallModelCatalog calls
+// model.Install): install it once, before creating engines, not per engine;
+// every engine in the process sees the same catalog, and installing it again
+// replaces it for all of them. The classifier (Engine.UseClassifier) is per
+// engine, so engines may share one implementation if it is safe for
+// concurrent use. An Engine's Close releases only what the engine created,
+// never Providers or MCP.
 func New(opts Options) (*Engine, error) {
 	if opts.Store == nil {
 		return nil, errors.New("orrery: a store is required")

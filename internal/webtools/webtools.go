@@ -30,6 +30,9 @@ func New(key string) *Client {
 	}}
 	return c
 }
+
+// CloseIdleConnections releases the client's idle keep-alive connections.
+func (c *Client) CloseIdleConnections() { c.http.CloseIdleConnections() }
 func safeDial(ctx context.Context, network, address string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {

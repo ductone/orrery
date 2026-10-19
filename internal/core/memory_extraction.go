@@ -239,23 +239,37 @@ func (e *Engine) scheduleMemoryExtraction(ctx context.Context, sid string) {
 	}()
 }
 
+// catchUpMemory schedules extraction for finished sessions it still has work
+// on. The scan runs in the background so waking an engine does not wait on one
+// store read per session, and stops early when the engine closes.
 func (e *Engine) catchUpMemory(ctx context.Context) {
-	e.backgroundWG.Add(1)
+	e.backgroundWG.Add(2)
 	go func() {
 		defer e.backgroundWG.Done()
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 		defer cancel()
 		e.cleanupPendingMemory(ctx)
 	}()
-	sessions, err := e.store.Sessions(ctx)
-	if err != nil {
-		return
-	}
-	for _, session := range sessions {
-		if session.Status != "running" && session.ParentSessionID == "" {
-			e.scheduleMemoryExtraction(ctx, session.ID)
+	go func() {
+		defer e.backgroundWG.Done()
+		sessions, err := e.store.Sessions(ctx)
+		if err != nil {
+			return
 		}
-	}
+		for _, session := range sessions {
+			select {
+			case <-e.closed:
+				return
+			default:
+			}
+			if session.Status == "running" || session.ParentSessionID != "" {
+				continue
+			}
+			if pending, err := e.memoryPending(ctx, session.ID); err == nil && pending {
+				e.scheduleMemoryExtraction(ctx, session.ID)
+			}
+		}
+	}()
 }
 
 func (e *Engine) extractMemory(ctx context.Context, sid string) error {

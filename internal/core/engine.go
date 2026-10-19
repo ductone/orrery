@@ -97,13 +97,16 @@ type Engine struct {
 	// engines in the process.
 	scratchRoot  string
 	scratchOwned bool
+	// closed is closed by Close; closeOnce makes Close idempotent.
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 // New constructs an Engine over store s. The engine closes only what it
 // creates: p and mc belong to the caller, who may share them between engines
 // and must close them itself.
 func New(cfg config.Config, s storage.Store, p *provider.Registry, mc *mcp.Manager, opts ...Option) *Engine {
-	e := &Engine{cfg: cfg, store: s, outcomes: outcomes.New(), providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), lsp: lsp.New(cfg.LSP), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}, writers: map[string]string{}, compactedLastTurn: map[string]bool{}, toolStates: map[string]*builtin.SessionState{}, memoryEpochs: map[string]*memoryEpoch{}}
+	e := &Engine{cfg: cfg, store: s, outcomes: outcomes.New(), providers: p, policy: router.NewV1(cfg.Router, s), mcp: mc, web: webtools.New(cfg.WebSearch.APIKey), lsp: lsp.New(cfg.LSP), cancels: map[string]context.CancelFunc{}, turnIDs: map[string]string{}, discovery: map[string]*instructionDiscovery{}, writers: map[string]string{}, compactedLastTurn: map[string]bool{}, toolStates: map[string]*builtin.SessionState{}, memoryEpochs: map[string]*memoryEpoch{}, closed: make(chan struct{})}
 	for _, opt := range opts {
 		opt(e)
 	}
@@ -154,8 +157,24 @@ func (e *Engine) routePerformance(ctx context.Context) map[string]router.RoutePe
 
 // Store returns the engine's store.
 func (e *Engine) Store() storage.Store { return e.store }
+
+// Close waits briefly for background work, then releases what the engine
+// created: language servers and idle web connections. It never closes the
+// provider registry or MCP manager passed to New; those belong to the host,
+// which may share them with other engines.
 func (e *Engine) Close() error {
+	e.closeOnce.Do(func() {
+		if e.closed != nil {
+			close(e.closed)
+		}
+	})
 	e.waitBackground()
+	e.runtimeMu.RLock()
+	web := e.web
+	e.runtimeMu.RUnlock()
+	if web != nil {
+		web.CloseIdleConnections()
+	}
 	if e.lsp != nil {
 		return e.lsp.Close()
 	}
@@ -211,7 +230,10 @@ func (e *Engine) Fork(ctx context.Context, id string, emit EmitFunc) (store.Sess
 func (e *Engine) SetBoundaryHook(hook func(context.Context) error) { e.boundary = hook }
 
 // ReplaceRuntime swaps only deployment/runtime state. The compiled model
-// catalog and session store are intentionally outside this boundary.
+// catalog and session store are intentionally outside this boundary. It
+// returns the MCP manager it replaced but never closes it: the engine does
+// not own the managers it is given, so the caller closes the old one once no
+// other engine uses it.
 func (e *Engine) ReplaceRuntime(cfg config.Config, providers *provider.Registry, mc *mcp.Manager) *mcp.Manager {
 	e.runtimeMu.Lock()
 	defer e.runtimeMu.Unlock()
@@ -220,6 +242,9 @@ func (e *Engine) ReplaceRuntime(cfg config.Config, providers *provider.Registry,
 	e.providers = providers
 	e.policy = router.NewV1(cfg.Router, e.store)
 	e.mcp = mc
+	if e.web != nil {
+		e.web.CloseIdleConnections()
+	}
 	e.web = webtools.New(cfg.WebSearch.APIKey)
 	if e.lsp == nil {
 		e.lsp = lsp.New(cfg.LSP)
