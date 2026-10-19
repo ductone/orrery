@@ -76,12 +76,11 @@ func TestCommitAtStepBoundariesBeforeTerminal(t *testing.T) {
 	e, cs, workspace := newCommittingEngine(t, s)
 	var order []string
 	cs.order = &order
-	var omu sync.Mutex
 	res, err := e.Run(context.Background(), commitTestRequest(workspace), func(ev agentproto.AgentEvent) {
 		if ev.Type == "terminal" {
-			omu.Lock()
+			cs.mu.Lock()
 			order = append(order, "terminal")
-			omu.Unlock()
+			cs.mu.Unlock()
 		}
 	})
 	if err != nil {
@@ -90,8 +89,8 @@ func TestCommitAtStepBoundariesBeforeTerminal(t *testing.T) {
 	if res.Status != agentproto.Pass {
 		t.Fatalf("result = %+v", res)
 	}
-	omu.Lock()
-	defer omu.Unlock()
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
 	terminal := -1
 	commitsBefore := 0
 	for i, o := range order {
@@ -156,12 +155,11 @@ func TestCommitBeforeInputRequired(t *testing.T) {
 	e, cs, workspace := newCommittingEngine(t, s)
 	var order []string
 	cs.order = &order
-	var omu sync.Mutex
 	res, err := e.Run(context.Background(), commitTestRequest(workspace), func(ev agentproto.AgentEvent) {
 		if ev.Type == "input_required" {
-			omu.Lock()
+			cs.mu.Lock()
 			order = append(order, "input_required")
-			omu.Unlock()
+			cs.mu.Unlock()
 		}
 	})
 	if err != nil {
@@ -170,8 +168,8 @@ func TestCommitBeforeInputRequired(t *testing.T) {
 	if res.Status != agentproto.InputRequired {
 		t.Fatalf("result = %+v", res)
 	}
-	omu.Lock()
-	defer omu.Unlock()
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
 	i := len(order) - 1
 	for ; i >= 0 && order[i] != "input_required"; i-- {
 	}
