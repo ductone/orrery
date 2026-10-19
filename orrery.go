@@ -65,6 +65,9 @@ type (
 	Tool = core.Tool
 	// ToolCall is one invocation of a host Tool.
 	ToolCall = core.ToolCall
+	// InputHandler answers a session's request for input without a person; see
+	// Options.InputHandler and AutoAnswer.
+	InputHandler = core.InputHandler
 	// SQLiteStore is the SQLite-backed session store.
 	SQLiteStore = store.Store
 )
@@ -177,6 +180,19 @@ type Options struct {
 	// ToolFilter, when set, is called with each tool's name and reports
 	// whether to offer it. It applies to all tools, host tools included.
 	ToolFilter func(name string) bool
+	// InputHandler, if set, is asked before a session pauses for a person: for
+	// the model's questions, the dollar budget and the limits (see
+	// agentproto.InputRequest.Kind). When it returns an answer and true, the
+	// answer is applied as if a person had given it through Continue, and the
+	// run goes on: Engine.Run returns the final outcome rather than
+	// InputRequired. When it returns false, or an error (which is logged), the
+	// session pauses as usual. Persistent agents with no person watching use
+	// AutoAnswer. Nil means every pause waits for a person.
+	InputHandler InputHandler
+	// MaxAutoAnswers bounds how many answers InputHandler gives in one run
+	// before the session pauses for a person regardless, so a handler that
+	// agrees to everything cannot loop forever. Zero means 10.
+	MaxAutoAnswers int
 }
 
 // CodingProfile is the default system prompt profile: an autonomous coding
@@ -233,6 +249,12 @@ func New(opts Options) (*Engine, error) {
 			}
 			return opts.ToolFilter == nil || opts.ToolFilter(name)
 		}))
+	}
+	if opts.InputHandler != nil {
+		copts = append(copts, core.WithInputHandler(opts.InputHandler))
+	}
+	if opts.MaxAutoAnswers > 0 {
+		copts = append(copts, core.WithMaxAutoAnswers(opts.MaxAutoAnswers))
 	}
 	return core.New(opts.Config, opts.Store, p, opts.MCP, copts...), nil
 }

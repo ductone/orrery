@@ -108,6 +108,10 @@ type Engine struct {
 	// hostTools and toolFilters come from WithTools and WithToolFilter.
 	hostTools   []Tool
 	toolFilters []func(name string) bool
+	// inputHandler answers pauses without a person; nil means none.
+	// maxAutoAnswers bounds the answers it gives in one run; 0 means the default.
+	inputHandler   InputHandler
+	maxAutoAnswers int
 }
 
 // log is the engine's logger.
@@ -369,7 +373,7 @@ func (e *Engine) startExisting(parent context.Context, id, turnID string, req ag
 	go func() {
 		defer close(out)
 		defer cancel()
-		out <- e.runRoot(ctx, id, req, emit)
+		out <- e.runAnswering(ctx, id, req, emit)
 		e.mu.Lock()
 		delete(e.cancels, id)
 		delete(e.turnIDs, id)
@@ -743,7 +747,7 @@ func (e *Engine) launchExisting(ctx context.Context, cancel context.CancelFunc, 
 	go func() {
 		defer close(out)
 		defer cancel()
-		out <- e.runRoot(ctx, id, req, emit)
+		out <- e.runAnswering(ctx, id, req, emit)
 		e.mu.Lock()
 		delete(e.cancels, id)
 		delete(e.turnIDs, id)
@@ -1159,7 +1163,8 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			outcome.BudgetReason = "usd"
 			if parentJob == "" {
 				cfg, _, _, _, _ := e.runtimeSnapshot()
-				return e.askToContinue(sid, budgetQuestion, fmt.Sprintf("I've used $%.2f of this session's $%.2f budget. Continue with another $%.2f?", s.SpentUSD+reserved, s.BudgetUSD, cfg.Budget.SessionUSD), []string{budgetChoice(cfg.Budget.SessionUSD), choiceStop}, outcome, emit)
+				detail := agentproto.InputRequest{BudgetUSD: s.BudgetUSD, SpentUSD: s.SpentUSD + reserved, ExtensionUSD: cfg.Budget.SessionUSD}
+				return e.askHarness(sid, budgetQuestion, fmt.Sprintf("I've used $%.2f of this session's $%.2f budget. Continue with another $%.2f?", s.SpentUSD+reserved, s.BudgetUSD, cfg.Budget.SessionUSD), []string{budgetChoice(cfg.Budget.SessionUSD), choiceStop}, detail, outcome, emit)
 			}
 			return e.finish(sid, agentproto.TaskResult{Status: agentproto.BudgetExhausted, Result: e.partialResult(sid), Outcome: outcome, Error: fmt.Sprintf("dollar budget exhausted: spent/reserved $%.4f of $%.4f", s.SpentUSD+reserved, s.BudgetUSD)}, emit)
 		}

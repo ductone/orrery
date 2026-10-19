@@ -101,7 +101,7 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		if !present {
 			allow = len(choices) == 0
 		}
-		input := agentproto.InputRequest{ID: uuid.NewString(), Question: strings.TrimSpace(fmt.Sprint(a["question"])), Choices: choices, AllowFreeform: allow}
+		input := agentproto.InputRequest{ID: uuid.NewString(), Question: strings.TrimSpace(fmt.Sprint(a["question"])), Choices: choices, AllowFreeform: allow, Kind: agentproto.InputAsk}
 		if input.Question == "" {
 			return nil, errors.New("question required")
 		}

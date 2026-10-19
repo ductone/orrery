@@ -25,13 +25,24 @@ const (
 	limitQuestion  = "limit-"
 	budgetQuestion = "budget-"
 
-	choiceContinue = "Keep going"
-	choiceStop     = "Stop here"
+	choiceContinue = agentproto.ChoiceContinue
+	choiceStop     = agentproto.ChoiceStop
 )
 
 // askToContinue pauses the run with a question for the person.
 func (e *Engine) askToContinue(sid, kind, question string, choices []string, outcome agentproto.Outcome, emit EmitFunc) agentproto.TaskResult {
-	input := agentproto.InputRequest{ID: kind + uuid.NewString(), Question: question, Choices: choices, AllowFreeform: true}
+	return e.askHarness(sid, kind, question, choices, agentproto.InputRequest{}, outcome, emit)
+}
+
+// askHarness is askToContinue with the budget details of a budget question
+// set in extra.
+func (e *Engine) askHarness(sid, kind, question string, choices []string, extra agentproto.InputRequest, outcome agentproto.Outcome, emit EmitFunc) agentproto.TaskResult {
+	input := extra
+	input.ID, input.Question, input.Choices, input.AllowFreeform = kind+uuid.NewString(), question, choices, true
+	input.Kind = agentproto.InputLimit
+	if kind == budgetQuestion {
+		input.Kind = agentproto.InputBudget
+	}
 	ctx := context.Background()
 	if err := e.store.CreatePendingInput(ctx, storePendingInput(sid, input)); err != nil {
 		return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: question + " (and the question could not be recorded: " + err.Error() + ")"}, emit)

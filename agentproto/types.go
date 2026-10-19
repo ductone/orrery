@@ -17,7 +17,32 @@ type InputRequest struct {
 	Question      string   `json:"question"`
 	Choices       []string `json:"choices,omitempty"`
 	AllowFreeform bool     `json:"allow_freeform"`
+	// Kind says why the session paused: InputAsk, InputBudget or InputLimit.
+	Kind string `json:"kind,omitempty"`
+	// For InputBudget: the session's budget and what it has spent (including
+	// reserved worker budget), and what agreeing to continue adds to the budget.
+	BudgetUSD    float64 `json:"budget_usd,omitempty"`
+	SpentUSD     float64 `json:"spent_usd,omitempty"`
+	ExtensionUSD float64 `json:"extension_usd,omitempty"`
 }
+
+// The kinds of pause an InputRequest can be.
+const (
+	// InputAsk is a question the model asked with its ask tool.
+	InputAsk = "ask"
+	// InputBudget asks whether to extend the session's dollar budget.
+	InputBudget = "budget"
+	// InputLimit asks whether to keep going after a limit or an error.
+	InputLimit = "limit"
+)
+
+// The answers the harness's own questions (InputBudget and InputLimit) offer
+// besides extending the budget.
+const (
+	ChoiceContinue = "Keep going"
+	ChoiceStop     = "Stop here"
+)
+
 type ContinueRequest struct{ SessionID, Content, InputID string }
 
 type Budget struct {
