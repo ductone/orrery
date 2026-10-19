@@ -100,6 +100,16 @@ type Engine struct {
 	// closed is closed by Close; closeOnce makes Close idempotent.
 	closed    chan struct{}
 	closeOnce sync.Once
+	// logger receives the engine's log output; nil means slog.Default.
+	logger *slog.Logger
+}
+
+// log is the engine's logger.
+func (e *Engine) log() *slog.Logger {
+	if e.logger != nil {
+		return e.logger
+	}
+	return slog.Default()
 }
 
 // New constructs an Engine over store s. The engine closes only what it
@@ -952,7 +962,7 @@ func (e *Engine) emit(ctx context.Context, sid, typ string, data any, emit EmitF
 	if ev, err := e.store.AddEventForTurn(ctx, sid, turnID, typ, data); err == nil {
 		if deltas := e.outcomes.Apply(sid, typ, ev.Data); len(deltas) > 0 {
 			if err := e.store.RecordModelOutcomes(ctx, deltas); err != nil {
-				slog.Warn("record model outcomes", "session", sid, "error", err)
+				e.log().Warn("record model outcomes", "session", sid, "error", err)
 			}
 		}
 	}
@@ -1010,7 +1020,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 	// serve host sessions in-process, and one panic took a TUI down.
 	defer func() {
 		if rec := recover(); rec != nil {
-			slog.Error("session run panicked", "session", sid, "panic", rec, "stack", string(debug.Stack()))
+			e.log().Error("session run panicked", "session", sid, "panic", rec, "stack", string(debug.Stack()))
 			result = e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Error: fmt.Sprintf("internal error: %v (a harness bug; the stack is in the log)", rec)}, emit)
 		}
 	}()
@@ -1039,7 +1049,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 	}()
 	if ws.Dir == "" && ws.Changes != nil {
 		if mark, err := ws.Changes.Mark(ctx); err != nil {
-			slog.Warn("mark workspace", "session", sid, "error", err)
+			e.log().Warn("mark workspace", "session", sid, "error", err)
 		} else {
 			e.mu.Lock()
 			if e.changeMarks == nil {
@@ -1820,7 +1830,7 @@ func (e *Engine) sessionWorkspace(ctx context.Context, sid string, w agentproto.
 	}
 	ws, err := e.resolveWorkspace(ctx, sid, w)
 	if err != nil {
-		slog.Error("resolve workspace", "session", sid, "error", err)
+		e.log().Error("resolve workspace", "session", sid, "error", err)
 		return workspace.Workspace{}
 	}
 	return ws

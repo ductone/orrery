@@ -57,6 +57,7 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 	e.mu.Unlock()
 	ws := e.sessionWorkspace(context.Background(), sid, req.Workspace)
 	r := builtin.NewForWorkspace(ws, state, string(dialect), req.Workspace.Mode == "read")
+	r.SetLogger(e.log())
 	if ws.Dir != "" {
 		r.SetScratch(e.scratchDir(e.scratchOwner(context.Background(), sid)))
 	}

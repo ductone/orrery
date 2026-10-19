@@ -1,5 +1,7 @@
 package core
 
+import "log/slog"
+
 // Option configures an Engine at construction; see New.
 type Option func(*Engine)
 
@@ -11,4 +13,11 @@ type Option func(*Engine)
 // directory, and do not point two engines at one.
 func WithScratchRoot(dir string) Option {
 	return func(e *Engine) { e.scratchRoot, e.scratchOwned = dir, dir != "" }
+}
+
+// WithLogger sends the engine's log output (and its tools') to l instead of
+// slog.Default(). A host running many engines passes one per engine, with
+// attributes such as the agent ID.
+func WithLogger(l *slog.Logger) Option {
+	return func(e *Engine) { e.logger = l }
 }

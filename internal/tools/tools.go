@@ -53,10 +53,16 @@ type Registry struct {
 	// scratch is the session's scratch directory; read, edit and exec may
 	// use it although it lies outside the workspace. Empty when unset.
 	scratch string
+	// logger receives tool panics; nil means slog.Default.
+	logger *slog.Logger
 	// jobFallback serves job ids this registry did not start, such as the
 	// worker jobs spawn creates.
 	jobFallback func(ctx context.Context, id, action string) (any, error)
 }
+
+// SetLogger sets where the registry logs, such as a tool panic. Without it
+// the registry logs through slog.Default.
+func (r *Registry) SetLogger(l *slog.Logger) { r.logger = l }
 
 // SetScratch names the session's scratch directory. It is created on first
 // use by exec, which exposes it as ORRERY_SCRATCH.
@@ -355,7 +361,11 @@ func (r *Registry) Call(ctx context.Context, name string, args map[string]any) (
 	// the model as a failed call and log the stack.
 	defer func() {
 		if rec := recover(); rec != nil {
-			slog.Error("tool panicked", "tool", name, "panic", rec, "stack", string(debug.Stack()))
+			log := r.logger
+			if log == nil {
+				log = slog.Default()
+			}
+			log.Error("tool panicked", "tool", name, "panic", rec, "stack", string(debug.Stack()))
 			value, err = nil, fmt.Errorf("tool %s failed with an internal error (%v); this is a harness bug, not a problem with the call", name, rec)
 		}
 	}()

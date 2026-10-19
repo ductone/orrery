@@ -141,6 +141,10 @@ type Options struct {
 	// there that are older than a day. Hosts running many engines in one
 	// process should give each its own.
 	ScratchRoot string
+	// Logger receives the engine's and its tools' log output; nil means
+	// slog.Default(). Give each engine its own, tagged with the agent, when
+	// running many in one process.
+	Logger *slog.Logger
 }
 
 // New constructs an Engine. Install the model catalog first.
@@ -163,6 +167,9 @@ func New(opts Options) (*Engine, error) {
 	var copts []core.Option
 	if opts.ScratchRoot != "" {
 		copts = append(copts, core.WithScratchRoot(opts.ScratchRoot))
+	}
+	if opts.Logger != nil {
+		copts = append(copts, core.WithLogger(opts.Logger))
 	}
 	return core.New(opts.Config, opts.Store, p, opts.MCP, copts...), nil
 }
