@@ -84,6 +84,17 @@ When a host wakes after a stop or crash, interrupted sessions are continued in t
 
 Workspaces are on disk by default. `Engine.UseWorkspaces` lets a host supply each session's files instead: a `workspace.Workspace` with only an `FS` (for example a moraine `vfs.FS`, or `workspace.NewMemory()`) gets the file tools and instruction discovery but not `exec`, language servers, verification commands or isolated worktrees, and an empty `Workspace` gets no file tools. Give such workspaces a URI path like `moraine://agent-1`; it identifies the workspace's memory.
 
+### Hosting many agents
+
+A host that runs one agent per store in one process creates an engine when an agent wakes and closes it when the agent sleeps:
+
+- One engine per agent store. Engines do not share sessions, and `Close` on sleep stops its background work and releases what it created.
+- Share `Options.Providers` (and `Options.MCP`, if its servers need no per-agent isolation) across engines; the engine never closes them, so close them when the host shuts down. See the field docs for the caveats.
+- Call `orrery.InstallModelCatalog` once at startup, not per engine: the catalog is process-global.
+- Give each engine its own `Options.ScratchRoot` (a directory it owns exclusively) and `Options.Logger` (for example `slog.Default().With("agent", id)`). Without a `ScratchRoot` engines share one temp directory, and each only cleans up finished sessions of its own store.
+
+Waking an engine over a store with 200 finished sessions measured (`BenchmarkEngineNewClose`, Apple M3 Pro) about 2 ms and 5,000 allocations without providers, and about 6 ms and 21,000 allocations with them, down from 10 ms and 32,000: startup memory catch-up now schedules only sessions with extraction pending.
+
 ### Model catalog and statistics
 
 `orrery models` lists the startup catalog: discovered routes (or their cache), built-in routes, and config overrides. The aligned table shows route and canonical model IDs, tier, family, input/output prices per million tokens, context window, and discovered/overridden flags. Disabled config entries and override warnings appear below it.
