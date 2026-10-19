@@ -173,7 +173,7 @@ func (j JevConfig) Timeout() time.Duration {
 
 // MemoryConfig governs the durable, workspace-scoped memory layer described
 // in docs/proposals/memory.md. Derivation, retrieval, and storage are always on;
-// injection defaults on and can be disabled independently of automatic commit.
+// injection defaults on and can be disabled independently.
 // Numeric limits are clamped in code to safe ceilings/floors; RetainDays of 0
 // means records never expire automatically.
 type MemoryConfig struct {
@@ -183,10 +183,10 @@ type MemoryConfig struct {
 	// Inject adds selected active memory to the assembled prompt by default.
 	// Selection remains bounded by MaxRecords and MaxTokens.
 	Inject bool `yaml:"inject"`
-	// AutoCommit allows immediate activation of model-derived candidates.
-	// It defaults off; extracted proposals can still be promoted after successful
-	// triage and observations in two distinct sessions, or user confirmation.
-	AutoCommit bool `yaml:"auto_commit"`
+	// LegacyAutoCommit accepts the removed auto_commit key so existing
+	// strict-decoded configs continue to load. Its value is ignored: records
+	// committed through the memory tool are always active.
+	LegacyAutoCommit *bool `yaml:"auto_commit,omitempty"`
 	// MaxRecords caps how many memory records may be selected/pinned at once.
 	// Optional: zero/negative means defaultMemoryMaxRecords.
 	MaxRecords int `yaml:"max_records"`

@@ -45,12 +45,14 @@ Never promote private chain-of-thought, credentials, raw customer data, or unver
 
 The parent extracts bounded, evidence-backed candidates from **root-session evidence only** after successful requests, with startup catch-up from a persisted per-session watermark. Compaction can also produce candidates alongside its summary. Extraction is not a shutdown operation. Workers cannot propose typed memory candidates, and there is no direct worker-result extraction path; neither read nor shared-write worker results are a supported memory-candidate channel.
 
-Extracted candidates start as pending proposals with `extracted` provenance. Jev supplies a bounded triage signal, not prose or storage mutations:
+Extracted candidates are recorded with `extracted` provenance. Jev supplies a bounded triage signal, not prose or storage mutations:
 
 - A successful triage score **below 0.5** drops the candidate.
-- Missing credentials, failed calls, or missing/invalid answers leave candidates pending; failure is not permission to promote.
-- With successful triage, repeated observations in **two distinct sessions** can promote a matching proposal to active. Repetition within one session does not satisfy this rule.
-- Explicit user confirmation can activate a pending proposal. `auto_commit: false` is the default: it disables immediate automatic activation, not the successfully triaged two-session promotion path. Opting into `auto_commit` allows immediate activation after successful triage.
+- A score **at or above 0.75** activates it immediately.
+- Scores in between, missing credentials, failed calls, or missing/invalid answers leave the candidate pending; failure is not permission to promote. Pending records are re-triaged later and are never injected.
+- Explicit user confirmation can activate a pending proposal.
+
+Records committed through the memory tool (`propose`) are always active; there is no `auto_commit` setting. The key is still accepted in config files and ignored. Extraction is the only producer of pending records, which is why `confirm` and re-triage remain.
 
 Pending proposals are surfaced through the **next request context**, explicitly labeled as **untrusted proposals, not established facts**, so the agent can offer them for confirmation. They are separate from the active-memory injection set. Proposal event notices carry record IDs, not memory text; the notices alone are not the proposal presentation channel.
 
@@ -63,7 +65,6 @@ Current defaults in [`config/config.go`](../../config/config.go) and [`orrery.ex
 ```yaml
 memory:
   inject: true                     # bounded active-memory injection
-  auto_commit: false               # no immediate automatic activation
   max_records: 8
   max_tokens: 1200
   max_record_bytes: 2048

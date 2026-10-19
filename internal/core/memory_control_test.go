@@ -23,6 +23,21 @@ func memoryEngine(t *testing.T, cfg config.MemoryConfig) *Engine {
 	return e
 }
 
+// pendingMemory stores a pending extraction-style record, the only way a
+// record becomes pending now that memory-tool commits are always active.
+func pendingMemory(t *testing.T, e *Engine, root, text string) store.MemoryRecord {
+	t.Helper()
+	w, ok := e.ensureMemoryWorkspace(context.Background(), root)
+	if !ok {
+		t.Fatal("memory workspace unavailable")
+	}
+	rec, err := e.store.CommitMemory(context.Background(), store.MemoryRecord{WorkspaceID: w.ID, Kind: "fact", Text: text, Provenance: "extracted", Confidence: 0.6, Status: "pending"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rec
+}
+
 func TestMemoryControlLifecycle(t *testing.T) {
 	ctx := context.Background()
 	e := memoryEngine(t, config.MemoryConfig{RetainDays: 7})
@@ -38,22 +53,27 @@ func TestMemoryControlLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := proposed.(store.MemoryRecord)
-	if rec.Status != "pending" {
-		t.Fatalf("proposal status = %q, want pending", rec.Status)
+	if rec.Status != "active" {
+		t.Fatalf("proposal status = %q, want active", rec.Status)
 	}
 	if rec.ExpiresAt == nil {
 		t.Fatal("configured retention must set an expiry")
 	}
 
-	if _, err := e.controlMemory(ctx, "s1", root, "confirm", map[string]any{"id": rec.ID}, emit); err == nil {
+	// Extraction can leave a record pending; confirm is how a person activates it.
+	pendingRec := pendingMemory(t, e, root, "pending extracted note")
+	if _, err := e.controlMemory(ctx, "s1", root, "confirm", map[string]any{"id": pendingRec.ID}, emit); err == nil {
 		t.Fatal("confirm without explicit user confirmation must fail")
 	}
-	confirmed, err := e.controlMemory(ctx, "s1", root, "confirm", map[string]any{"id": rec.ID, "user_confirmed": true}, emit)
+	confirmed, err := e.controlMemory(ctx, "s1", root, "confirm", map[string]any{"id": pendingRec.ID, "user_confirmed": true}, emit)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if confirmed.(store.MemoryRecord).Status != "active" {
 		t.Fatal("confirmed record must be active")
+	}
+	if _, err := e.controlMemory(ctx, "s1", root, "forget", map[string]any{"id": pendingRec.ID, "user_confirmed": true}, emit); err != nil {
+		t.Fatal(err)
 	}
 
 	if _, err := e.controlMemory(ctx, "s1", root, "correct", map[string]any{"id": rec.ID, "text": "tests live in a testdata directory"}, emit); err == nil {
@@ -120,13 +140,7 @@ func TestMemoryCorrectionGuardsAndPinnedCopy(t *testing.T) {
 	ctx := context.Background()
 	e := memoryEngine(t, config.MemoryConfig{MaxRecordBytes: 8})
 	root := t.TempDir()
-	pending, err := e.controlMemory(ctx, "s1", root, "propose", map[string]any{
-		"kind": "fact", "text": "short", "evidence_refs": []any{"test"},
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rec := pending.(store.MemoryRecord)
+	rec := pendingMemory(t, e, root, "short")
 	if _, err := e.controlMemory(ctx, "s1", root, "correct", map[string]any{"id": rec.ID, "text": "changed", "user_confirmed": true}, nil); err == nil {
 		t.Fatal("pending memory must not be corrected")
 	}

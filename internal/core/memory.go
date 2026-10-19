@@ -451,12 +451,8 @@ func (e *Engine) controlMemory(ctx context.Context, sid, workspacePath, action s
 		if err != nil {
 			return nil, err
 		}
-		status := "pending"
-		if cfg.Memory.AutoCommit {
-			status = "active"
-		}
-		data := map[string]any{"status": status, "kind": kind, "scope": "workspace"}
-		rec, err := mutate("memory.committed", data, store.MemoryMutation{Operation: "commit", Record: store.MemoryRecord{WorkspaceID: w.ID, Scope: "workspace", Kind: kind, Text: text, Provenance: "observed", Confidence: 1, Status: status, EvidenceRefs: refs, ExpiresAt: expiry()}})
+		data := map[string]any{"status": "active", "kind": kind, "scope": "workspace"}
+		rec, err := mutate("memory.committed", data, store.MemoryMutation{Operation: "commit", Record: store.MemoryRecord{WorkspaceID: w.ID, Scope: "workspace", Kind: kind, Text: text, Provenance: "observed", Confidence: 1, Status: "active", EvidenceRefs: refs, ExpiresAt: expiry()}})
 		if err != nil {
 			return nil, err
 		}

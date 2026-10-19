@@ -316,9 +316,6 @@ func TestMemoryDefaults(t *testing.T) {
 	if !d.Memory.Inject {
 		t.Fatal("memory inject must default to true")
 	}
-	if d.Memory.AutoCommit {
-		t.Fatal("memory auto_commit must default to false")
-	}
 	if d.Memory.Records() != 8 {
 		t.Fatalf("default max_records = %d, want 8", d.Memory.Records())
 	}
@@ -353,6 +350,16 @@ func TestMemoryStrictDecodeAndValidation(t *testing.T) {
 		}
 	}
 
+	for _, v := range []bool{false, true} {
+		cfg, err := write(fmt.Sprintf("memory:\n  auto_commit: %t\n", v))
+		if err != nil {
+			t.Fatalf("legacy memory.auto_commit=%t must load: %v", v, err)
+		}
+		if cfg.Memory.LegacyAutoCommit == nil || *cfg.Memory.LegacyAutoCommit != v {
+			t.Fatalf("legacy memory.auto_commit=%t was not decoded", v)
+		}
+	}
+
 	if _, err := write("memory:\n  shadow: true\n"); err == nil {
 		t.Fatal("removed memory.shadow must be rejected")
 	}
@@ -365,11 +372,11 @@ func TestMemoryStrictDecodeAndValidation(t *testing.T) {
 	if _, err := write("memory:\n  retain_days: -1\n"); err == nil {
 		t.Fatal("negative retain_days must be rejected")
 	}
-	cfg, err := write("jev:\n  api_key: k\nmemory:\n  inject: false\n  auto_commit: true\n  max_records: 20\n")
+	cfg, err := write("jev:\n  api_key: k\nmemory:\n  inject: false\n  max_records: 20\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Memory.Inject || !cfg.Memory.AutoCommit {
+	if cfg.Memory.Inject {
 		t.Fatalf("memory overrides lost: %+v", cfg.Memory)
 	}
 	if cfg.Memory.Records() != 20 {

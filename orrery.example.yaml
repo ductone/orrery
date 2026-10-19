@@ -60,12 +60,13 @@ budget:
 #   timeout_seconds: 5
 # Durable, workspace-scoped memory (see docs/proposals/memory.md). Derivation,
 # retrieval, and storage are always on. Bounded active-record injection defaults
-# on; set inject: false to omit active memory from prompts. Extracted proposals
-# stay pending unless confirmed or successfully triaged and repeated across two
-# distinct sessions. auto_commit opts into immediate activation after triage.
+# on; set inject: false to omit active memory from prompts. Records committed
+# through the memory tool are always active. Extracted proposals are activated
+# by triage (score >= 0.75) and stay pending, never injected, when triage is
+# unavailable or uncertain; a person can confirm them. The removed auto_commit
+# key is still accepted and ignored.
 # memory:
 #   inject: true
-#   auto_commit: false
 #   max_records: 8
 #   max_tokens: 1200
 #   max_record_bytes: 2048

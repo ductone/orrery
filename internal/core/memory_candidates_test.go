@@ -274,7 +274,7 @@ func TestMemorySkipsTempWorkspaces(t *testing.T) {
 
 func TestMemoryTriageFailureStaysPendingAcrossSessions(t *testing.T) {
 	ctx := context.Background()
-	e := memoryEngine(t, config.MemoryConfig{AutoCommit: true})
+	e := memoryEngine(t, config.MemoryConfig{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
 	defer srv.Close()
 	e.cfg.Jev.APIKey, e.cfg.Jev.BaseURL = "key", srv.URL
