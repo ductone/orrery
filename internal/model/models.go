@@ -81,7 +81,8 @@ var Models = []Model{
 // startup.
 var Routes = []Route{
 	{Provider: "anthropic", Model: "claude-fable-5", Pricing: Pricing{Input: 10, Output: 50, CacheRead: 1, CacheWrite: 12.5}},
-	{Provider: "anthropic", Model: "claude-sonnet-5", Pricing: Pricing{Input: 3, Output: 15, CacheRead: .3, CacheWrite: 3.75}},
+	{Provider: "anthropic", Model: "claude-sonnet-5", Pricing: Pricing{Input: 2, Output: 10, CacheRead: .2, CacheWrite: 2.5}},
+	{Provider: "anthropic", Model: "claude-sonnet-5-5", Pricing: Pricing{Input: 2, Output: 10, CacheRead: .2, CacheWrite: 2.5}},
 	{Provider: "openai", Model: "gpt-5.6-sol", Pricing: Pricing{Input: 5, Output: 30, CacheRead: .5, CacheWrite: 6.25, Thresholds: []ThresholdRate{{AboveTokens: 272000, Input: 10, Output: 45, CacheRead: 1, CacheWrite: 12.5}}}},
 	{Provider: "openai", Model: "gpt-5.6-terra", Pricing: Pricing{Input: 2, Output: 12, CacheRead: .2, CacheWrite: 2.5, Thresholds: []ThresholdRate{{AboveTokens: 272000, Input: 4, Output: 18, CacheRead: .4, CacheWrite: 5}}}},
 	{Provider: "openai", Model: "gpt-5.6-luna", Pricing: Pricing{Input: .2, Output: 1.2, CacheRead: .02, CacheWrite: .25, Thresholds: []ThresholdRate{{AboveTokens: 272000, Input: .4, Output: 1.8, CacheRead: .04, CacheWrite: .5}}}},
