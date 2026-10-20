@@ -17,6 +17,17 @@ type Profile struct {
 	// like one of the engine's own (TOOLS, WORKFLOW, DELIVERY) adds its rules
 	// after the engine's rules in that section; other titles are new sections.
 	Sections []ProfileSection
+	// MemoryDurable describes what counts as durable memory for this agent:
+	// the "true" criterion of the triage that decides whether an extracted
+	// memory is kept, also given to the extraction prompt. Empty means the
+	// default, "A convention, gotcha, workflow, command or preference not
+	// evident from the code".
+	MemoryDurable string
+	// MemoryNotDurable describes what does not count as durable memory: the
+	// triage's "false" criterion, also given to the extraction prompt. Empty
+	// means the default, "A description of code behaviour or structure,
+	// session progress, speculation or task-specific detail".
+	MemoryNotDurable string
 }
 
 // ProfileSection is a titled list of rules in a Profile.
@@ -99,7 +110,9 @@ func GeneralProfile() Profile {
 // profile, and an empty Identity gets a neutral one.
 func (p Profile) resolved() Profile {
 	if p.Identity == "" && len(p.Sections) == 0 {
-		return CodingProfile()
+		c := CodingProfile()
+		c.MemoryDurable, c.MemoryNotDurable = p.MemoryDurable, p.MemoryNotDurable
+		return c
 	}
 	if p.Identity == "" {
 		p.Identity = "You are Orrery, an autonomous agent"

@@ -199,6 +199,12 @@ type MemoryConfig struct {
 	// RetainDays expires records older than this many days. Zero means no
 	// automatic expiry; this is a meaningful value, not an "unset" sentinel.
 	RetainDays int `yaml:"retain_days"`
+	// KeepUncertain keeps pending records whose triage score is uncertain
+	// (between the discard and activation scores) pending when the engine
+	// re-triages pending memory at wake, instead of deleting them. Records
+	// at or above the activation score are still activated and those below
+	// the discard score still deleted. False (the default) deletes them.
+	KeepUncertain bool `yaml:"keep_uncertain"`
 }
 
 // Memory defaults and clamp ceilings/floors. Ceilings bound a batch's cost and

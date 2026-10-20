@@ -56,6 +56,11 @@ type (
 	Profile = core.Profile
 	// ProfileSection is a titled list of rules in a Profile.
 	ProfileSection = core.ProfileSection
+	// MemorySelector chooses the memory records injected into a session's
+	// prompt; see Options.MemorySelector.
+	MemorySelector = core.MemorySelector
+	// MemorySelectRequest is what a MemorySelector chooses from.
+	MemorySelectRequest = core.MemorySelectRequest
 	// Providers routes model calls to the configured providers.
 	Providers = provider.Registry
 	// MCPManager runs the configured MCP servers.
@@ -195,6 +200,16 @@ type Options struct {
 	// before the session pauses for a person regardless, so a handler that
 	// agrees to everything cannot loop forever. Zero means 10.
 	MaxAutoAnswers int
+	// MemorySelector, when set, chooses the memory records injected into a
+	// session's prompt in place of the built-in ranking. Nil keeps the default.
+	// It is called whenever the engine would re-select (session start, a phase
+	// change, after memory changed or compaction); candidates include pending
+	// records, which are rendered marked [unconfirmed]. The engine still
+	// enforces the record limit and token and byte budgets, ignores IDs that
+	// are not candidates, and falls back to the default ranking (logging the
+	// error) when it fails. Each selection is recorded as a memory.retrieved
+	// event in the session.
+	MemorySelector MemorySelector
 }
 
 // CodingProfile is the default system prompt profile: an autonomous coding
@@ -254,6 +269,9 @@ func New(opts Options) (*Engine, error) {
 	}
 	if opts.InputHandler != nil {
 		copts = append(copts, core.WithInputHandler(opts.InputHandler))
+	}
+	if opts.MemorySelector != nil {
+		copts = append(copts, core.WithMemorySelector(opts.MemorySelector))
 	}
 	if opts.MaxAutoAnswers > 0 {
 		copts = append(copts, core.WithMaxAutoAnswers(opts.MaxAutoAnswers))

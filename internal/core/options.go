@@ -35,6 +35,13 @@ func WithProfile(p Profile) Option {
 	return func(e *Engine) { e.profile = p }
 }
 
+// WithMemorySelector makes the engine ask sel which memory records to
+// inject into a session's prompt instead of using the built-in ranking; nil
+// keeps the default. See MemorySelector.
+func WithMemorySelector(sel MemorySelector) Option {
+	return func(e *Engine) { e.memorySelector = sel }
+}
+
 // WithTools offers host-provided tools to the model; see Tool. It panics on a
 // tool with no name or handler, a name used twice, or a name a built-in tool
 // uses (ValidateTools reports these as an error instead).

@@ -51,6 +51,8 @@ Extracted candidates are recorded with `extracted` provenance. Jev supplies a bo
 - A score **at or above 0.75** activates it immediately.
 - Scores in between, missing credentials, failed calls, or missing/invalid answers leave the candidate pending; failure is not permission to promote. Pending records are re-triaged later and are never injected.
 - Explicit user confirmation can activate a pending proposal.
+- At engine wake, pending records are re-triaged without a session: passing ones are activated, failing and uncertain ones deleted, and the score is stored as the record's confidence either way. `keep_uncertain: true` keeps uncertain ones pending instead.
+- The triage criteria (and the extraction prompt's description of what to extract) come from the profile's `MemoryDurable` / `MemoryNotDurable` when set.
 
 Records committed through the memory tool (`propose`) are always active; there is no `auto_commit` setting. The key is still accepted in config files and ignored. Extraction is the only producer of pending records, which is why `confirm` and re-triage remain.
 
@@ -59,6 +61,8 @@ Pending proposals are surfaced through the **next request context**, explicitly 
 ### Retrieval, injection, and configuration
 
 Only active, unexpired records are eligible for the pinned active-memory set. Injection defaults on and is bounded by **8 records / 1200 estimated tokens**. The selected set is pinned across ordinary turns and refreshed at declared cache-safe boundaries, with invalidation for mutations. Memory/store failures are best-effort rather than a reason to fail a coding session.
+
+A host can replace the ranking with `Options.MemorySelector`. It is called at the same refresh boundaries with the active and pending candidates; the engine keeps the returned order, enforces the same limits, ignores unknown IDs, renders pending records marked `[unconfirmed]`, and falls back to the default ranking when the selector errors. Every selection records a `memory.retrieved` event (version 2) with the ordered `ids`, their `ranks`, `statuses` and `scopes`, and `source` (`selector` or `default`); see `emitMemoryRetrieved` for the full payload.
 
 Current defaults in [`config/config.go`](../../config/config.go) and [`orrery.example.yaml`](../../orrery.example.yaml):
 
@@ -69,6 +73,7 @@ memory:
   max_tokens: 1200
   max_record_bytes: 2048
   retain_days: 0                   # no automatic expiry
+  keep_uncertain: false            # wake-time retriage deletes uncertain pending records
   jev:
     selection: false               # optional memory_select shadow observations
     compaction_benefit: false      # independent compaction_benefit observations

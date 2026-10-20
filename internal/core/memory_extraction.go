@@ -32,13 +32,52 @@ const (
 
 const memoryTriageQuestion = "Does this record state knowledge a future session could not learn by reading the code: a convention, gotcha, workflow, command or preference? Reject descriptions of what code does or how it is structured."
 
+// memoryProfileTriageQuestion replaces memoryTriageQuestion when the profile
+// sets its own durability criteria, which the default question's code-centric
+// wording could contradict.
+const memoryProfileTriageQuestion = "Does this record state durable knowledge a future session should remember, as described by the criteria? Reject anything the criteria say is not durable."
+
+// Default durability criteria, used when the profile leaves them empty.
+const (
+	defaultMemoryDurable    = "A convention, gotcha, workflow, command or preference not evident from the code"
+	defaultMemoryNotDurable = "A description of code behaviour or structure, session progress, speculation or task-specific detail"
+)
+
+// memoryCriteria returns the triage question and the durable / not-durable
+// criteria for e's profile, and whether the profile customized them.
+func (e *Engine) memoryCriteria() (question, durable, notDurable string, custom bool) {
+	question, durable, notDurable = memoryTriageQuestion, defaultMemoryDurable, defaultMemoryNotDurable
+	if d := strings.TrimSpace(e.profile.MemoryDurable); d != "" {
+		durable, custom = d, true
+	}
+	if n := strings.TrimSpace(e.profile.MemoryNotDurable); n != "" {
+		notDurable, custom = n, true
+	}
+	if custom {
+		question = memoryProfileTriageQuestion
+	}
+	return question, durable, notDurable, custom
+}
+
+// memoryExtractionSystem is the extraction prompt, extended with the
+// profile's durability criteria when it sets them, so extraction proposes
+// what triage will keep.
+func (e *Engine) memoryExtractionSystem() string {
+	_, durable, notDurable, custom := e.memoryCriteria()
+	if !custom {
+		return memoryExtractionPrompt
+	}
+	return memoryExtractionPrompt + " Durable memory for this agent: " + durable + ". Not durable: " + notDurable + "."
+}
+
 // triageMemory scores a candidate with Jev. It reports false when no valid
 // score is available, in which case the candidate is not recorded.
 func (e *Engine) triageMemory(ctx context.Context, jcfg config.JevConfig, candidate MemoryCandidate) (float64, bool) {
 	if e.classifier() == nil {
 		return 0, false
 	}
-	q := jev.Noul(memoryTriageQuestion, "A convention, gotcha, workflow, command or preference not evident from the code", "A description of code behaviour or structure, session progress, speculation or task-specific detail")
+	question, durable, notDurable, _ := e.memoryCriteria()
+	q := jev.Noul(question, durable, notDurable)
 	askCtx, cancel := context.WithTimeout(ctx, jcfg.Timeout())
 	defer cancel()
 	response, err := e.classifier().Ask(askCtx, candidate, map[string]jev.Question{"durable_memory": q})
@@ -376,7 +415,7 @@ func (e *Engine) extractMemory(ctx context.Context, sid string) error {
 	}
 	input := store.JSON(map[string]any{"durable_state": session.DurableSummary, "events": inputEvents, "existing_records": records, "max_record_bytes": cfg.Memory.RecordBytes()})
 	response, err := registry.CompleteOne(ctx, router.Decision{Model: m, Effort: model.EffortLow}, func(m model.ModelSpec, d router.Decision) (provider.Request, error) {
-		return provider.Request{System: memoryExtractionPrompt, Messages: []provider.Message{{Role: "user", Content: input}}, MaxOutput: min(2000, m.MaxOutput), Effort: d.Effort}, nil
+		return provider.Request{System: e.memoryExtractionSystem(), Messages: []provider.Message{{Role: "user", Content: input}}, MaxOutput: min(2000, m.MaxOutput), Effort: d.Effort}, nil
 	})
 	if err != nil {
 		return err
@@ -434,7 +473,10 @@ func (e *Engine) triageMany(ctx context.Context, jcfg config.JevConfig, recs []s
 
 // retriagePendingMemory applies the current triage to pending records in a
 // workspace: records at or above the activation score become active, those
-// below the discard score are forgotten, and the rest stay pending. It lets
+// below the discard score are forgotten, and the rest stay pending (or, with
+// discardUncertain, are forgotten too). Without a session (the wake sweep)
+// the triage score is stored as the record's Confidence whether it is
+// activated or forgotten. It lets
 // records created before automatic triage, or while Jev was unavailable, be
 // resolved without asking the person.
 func (e *Engine) retriagePendingMemory(ctx context.Context, sid string, w store.Workspace, jcfg config.JevConfig, discardUncertain bool) {
@@ -454,6 +496,11 @@ func (e *Engine) retriagePendingMemory(ctx context.Context, sid string, w store.
 			rec.Status, rec.Confidence = "active", score
 			err = e.store.UpdateMemory(ctx, rec)
 		case (score < memoryDiscardScore || discardUncertain) && sid == "":
+			// Record the score on the tombstone so a host can see why the
+			// record was dropped. The update is best-effort: failing it must
+			// not keep a record the triage rejected.
+			rec.Confidence = score
+			_ = e.store.UpdateMemory(ctx, rec)
 			err = e.store.ForgetMemory(ctx, w.ID, rec.ID)
 		case score >= memoryActivateScore:
 			rec.Status, rec.Confidence = "active", score
@@ -475,7 +522,8 @@ func (e *Engine) retriagePendingMemory(ctx context.Context, sid string, w store.
 // cleanupPendingMemory is the startup sweep of pending records left by the
 // confirmation-based flow: pending records in temporary (benchmark/eval)
 // workspaces are deleted, and elsewhere pending records are re-triaged, the
-// passing ones activated and the rest deleted. It does nothing without Jev,
+// passing ones activated and the rest deleted (uncertain ones are kept
+// pending instead when memory.keep_uncertain is set). It does nothing without Jev,
 // so untriaged records are never discarded blindly outside temp workspaces.
 func (e *Engine) cleanupPendingMemory(ctx context.Context) {
 	cfg, _, _, _, _ := e.runtimeSnapshot()
@@ -499,7 +547,7 @@ func (e *Engine) cleanupPendingMemory(ctx context.Context) {
 			continue
 		}
 		e.memoryExtractionMu.Lock()
-		e.retriagePendingMemory(ctx, "", w, jcfg, true)
+		e.retriagePendingMemory(ctx, "", w, jcfg, !cfg.Memory.KeepUncertain)
 		e.memoryExtractionMu.Unlock()
 	}
 }

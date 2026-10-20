@@ -105,6 +105,9 @@ type Engine struct {
 	// profile is the domain part of the system prompt; the zero value is
 	// CodingProfile.
 	profile Profile
+	// memorySelector, when set, chooses the injected memory records in place
+	// of rankMemory; see WithMemorySelector.
+	memorySelector MemorySelector
 	// hostTools and toolFilters come from WithTools and WithToolFilter.
 	hostTools   []Tool
 	toolFilters []func(name string) bool
