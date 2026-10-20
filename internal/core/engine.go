@@ -1347,7 +1347,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				}
 				continue
 			}
-			callErr := err
+			callErr, failedModel := err, decision.Model.ID
 			if policy.dropForRun {
 				e.dropModel(ctx, sid, decision.Model.ID, string(class)+" failures", progress, emit)
 			}
@@ -1370,6 +1370,10 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 					if cooling := runtimeProviders.CoolingSummary(); cooling != "" {
 						err = fmt.Errorf("routes cooling down: %s (%w)", cooling, err)
 					}
+				default:
+					// "No compatible models" alone hides why the last model
+					// was set aside; name the failure that excluded it.
+					err = fmt.Errorf("%w; %s was excluded after: %v", err, failedModel, callErr)
 				}
 				return e.routeFailureAfter(sid, parentJob, err, progress, outcome, emit)
 			}

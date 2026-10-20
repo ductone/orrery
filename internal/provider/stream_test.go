@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -117,5 +118,107 @@ func TestMidStreamStallFailsOverAfterIdleTimeout(t *testing.T) {
 				t.Fatal("a route that stalled mid-stream must cool down")
 			}
 		})
+	}
+}
+
+// realAnthropicStream is shaped like a Messages API stream: usage carries
+// service_tier and the cache_creation and server_tool_use objects, a thinking
+// block ends with a signature, and three tool calls arrive with no input
+// delta, one empty partial_json, and arguments split across chunks.
+var realAnthropicStream = []string{
+	`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-5-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":100,"cache_creation_input_tokens":20,"cache_read_input_tokens":50,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":20},"output_tokens":1,"service_tier":"standard","server_tool_use":{"web_search_requests":0}}}}`,
+	`{"type":"ping"}`,
+	`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`,
+	`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Look "}}`,
+	`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"first."}}`,
+	`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"c2lnbmF0dXJl"}}`,
+	`{"type":"content_block_stop","index":0}`,
+	`{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`,
+	`{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Checking."}}`,
+	`{"type":"content_block_stop","index":1}`,
+	`{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"t1","name":"status","input":{}}}`,
+	`{"type":"content_block_stop","index":2}`,
+	`{"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"t2","name":"status","input":{}}}`,
+	`{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":""}}`,
+	`{"type":"content_block_stop","index":3}`,
+	`{"type":"content_block_start","index":4,"content_block":{"type":"tool_use","id":"t3","name":"read","input":{}}}`,
+	`{"type":"content_block_delta","index":4,"delta":{"type":"input_json_delta","partial_json":""}}`,
+	`{"type":"content_block_delta","index":4,"delta":{"type":"input_json_delta","partial_json":"{\"path\": \"a"}}`,
+	`{"type":"content_block_delta","index":4,"delta":{"type":"input_json_delta","partial_json":".go\", \"lim"}}`,
+	`{"type":"content_block_delta","index":4,"delta":{"type":"input_json_delta","partial_json":"it\": 5}"}}`,
+	`{"type":"content_block_stop","index":4}`,
+	`{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":100,"cache_creation_input_tokens":20,"cache_read_input_tokens":50,"output_tokens":42,"server_tool_use":{"web_search_requests":0}}}`,
+	`{"type":"message_stop"}`,
+}
+
+func TestAnthropicRealStreamParsesAndReplaysObjectInputs(t *testing.T) {
+	var replayed map[string]any
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls > 1 {
+			_ = json.NewDecoder(r.Body).Decode(&replayed)
+		}
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		for _, ev := range realAnthropicStream {
+			var typ struct{ Type string }
+			_ = json.Unmarshal([]byte(ev), &typ)
+			_, _ = w.Write([]byte("event: " + typ.Type + "\ndata: " + ev + "\n\n"))
+		}
+	}))
+	defer srv.Close()
+	c := newAnthropic(srv.URL, []string{"k"})
+	spec := model.ModelSpec{ID: "anthropic/claude-sonnet-5-5", MaxOutput: 100}
+	tools := []Tool{{Name: "status"}, {Name: "read"}}
+	history := []Message{{Role: "user", Content: "go"}}
+	resp, err := c.Complete(context.Background(), spec, Request{MaxOutput: 100, Tools: tools, Messages: history})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage != (Usage{InputTokens: 170, OutputTokens: 42, CacheReadTokens: 50, CacheWriteTokens: 20}) {
+		t.Fatalf("usage = %+v", resp.Usage)
+	}
+	if resp.StopReason != "tool_use" || resp.Model != "claude-sonnet-5-5" || resp.Message.Content != "Checking." || resp.Message.Reasoning != "Look first." {
+		t.Fatalf("response = %+v", resp)
+	}
+	tc := resp.Message.ToolCalls
+	if len(tc) != 3 || tc[0].ID != "t1" || tc[1].ID != "t2" || tc[2].ID != "t3" {
+		t.Fatalf("tool calls = %+v", tc)
+	}
+	if tc[0].Arguments == nil || len(tc[0].Arguments) != 0 || tc[1].Arguments == nil || len(tc[1].Arguments) != 0 {
+		t.Fatalf("no-argument calls must keep an empty input: %+v", tc)
+	}
+	if tc[2].Arguments["path"] != "a.go" || tc[2].Arguments["limit"] != float64(5) {
+		t.Fatalf("split arguments = %+v", tc[2].Arguments)
+	}
+
+	// Replay the assistant turn, plus a stored call whose arguments are nil.
+	assistant := resp.Message
+	assistant.ToolCalls = append(assistant.ToolCalls, ToolCall{ID: "t4", Name: "status"})
+	history = append(history, assistant)
+	for _, call := range assistant.ToolCalls {
+		history = append(history, Message{Role: "tool", ToolCallID: call.ID, Content: "ok"})
+	}
+	if _, err := c.Complete(context.Background(), spec, Request{MaxOutput: 100, Tools: tools, Messages: history}); err != nil {
+		t.Fatal(err)
+	}
+	inputs := map[string]any{}
+	for _, m := range replayed["messages"].([]any) {
+		for _, b := range m.(map[string]any)["content"].([]any) {
+			if b := b.(map[string]any); b["type"] == "tool_use" {
+				inputs[b["id"].(string)] = b["input"]
+			}
+		}
+	}
+	if len(inputs) != 4 {
+		t.Fatalf("replayed tool_use inputs = %+v", inputs)
+	}
+	for id, in := range inputs {
+		if _, ok := in.(map[string]any); !ok {
+			t.Fatalf("tool_use %s input = %#v, want an object", id, in)
+		}
+	}
+	if inputs["t3"].(map[string]any)["path"] != "a.go" {
+		t.Fatalf("replayed arguments = %+v", inputs["t3"])
 	}
 }

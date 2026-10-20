@@ -65,7 +65,12 @@ func (c *anthropicClient) Complete(ctx context.Context, m model.ModelSpec, r Req
 			if wire := toWire[name]; wire != "" {
 				name = wire
 			}
-			content = append(content, map[string]any{"type": "tool_use", "id": tc.ID, "name": name, "input": tc.Arguments})
+			// The API requires an object; a call without arguments sends {}.
+			input := tc.Arguments
+			if input == nil {
+				input = map[string]any{}
+			}
+			content = append(content, map[string]any{"type": "tool_use", "id": tc.ID, "name": name, "input": input})
 		}
 		if x.Role == "tool" {
 			content = []any{map[string]any{"type": "tool_result", "tool_use_id": x.ToolCallID, "content": x.Content}}

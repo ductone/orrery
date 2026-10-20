@@ -85,12 +85,12 @@ func decodeEvent(data string, v any) error {
 // assembleAnthropic rebuilds a Messages API response from its event stream.
 func assembleAnthropic(r io.Reader) ([]byte, error) {
 	type block struct {
-		Type     string         `json:"type"`
-		Text     string         `json:"text,omitempty"`
-		Thinking string         `json:"thinking,omitempty"`
-		ID       string         `json:"id,omitempty"`
-		Name     string         `json:"name,omitempty"`
-		Input    map[string]any `json:"input,omitempty"`
+		Type     string          `json:"type"`
+		Text     string          `json:"text,omitempty"`
+		Thinking string          `json:"thinking,omitempty"`
+		ID       string          `json:"id,omitempty"`
+		Name     string          `json:"name,omitempty"`
+		Input    json.RawMessage `json:"input,omitempty"`
 		json     strings.Builder
 	}
 	var msg struct {
@@ -106,8 +106,8 @@ func assembleAnthropic(r io.Reader) ([]byte, error) {
 			Type    string `json:"type"`
 			Index   int    `json:"index"`
 			Message struct {
-				Model string         `json:"model"`
-				Usage map[string]int `json:"usage"`
+				Model string                     `json:"model"`
+				Usage map[string]json.RawMessage `json:"usage"`
 			} `json:"message"`
 			ContentBlock *block `json:"content_block"`
 			Delta        struct {
@@ -117,7 +117,7 @@ func assembleAnthropic(r io.Reader) ([]byte, error) {
 				PartialJSON string `json:"partial_json"`
 				StopReason  string `json:"stop_reason"`
 			} `json:"delta"`
-			Usage map[string]int `json:"usage"`
+			Usage map[string]json.RawMessage `json:"usage"`
 		}
 		if err := decodeEvent(data, &ev); err != nil {
 			return false, err
@@ -125,9 +125,7 @@ func assembleAnthropic(r io.Reader) ([]byte, error) {
 		switch ev.Type {
 		case "message_start":
 			msg.Model = ev.Message.Model
-			for k, v := range ev.Message.Usage {
-				msg.Usage[k] = v
-			}
+			mergeUsage(msg.Usage, ev.Message.Usage)
 		case "content_block_start":
 			if ev.ContentBlock != nil {
 				blocks[ev.Index] = ev.ContentBlock
@@ -149,9 +147,7 @@ func assembleAnthropic(r io.Reader) ([]byte, error) {
 			if ev.Delta.StopReason != "" {
 				msg.StopReason = ev.Delta.StopReason
 			}
-			for k, v := range ev.Usage {
-				msg.Usage[k] = v
-			}
+			mergeUsage(msg.Usage, ev.Usage)
 		case "message_stop":
 			return true, nil
 		case "error":
@@ -171,15 +167,34 @@ func assembleAnthropic(r io.Reader) ([]byte, error) {
 		b := blocks[i]
 		if b.Type == "tool_use" {
 			if s := strings.TrimSpace(b.json.String()); s != "" {
-				b.Input = nil
-				if err := json.Unmarshal([]byte(s), &b.Input); err != nil {
+				var input map[string]any
+				if err := json.Unmarshal([]byte(s), &input); err != nil {
 					return nil, &MalformedToolArgumentsError{Name: b.Name, Err: err}
 				}
+				b.Input = json.RawMessage(s)
+			}
+			// A call without arguments still carries an input object; dropping
+			// it would replay the call with a null input, which the API rejects.
+			if len(b.Input) == 0 || string(b.Input) == "null" {
+				b.Input = json.RawMessage("{}")
 			}
 		}
 		msg.Content = append(msg.Content, b)
 	}
 	return json.Marshal(msg)
+}
+
+// mergeUsage copies the numeric fields of an event's usage into dst. Usage
+// also carries strings (service_tier) and objects (cache_creation,
+// server_tool_use), which nothing reads; they are skipped rather than failing
+// the response.
+func mergeUsage(dst map[string]int, src map[string]json.RawMessage) {
+	for k, raw := range src {
+		var n int
+		if string(raw) != "null" && json.Unmarshal(raw, &n) == nil {
+			dst[k] = n
+		}
+	}
 }
 
 // assembleResponses returns the final response object of a Responses API
