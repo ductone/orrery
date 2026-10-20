@@ -475,7 +475,7 @@ func TestMemoryRecallScopesAndShadowing(t *testing.T) {
 	if got := texts([]string{"project"}); len(got) != 1 || got["group note"] != storage.ScopeGroup {
 		t.Fatalf("old scope name recall = %v", got)
 	}
-	if rendered := renderMemory(mustRecall(t, e, w.ID, []string{"agent", "group"})); !strings.Contains(rendered, "[fact/group] group note") {
+	if rendered := renderMemory(mustRecall(t, e, w.ID, []string{"agent", "group"}), false); !strings.Contains(rendered, "[fact/group] group note") {
 		t.Fatalf("source scope not rendered: %s", rendered)
 	}
 

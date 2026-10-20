@@ -74,6 +74,7 @@ memory:
   max_record_bytes: 2048
   retain_days: 0                   # no automatic expiry
   keep_uncertain: false            # wake-time retriage deletes uncertain pending records
+  show_ids: false                  # true renders "- [kind/scope id=<id>] text" and invites citing by id
   jev:
     selection: false               # optional memory_select shadow observations
     compaction_benefit: false      # independent compaction_benefit observations

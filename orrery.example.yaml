@@ -72,6 +72,7 @@ budget:
 #   max_record_bytes: 2048
 #   retain_days: 0 # 0 means records never expire automatically
 #   keep_uncertain: false # true keeps uncertain pending records at wake instead of deleting them
+#   show_ids: false # true renders "- [kind/scope id=<id>] text" so the model can cite notes by id
 # Retention bounds what a long-lived agent keeps. Engine.MaintainStorage applies
 # it; the host decides when to call it. Durations use Go syntax (no "d" unit).
 # retention:

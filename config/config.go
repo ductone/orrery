@@ -205,6 +205,11 @@ type MemoryConfig struct {
 	// at or above the activation score are still activated and those below
 	// the discard score still deleted. False (the default) deletes them.
 	KeepUncertain bool `yaml:"keep_uncertain"`
+	// ShowIDs renders each injected record's full ID in its tag,
+	// "- [kind/scope id=<id>] text", and adds a header sentence saying the
+	// model may cite a note by its id. The ids count toward MaxTokens. False
+	// (the default) renders "- [kind/scope] text" with the standard header.
+	ShowIDs bool `yaml:"show_ids"`
 }
 
 // Memory defaults and clamp ceilings/floors. Ceilings bound a batch's cost and
