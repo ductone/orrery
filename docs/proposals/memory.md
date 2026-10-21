@@ -43,7 +43,7 @@ Never promote private chain-of-thought, credentials, raw customer data, or unver
 
 ### Extraction, triage, and promotion
 
-The parent extracts bounded, evidence-backed candidates from **root-session evidence only** after successful requests, with startup catch-up from a persisted per-session watermark. Compaction can also produce candidates alongside its summary. Extraction is not a shutdown operation. Workers cannot propose typed memory candidates, and there is no direct worker-result extraction path; neither read nor shared-write worker results are a supported memory-candidate channel.
+The parent extracts bounded, evidence-backed candidates from **root-session evidence only** after successful requests, with startup catch-up from a persisted per-session watermark. A session that edited files or ran checks is always extracted; for any other session (conversation and read-only tool use) Jev first reads a bounded digest of its requests, tool results and final answer and asks whether a person stated a fact, preference, correction or decision or the agent learned something durable, skipping extraction below 0.5 (`memory.extraction_gate` records the decision). Without a Jev answer the session is extracted. `Engine.ReextractMemory` runs extraction again over one finished session, ignoring its watermark and the gate. Compaction can also produce candidates alongside its summary. Extraction is not a shutdown operation. Workers cannot propose typed memory candidates, and there is no direct worker-result extraction path; neither read nor shared-write worker results are a supported memory-candidate channel.
 
 Extracted candidates are recorded with `extracted` provenance. Jev supplies a bounded triage signal, not prose or storage mutations:
 

@@ -317,12 +317,99 @@ func (e *Engine) catchUpMemory(ctx context.Context) {
 	}()
 }
 
+// A session that changed files or ran checks is always worth extracting. For
+// the rest (conversation and read-only tool use) Jev decides from a bounded
+// digest of the session whether anything durable was said or learned. The gate
+// fails open: without an answer the session is extracted, which costs one
+// low-effort call to the title model.
+const (
+	memoryGateVersion      = "memory-gate/v1"
+	memoryGateRequests     = 3
+	memoryGateRequestChars = 3_000
+	memoryGateTools        = 10
+	memoryGateToolChars    = 400
+	memoryGateResultChars  = 2_000
+)
+
+const memoryGateQuestion = "Did a person state a fact, preference, correction or decision, or did the agent learn something durable, that would change how it works in future sessions?"
+
+// memoryGateQuestions is the gate's question, with the profile's durability
+// criteria when it sets them.
+func (e *Engine) memoryGateQuestions() map[string]jev.Question {
+	yes := "A person stated a fact, preference, correction or decision, or the session established something durable a future session should know."
+	no := "The session only asked questions, answered from what was already known, or reported progress on the task; nothing in it would change future work."
+	if _, durable, notDurable, custom := e.memoryCriteria(); custom {
+		yes += " Durable memory for this agent: " + durable + "."
+		no += " Not durable: " + notDurable + "."
+	}
+	return map[string]jev.Question{"worth_remembering": jev.Noul(memoryGateQuestion, yes, no)}
+}
+
+// memoryGate reports whether a session with no edits or checks should be
+// extracted, and emits memory.extraction_gate with the decision.
+func (e *Engine) memoryGate(ctx context.Context, sid string, jcfg config.JevConfig, state map[string]any) bool {
+	data := map[string]any{"question_version": memoryGateVersion, "extract": true}
+	if c := e.classifier(); c == nil {
+		data["source"] = "unavailable"
+	} else {
+		askCtx, cancel := context.WithTimeout(ctx, jcfg.Timeout())
+		response, err := c.Ask(askCtx, state, e.memoryGateQuestions())
+		cancel()
+		p := response.Answers["worth_remembering"].Noul
+		switch {
+		case err != nil:
+			data["source"], data["error"] = "error", err.Error()
+		case p == nil || *p < 0 || *p > 1:
+			data["source"] = "invalid"
+		default:
+			data["source"], data["probability"], data["extract"] = "jev", *p, *p >= memoryDiscardScore
+		}
+	}
+	e.emit(ctx, sid, "memory.extraction_gate", data, nil)
+	return data["extract"] == true
+}
+
+// lastTail keeps the last n values of s.
+func lastTail[T any](s []T, n int) []T {
+	if len(s) > n {
+		return s[len(s)-n:]
+	}
+	return s
+}
+
+// truncateTail keeps the end of s, where the newest message of a thread is.
+func truncateTail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return "…" + s[len(s)-n:]
+}
+
 func (e *Engine) extractMemory(ctx context.Context, sid string) error {
+	return e.runMemoryExtraction(ctx, sid, false)
+}
+
+// ReextractMemory runs memory extraction again over a finished session from
+// its first event, though its watermark has already passed them, and without
+// the extraction gate. Candidates already recorded are deduplicated as usual.
+// It returns when extraction finishes; a session that never passed has
+// nothing to extract.
+func (e *Engine) ReextractMemory(ctx context.Context, sid string) error {
+	if _, err := e.store.Session(ctx, sid); err != nil {
+		return err
+	}
+	return e.runMemoryExtraction(ctx, sid, true)
+}
+
+func (e *Engine) runMemoryExtraction(ctx context.Context, sid string, requested bool) error {
 	e.memoryRunMu.Lock()
 	defer e.memoryRunMu.Unlock()
-	watermark, err := e.store.MemoryWatermark(ctx, sid)
-	if err != nil {
-		return err
+	watermark := 0
+	if !requested {
+		var err error
+		if watermark, err = e.store.MemoryWatermark(ctx, sid); err != nil {
+			return err
+		}
 	}
 	events, err := e.store.EventsAfter(ctx, sid, watermark)
 	if err != nil {
@@ -344,9 +431,10 @@ func (e *Engine) extractMemory(ctx context.Context, sid string) error {
 		return nil
 	}
 	events = events[:end+1]
-	useful := false
+	useful := requested
 	refs := []string{}
 	inputEvents := []store.Event{}
+	requests, toolDigest, finalResult := []string{}, []string{}, ""
 	for _, event := range events {
 		switch event.Type {
 		case "tool.finished":
@@ -360,14 +448,17 @@ func (e *Engine) extractMemory(ctx context.Context, sid string) error {
 					useful = true
 				}
 				inputEvents = append(inputEvents, event)
+				toolDigest = append(toolDigest, truncate(finished.Call.Name+" "+store.JSON(finished.Call.Arguments)+" → "+store.JSON(finished.Result), memoryGateToolChars))
 			}
 		case "session.started", "user.message":
 			var message struct {
 				Spec    string `json:"spec"`
 				Content string `json:"content"`
 			}
-			if json.Unmarshal(event.Data, &message) == nil && memoryInstruction(message.Spec+message.Content) {
-				useful = true
+			if json.Unmarshal(event.Data, &message) == nil {
+				if text := strings.TrimSpace(message.Spec + message.Content); text != "" {
+					requests = append(requests, truncateTail(text, memoryGateRequestChars))
+				}
 			}
 			inputEvents = append(inputEvents, event)
 		case "memory.extraction_input":
@@ -380,12 +471,22 @@ func (e *Engine) extractMemory(ctx context.Context, sid string) error {
 			}
 			inputEvents = append(inputEvents, event)
 		case "session.terminal":
+			var terminal struct {
+				Result json.RawMessage `json:"result"`
+			}
+			if json.Unmarshal(event.Data, &terminal) == nil && len(terminal.Result) > 0 && string(terminal.Result) != "null" {
+				// A result is a string or a JSON object such as {"answer": ...}.
+				var text string
+				if json.Unmarshal(terminal.Result, &text) != nil {
+					text = string(terminal.Result)
+				}
+				if strings.TrimSpace(text) != "" {
+					finalResult = text
+				}
+			}
 			inputEvents = append(inputEvents, event)
 		}
 		refs = append(refs, event.EventID)
-	}
-	if !useful {
-		return e.store.AdvanceMemoryWatermark(ctx, sid, events[len(events)-1].Seq)
 	}
 	session, err := e.store.Session(ctx, sid)
 	if err != nil {
@@ -397,6 +498,16 @@ func (e *Engine) extractMemory(ctx context.Context, sid string) error {
 	}
 	if memoryTempWorkspace(session.WorkspacePath) {
 		return e.store.AdvanceMemoryWatermark(ctx, sid, events[len(events)-1].Seq)
+	}
+	if !useful {
+		state := map[string]any{
+			"requests":     lastTail(requests, memoryGateRequests),
+			"tool_results": lastTail(toolDigest, memoryGateTools),
+			"final_result": truncate(finalResult, memoryGateResultChars),
+		}
+		if !e.memoryGate(ctx, sid, cfg.EffectiveJev(), state) {
+			return e.store.AdvanceMemoryWatermark(ctx, sid, events[len(events)-1].Seq)
+		}
 	}
 	if registry == nil {
 		return fmt.Errorf("memory extraction provider unavailable")
@@ -430,19 +541,6 @@ func (e *Engine) extractMemory(ctx context.Context, sid string) error {
 		return err
 	}
 	return e.store.AdvanceMemoryWatermark(ctx, sid, events[len(events)-1].Seq)
-}
-
-func memoryInstruction(text string) bool {
-	text = strings.ToLower(strings.TrimSpace(text))
-	if text == "" || strings.Contains(text, "?") {
-		return false
-	}
-	for _, prefix := range []string{"what ", "which ", "why ", "where ", "when ", "who ", "how ", "is ", "are ", "does ", "do you ", "can you explain "} {
-		if strings.HasPrefix(text, prefix) {
-			return false
-		}
-	}
-	return true
 }
 
 // memoryTriageConcurrency bounds parallel Jev calls when re-triaging records.
