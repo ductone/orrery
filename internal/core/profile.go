@@ -15,7 +15,8 @@ type Profile struct {
 	Identity string
 	// Sections are the domain guidance sections, in order. A section titled
 	// like one of the engine's own (TOOLS, WORKFLOW, DELIVERY) adds its rules
-	// after the engine's rules in that section; other titles are new sections.
+	// after the engine's rules in that section, or replaces them when it sets
+	// ReplaceHarness; other titles are new sections.
 	Sections []ProfileSection
 	// MemoryDurable describes what counts as durable memory for this agent:
 	// the "true" criterion of the triage that decides whether an extracted
@@ -40,6 +41,14 @@ type ProfileSection struct {
 	// the engine's own that depend on a tool (consult, spawn) stay
 	// engine-owned and are not affected by the profile.
 	Requires string
+	// ReplaceHarness, on a section titled like one of the engine's own
+	// (TOOLS, WORKFLOW, DELIVERY), drops the engine's rules for that section
+	// so only this section's Rules appear; with no rules the section is left
+	// out entirely. It is for a host whose work the engine's rules do not
+	// fit (a coding agent's exploration limits for an analyst, say), and the
+	// host then owns everything that section says, including tool-dependent
+	// rules such as edit anchors. It has no effect on other titles.
+	ReplaceHarness bool
 }
 
 // CodingProfile is the default profile: an autonomous coding agent working in

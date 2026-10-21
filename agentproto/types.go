@@ -65,8 +65,11 @@ type RoutingHints struct {
 	// synthesising its result. Zero selects the harness default.
 	WorkerTurns int `json:"worker_turns,omitempty"`
 	// Model and Effort pin this request's own model calls to one route (id or
-	// canonical model name) and one reasoning effort, for benchmark sweeps.
-	// Child jobs do not inherit them.
+	// canonical model name) and one reasoning effort (none, low, medium,
+	// high, xhigh), for benchmark sweeps or a host that wants one session to
+	// think harder or less. Effort applies to every main-loop turn of the
+	// session on a model that supports it; on one that does not, routing
+	// picks the effort as usual. Child jobs do not inherit them.
 	Model  string `json:"model,omitempty"`
 	Effort string `json:"effort,omitempty"`
 	// Background marks work nobody is waiting on; routing then values time

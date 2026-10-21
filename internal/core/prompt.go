@@ -77,7 +77,8 @@ func systemPrompt(p promptContext) string {
 	}
 
 	// The engine's rules, by section: the ones it depends on whatever the
-	// domain. A profile section of the same title adds its rules after these.
+	// domain. A profile section of the same title adds its rules after these,
+	// or replaces them when it sets ReplaceHarness.
 	type harness struct {
 		title string
 		rules []string
@@ -116,11 +117,14 @@ func systemPrompt(p promptContext) string {
 			continue
 		}
 		rules := s.Rules
-		if !done[s.Title] {
+		if !done[s.Title] && !s.ReplaceHarness {
 			rules = append(slices.Clone(engineRules(s.Title)), rules...)
 		}
-		write(s.Title, rules)
 		done[s.Title] = true
+		if s.ReplaceHarness && !slices.ContainsFunc(rules, func(r string) bool { return r != "" }) {
+			continue
+		}
+		write(s.Title, rules)
 	}
 	// Engine sections the profile did not mention still appear.
 	for _, h := range engine {

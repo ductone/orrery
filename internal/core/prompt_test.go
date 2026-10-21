@@ -232,3 +232,66 @@ func TestEngineUsesTheProfile(t *testing.T) {
 		t.Fatalf("instructions = %q", instructions)
 	}
 }
+
+func TestProfileSectionReplacesHarnessRules(t *testing.T) {
+	c := basePrompt()
+	c.profile = Profile{Identity: "You are an analyst", Sections: []ProfileSection{
+		{Title: "WORKFLOW", ReplaceHarness: true, Rules: []string{"Survey everything relevant."}},
+		{Title: "DELIVERY", ReplaceHarness: true},
+		{Title: "TOOLS", Rules: []string{"Prefer queries."}},
+	}}
+	p := systemPrompt(c)
+	if strings.Contains(p, "two broad discovery calls") || strings.Contains(p, "Keep the todo plan") || !strings.Contains(p, "\n\nWORKFLOW\n- Survey everything relevant.") {
+		t.Fatalf("a replacing section's rules stand alone: %q", p)
+	}
+	if strings.Contains(p, "\n\nDELIVERY") || strings.Contains(p, "Orrery independently reviews") {
+		t.Fatal("a replacing section with no rules drops the section")
+	}
+	if i, j := strings.Index(p, "Do not open guessed paths"), strings.Index(p, "Prefer queries."); i < 0 || j < i {
+		t.Fatal("a section without ReplaceHarness still merges after the engine's rules")
+	}
+	// A non-engine title is unaffected by the flag.
+	c.profile.Sections = append(c.profile.Sections, ProfileSection{Title: "GARDEN", ReplaceHarness: true, Rules: []string{"Water early."}})
+	if !strings.Contains(systemPrompt(c), "\n\nGARDEN\n- Water early.") {
+		t.Fatal("ReplaceHarness on a new section keeps its rules")
+	}
+}
+
+func TestEffortHintPinsSessionTurns(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	e := New(config.Config{}, st, nil, nil)
+	s := &scriptedResponses{reply: func(int, map[string]any) map[string]any { return responsesText("done") }}
+	workspace := t.TempDir()
+	cfg := gateConfig(workspace, s.serve(t).URL)
+	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
+	_, results, err := e.Start(context.Background(), agentproto.TaskRequest{
+		Spec:      "say done",
+		Hints:     agentproto.RoutingHints{Effort: "xhigh"},
+		Budget:    agentproto.Budget{MaxUSD: 5, MaxTokens: 1_000_000, MaxWallClock: time.Minute},
+		Workspace: agentproto.Workspace{Path: workspace, Mode: "shared-write", Ownership: "external"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := <-results; r.Status != agentproto.Pass {
+		t.Fatalf("result = %+v", r)
+	}
+	main := 0
+	for _, r := range s.requests {
+		if instructions, _ := r["instructions"].(string); !strings.Contains(instructions, harnessMarker) {
+			continue
+		}
+		main++
+		reasoning, _ := r["reasoning"].(map[string]any)
+		if reasoning["effort"] != "xhigh" {
+			t.Fatalf("main-loop request reasoning = %#v, want effort xhigh", r["reasoning"])
+		}
+	}
+	if main == 0 {
+		t.Fatal("the main loop made no request")
+	}
+}
