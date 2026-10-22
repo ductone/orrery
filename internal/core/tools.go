@@ -124,7 +124,7 @@ func (e *Engine) toolRegistry(sid, parentJob string, req agentproto.TaskRequest,
 		}
 		return recallHistory(checkpoints, fmt.Sprint(a["query"])), nil
 	})
-	r.Add("todo", "Replace the ordered todo plan. Phase is explore, plan, implement, diagnose, review, or wrap-up.", obj(map[string]any{"items": map[string]any{"type": "array", "items": obj(map[string]any{"text": str(), "phase": str(), "status": map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "completed"}}}, "text", "phase", "status")}}, "items"), func(ctx context.Context, a map[string]any) (any, error) {
+	r.Add("todo", "Replace the ordered todo plan. Phase is explore, plan, implement, diagnose, review, or wrap-up. Status dropped marks an item you decided is not needed; a final answer is refused while any item is pending or in_progress.", obj(map[string]any{"items": map[string]any{"type": "array", "items": obj(map[string]any{"text": str(), "phase": str(), "status": map[string]any{"type": "string", "enum": []string{store.TodoPending, store.TodoInProgress, store.TodoCompleted, store.TodoDropped}}}, "text", "phase", "status")}}, "items"), func(ctx context.Context, a map[string]any) (any, error) {
 		b, _ := json.Marshal(a["items"])
 		var ts []store.Todo
 		if err := json.Unmarshal(b, &ts); err != nil {
@@ -652,7 +652,7 @@ func (e *Engine) mcpBoundary(ctx context.Context) error {
 }
 func phaseFrom(ts []store.Todo) string {
 	for _, t := range ts {
-		if t.Status != "completed" && t.Phase != "" {
+		if store.TodoOpen(t.Status) && t.Phase != "" {
 			return t.Phase
 		}
 	}

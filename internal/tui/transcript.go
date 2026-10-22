@@ -292,7 +292,7 @@ func (s *state) apply(ev Event) []block {
 		if len(s.todos) > 0 {
 			done := 0
 			for _, t := range s.todos {
-				if t.Status == "completed" {
+				if !store.TodoOpen(t.Status) {
 					done++
 				}
 			}

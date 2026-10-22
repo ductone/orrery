@@ -1579,6 +1579,9 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: "Completion rejected: your final result did not validate against the required result schema (" + err.Error() + "). The schema is:\n" + string(schemaBytes) + "\nReturn a corrected final JSON result that satisfies it exactly."})
 				continue
 			}
+			if open := e.openTodosGuard(ctx, sid, parentJob, reg.Has("todo") && mode.permits("todo"), progress, emit); open {
+				continue
+			}
 			outcome.Latency = time.Since(started)
 			progress.export(&outcome)
 			turnOutcome["completion"] = "accepted"

@@ -3,6 +3,7 @@ package storage
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -75,6 +76,31 @@ type Todo struct {
 	Text     string `json:"text"`
 	Phase    string `json:"phase"`
 	Status   string `json:"status"`
+}
+
+// Todo statuses. A dropped item is one the agent decided is no longer needed;
+// like a completed one it is closed and does not hold a session open.
+const (
+	TodoPending    = "pending"
+	TodoInProgress = "in_progress"
+	TodoCompleted  = "completed"
+	TodoDropped    = "dropped"
+)
+
+// TodoOpen reports whether a todo status still needs work: pending or
+// in_progress.
+func TodoOpen(status string) bool { return status == TodoPending || status == TodoInProgress }
+
+// OpenTodos returns the text of each todo that is still pending or in
+// progress, in plan order.
+func OpenTodos(ts []Todo) []string {
+	var open []string
+	for _, t := range ts {
+		if TodoOpen(t.Status) && strings.TrimSpace(t.Text) != "" {
+			open = append(open, strings.TrimSpace(t.Text))
+		}
+	}
+	return open
 }
 
 // WorkItem is a harness-owned continuation record derived from the todo plan.

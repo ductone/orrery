@@ -326,7 +326,7 @@ func (r *renderer) todoBlockLines(prev, cur []store.Todo) []string {
 	var parts []string
 	done := 0
 	for i, t := range cur {
-		if t.Status == "completed" {
+		if !store.TodoOpen(t.Status) {
 			done++
 		}
 		if i < len(prev) && prev[i].Status == t.Status {
@@ -335,6 +335,8 @@ func (r *renderer) todoBlockLines(prev, cur []store.Todo) []string {
 		switch t.Status {
 		case "completed":
 			parts = append(parts, r.st.accentDim.Render("✓ ")+r.st.muted.Render(t.Text))
+		case "dropped":
+			parts = append(parts, r.st.muted.Render("– "+t.Text))
 		case "in_progress":
 			parts = append(parts, r.st.purple.Render("◆ ")+r.st.bright.Render(t.Text))
 		default:
@@ -366,6 +368,8 @@ func (r *renderer) todoLine(t store.Todo) string {
 	switch t.Status {
 	case "completed":
 		return r.st.accentDim.Render("✓ ") + r.st.muted.Render(t.Text)
+	case "dropped":
+		return r.st.muted.Render("– " + t.Text)
 	case "in_progress":
 		return r.st.purple.Render("◆ ") + r.st.bright.Render(t.Text)
 	default:

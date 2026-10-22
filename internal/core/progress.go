@@ -52,6 +52,9 @@ type progressTracker struct {
 	// answerRejections counts completions refused for answering something
 	// other than the latest request.
 	answerRejections int
+	// todoRejections counts completions refused while the todo plan still had
+	// pending or in-progress items.
+	todoRejections int
 }
 
 // commandRecord is a command and the tail of its output.

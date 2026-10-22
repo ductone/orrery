@@ -8,6 +8,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/ductone/orrery/storage"
 )
 
 const planWindow = 5
@@ -153,7 +155,7 @@ func (m *model) pendingLines() []string {
 	if m.st.running() && len(m.st.todos) > 0 {
 		done, active := 0, -1
 		for i, t := range m.st.todos {
-			if t.Status == "completed" {
+			if !storage.TodoOpen(t.Status) {
 				done++
 			}
 			if t.Status == "in_progress" && active < 0 {

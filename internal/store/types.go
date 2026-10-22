@@ -38,7 +38,17 @@ const (
 	MaxFallbackTitle  = storage.MaxFallbackTitle
 	MaxGeneratedTitle = storage.MaxGeneratedTitle
 	TitlePrompt       = storage.TitlePrompt
+	TodoPending       = storage.TodoPending
+	TodoInProgress    = storage.TodoInProgress
+	TodoCompleted     = storage.TodoCompleted
+	TodoDropped       = storage.TodoDropped
 )
+
+// TodoOpen reports whether a todo status is pending or in_progress.
+func TodoOpen(status string) bool { return storage.TodoOpen(status) }
+
+// OpenTodos returns the text of each pending or in-progress todo.
+func OpenTodos(ts []Todo) []string { return storage.OpenTodos(ts) }
 
 // SessionTitle returns a deterministic fallback title for a session spec.
 func SessionTitle(spec string) string { return storage.SessionTitle(spec) }
