@@ -219,6 +219,11 @@ func CodingProfile() Profile { return core.CodingProfile() }
 // GeneralProfile is a domain-neutral profile for a persistent assistant.
 func GeneralProfile() Profile { return core.GeneralProfile() }
 
+// OpenTodosMessage is the harness's request to close a todo plan before
+// finishing, listing the open items (Engine.OpenTodos returns them). A host
+// whose own tool ends a run uses it so the agent hears the same rule.
+func OpenTodosMessage(open []string) string { return core.OpenTodosMessage(open) }
+
 // New constructs an Engine. Install the model catalog first.
 //
 // The model catalog is process-global (InstallModelCatalog calls
