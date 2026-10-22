@@ -73,7 +73,9 @@ type Engine struct {
 	running         map[string]int
 	pendingHandoffs map[string][]handoff
 	deliveredJobs   map[string]bool
-	backgroundWG    sync.WaitGroup
+	// steers holds people's messages for sessions mid-run (Steer).
+	steers       map[string][]string
+	backgroundWG sync.WaitGroup
 	// memoryEpochs tracks the pinned memory set (and cache-boundary ID) per
 	// session, refreshed only at a declared cache-safe boundary: session
 	// start, phase transition, or compaction. It is never re-retrieved every
@@ -1142,6 +1144,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 		// harness notes) durable. A step whose writes are not durable ends the
 		// run rather than building on state that could be lost.
 		e.drainHandoffs(ctx, sid)
+		e.drainSteers(ctx, sid, emit)
 		if err := e.commit(ctx); err != nil {
 			progress.export(&outcome)
 			return e.finish(sid, agentproto.TaskResult{Status: agentproto.Fail, Outcome: outcome, Error: "commit: " + err.Error()}, emit)
