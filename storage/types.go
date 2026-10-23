@@ -208,7 +208,16 @@ type MemoryFilter struct {
 	IncludeDeleted bool
 }
 
-// MemoryMutation describes one lifecycle change committed with its audit event.
+// MemoryMutation describes one lifecycle change committed with its audit
+// event. Operation is one of
+//
+//   - "commit": insert Record.
+//   - "update": rewrite Record (by ID), which is neither deleted nor
+//     superseded.
+//   - "correct": insert Record and supersede OldID with it.
+//   - "forget": make MemoryID (in WorkspaceID) a deleted tombstone.
+//   - "restore": make MemoryID (in WorkspaceID), which is not active, active
+//     again, with no SupersededBy and Record.ExpiresAt as its expiry.
 type MemoryMutation struct {
 	Operation   string
 	Record      MemoryRecord

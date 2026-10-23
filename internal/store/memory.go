@@ -231,6 +231,16 @@ func (s *Store) ApplyMemoryMutationEvent(ctx context.Context, sid, turnID, event
 				err = sql.ErrNoRows
 			}
 		}
+	case "restore":
+		var res sql.Result
+		res, err = tx.ExecContext(ctx, `UPDATE memory_records SET status='active',superseded_by=NULL,expires_at=?,updated_at=? WHERE memory_id=? AND workspace_id=? AND status!='active'`, expiry, now.Format(time.RFC3339Nano), m.MemoryID, m.WorkspaceID)
+		if err == nil {
+			var n int64
+			n, err = res.RowsAffected()
+			if err == nil && n == 0 {
+				err = sql.ErrNoRows
+			}
+		}
 	default:
 		err = errors.New("unknown memory mutation")
 	}
@@ -252,7 +262,7 @@ func (s *Store) ApplyMemoryMutationEvent(ctx context.Context, sid, turnID, event
 	// operation (including forget, which is addressed only by ID) describes the
 	// mutated record.
 	targetID := x.ID
-	if m.Operation == "forget" {
+	if m.Operation == "forget" || m.Operation == "restore" {
 		targetID = m.MemoryID
 	}
 	persisted, err := readMemoryTx(ctx, tx, targetID)

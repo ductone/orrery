@@ -510,6 +510,37 @@ func testMemory(t *testing.T, s storage.Store) {
 	if rec.Text != "via event" || len(events) != 1 || events[0].Type != "memory.committed" {
 		t.Fatalf("ApplyMemoryMutationEvent: record %+v, %d events", rec, len(events))
 	}
+
+	// restore brings a forgotten or superseded record back to active.
+	restore := func(id string) (storage.MemoryRecord, error) {
+		return s.ApplyMemoryMutationEvent(ctx, "s", "", "memory.updated", map[string]any{},
+			storage.MemoryMutation{Operation: "restore", WorkspaceID: w.ID, MemoryID: id})
+	}
+	if _, err := restore(rec.ID); err == nil {
+		t.Fatal("restore of an active record succeeded")
+	}
+	_, err = s.ApplyMemoryMutationEvent(ctx, "s", "", "memory.forgotten", map[string]any{},
+		storage.MemoryMutation{Operation: "forget", WorkspaceID: w.ID, MemoryID: rec.ID})
+	must(t, err)
+	back, err := restore(rec.ID)
+	must(t, err)
+	if back.ID != rec.ID || back.Status != "active" || back.Text != "via event" {
+		t.Fatalf("restored forgotten = %+v", back)
+	}
+	repl, err := s.ApplyMemoryMutationEvent(ctx, "s", "", "memory.updated", map[string]any{},
+		storage.MemoryMutation{Operation: "correct", WorkspaceID: w.ID, OldID: rec.ID, Record: storage.MemoryRecord{WorkspaceID: w.ID, Kind: "fact", Text: "corrected", Provenance: "user", Confidence: 1}})
+	must(t, err)
+	if _, err := s.ApplyMemoryMutationEvent(ctx, "s", "", "memory.updated", map[string]any{},
+		storage.MemoryMutation{Operation: "restore", WorkspaceID: "elsewhere", MemoryID: rec.ID}); err == nil {
+		t.Fatal("restore in another workspace succeeded")
+	}
+	future := time.Now().Add(time.Hour).UTC()
+	back, err = s.ApplyMemoryMutationEvent(ctx, "s", "", "memory.updated", map[string]any{},
+		storage.MemoryMutation{Operation: "restore", WorkspaceID: w.ID, MemoryID: rec.ID, Record: storage.MemoryRecord{ExpiresAt: &future}})
+	must(t, err)
+	if back.Status != "active" || back.SupersededBy != "" || back.ExpiresAt == nil || !back.ExpiresAt.Equal(future) {
+		t.Fatalf("restored superseded = %+v (replacement %s)", back, repl.ID)
+	}
 }
 
 func testMemoryScopes(t *testing.T, s storage.Store) {
