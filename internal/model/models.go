@@ -55,6 +55,7 @@ var Models = []Model{
 	{Name: "claude-opus-5-5", Family: Anthropic, Tier: Frontier, Inputs: []Modality{Text, Image}, ContextWindow: 1000000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, WorkEffort: EffortLow, CallsPerTask: 1, EditDialect: HashlineXML, StreamIdleTimeout: 15 * time.Minute},
 	{Name: "claude-sonnet-5", Family: Anthropic, Tier: Efficient, Inputs: []Modality{Text, Image}, ContextWindow: 1000000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineXML, StreamIdleTimeout: 10 * time.Minute},
 	{Name: "claude-sonnet-5-5", Family: Anthropic, Tier: Efficient, Inputs: []Modality{Text, Image}, ContextWindow: 1000000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, WorkEffort: EffortLow, CallsPerTask: 1, EditDialect: HashlineXML, StreamIdleTimeout: 10 * time.Minute},
+	{Name: "claude-haiku-5-5", Family: Anthropic, Tier: Tiny, Inputs: []Modality{Text, Image}, ContextWindow: 1000000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineXML, StreamIdleTimeout: 5 * time.Minute},
 
 	{Name: "gpt-5.6-sol", Family: OpenAI, Tier: Frontier, Inputs: []Modality{Text, Image}, ContextWindow: 1050000, MaxOutput: 128000, Effort: []Effort{EffortNone, EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineJSON, StreamIdleTimeout: 15 * time.Minute},
 	{Name: "gpt-5.6-terra", Family: OpenAI, Tier: Efficient, Inputs: []Modality{Text, Image}, ContextWindow: 1050000, MaxOutput: 128000, Effort: []Effort{EffortNone, EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineJSON, StreamIdleTimeout: 12 * time.Minute},
@@ -83,6 +84,7 @@ var Routes = []Route{
 	{Provider: "anthropic", Model: "claude-fable-5", Pricing: Pricing{Input: 10, Output: 50, CacheRead: 1, CacheWrite: 12.5}},
 	{Provider: "anthropic", Model: "claude-sonnet-5", Pricing: Pricing{Input: 2, Output: 10, CacheRead: .2, CacheWrite: 2.5}},
 	{Provider: "anthropic", Model: "claude-sonnet-5-5", Pricing: Pricing{Input: 2, Output: 10, CacheRead: .2, CacheWrite: 2.5}},
+	{Provider: "anthropic", Model: "claude-haiku-5-5", Pricing: Pricing{Input: .1, Output: .5, CacheRead: .01, CacheWrite: .125, Thresholds: []ThresholdRate{{AboveTokens: 100000, Input: .5, Output: 2.5, CacheRead: .05, CacheWrite: .625}}}},
 	{Provider: "openai", Model: "gpt-5.6-sol", Pricing: Pricing{Input: 5, Output: 30, CacheRead: .5, CacheWrite: 6.25, Thresholds: []ThresholdRate{{AboveTokens: 272000, Input: 10, Output: 45, CacheRead: 1, CacheWrite: 12.5}}}},
 	{Provider: "openai", Model: "gpt-5.6-terra", Pricing: Pricing{Input: 2, Output: 12, CacheRead: .2, CacheWrite: 2.5, Thresholds: []ThresholdRate{{AboveTokens: 272000, Input: 4, Output: 18, CacheRead: .4, CacheWrite: 5}}}},
 	{Provider: "openai", Model: "gpt-5.6-luna", Pricing: Pricing{Input: .2, Output: 1.2, CacheRead: .02, CacheWrite: .25, Thresholds: []ThresholdRate{{AboveTokens: 272000, Input: .4, Output: 1.8, CacheRead: .04, CacheWrite: .5}}}},

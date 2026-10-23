@@ -63,6 +63,11 @@ type (
 	MemorySelectRequest = core.MemorySelectRequest
 	// Providers routes model calls to the configured providers.
 	Providers = provider.Registry
+	// TextRequest is one completion outside any session; see
+	// Providers.CompleteText.
+	TextRequest = provider.TextRequest
+	// TextResponse is a TextRequest's answer, usage and cost.
+	TextResponse = provider.TextResponse
 	// MCPManager runs the configured MCP servers.
 	MCPManager = mcp.Manager
 	// Classifier answers the engine's classifier-backed decisions; see
