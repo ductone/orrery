@@ -64,15 +64,40 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "…"
 }
+
+const (
+	planSnapshotBegin = "\n[TODO SNAPSHOT]\n"
+	planSnapshotEnd   = "\n[/TODO SNAPSHOT]"
+)
+
+// setPlanSnapshot replaces the todo snapshot appended to a durable summary.
 func setPlanSnapshot(summary, plan string) string {
-	const begin = "\n[TODO SNAPSHOT]\n"
-	const end = "\n[/TODO SNAPSHOT]"
-	if i := strings.Index(summary, begin); i >= 0 {
-		if j := strings.Index(summary[i+len(begin):], end); j >= 0 {
-			summary = summary[:i] + summary[i+len(begin)+j+len(end):]
-		}
+	rest, _ := splitPlanSnapshot(summary)
+	return rest + planSnapshotBegin + plan + planSnapshotEnd
+}
+
+// splitPlanSnapshot separates a durable summary from its todo snapshot (""
+// when it has none). The snapshot changes at phase boundaries, so it is
+// rendered after the cached prefix (planSnapshotSection), never in it.
+func splitPlanSnapshot(summary string) (rest, plan string) {
+	i := strings.Index(summary, planSnapshotBegin)
+	if i < 0 {
+		return summary, ""
 	}
-	return summary + begin + plan + end
+	j := strings.Index(summary[i+len(planSnapshotBegin):], planSnapshotEnd)
+	if j < 0 {
+		return summary, ""
+	}
+	return summary[:i] + summary[i+len(planSnapshotBegin)+j+len(planSnapshotEnd):], summary[i+len(planSnapshotBegin) : i+len(planSnapshotBegin)+j]
+}
+
+// planSnapshotSection is the durable summary's todo snapshot as the
+// trailing request message carries it, or "" when there is none.
+func planSnapshotSection(summary string) string {
+	if _, plan := splitPlanSnapshot(summary); plan != "" {
+		return "\n\nTODO SNAPSHOT (the plan at the last phase boundary; the live todo is in tool-result history)\n" + plan
+	}
+	return ""
 }
 func parseResult(s string) map[string]any {
 	s = strings.TrimSpace(s)
@@ -155,4 +180,51 @@ func (e *Engine) inferPhase(ctx context.Context, sid, toolName, command string, 
 		s.Phase = next
 		_ = e.store.UpdateSession(ctx, s)
 	}
+}
+
+// withoutPlanSnapshot is summary without its todo snapshot.
+func withoutPlanSnapshot(summary string) string {
+	rest, _ := splitPlanSnapshot(summary)
+	return rest
+}
+
+// modelJSON is the JSON value in a model's response, for json.Unmarshal:
+// the response itself when it is valid JSON, else the body of its ```
+// (or ```json) fence, else its single top-level object or array among
+// surrounding prose. Otherwise it is the trimmed response unchanged, so
+// the caller's decode error stands.
+func modelJSON(s string) string {
+	s = strings.TrimSpace(s)
+	if json.Valid([]byte(s)) {
+		return s
+	}
+	if i := strings.Index(s, "```"); i >= 0 {
+		body := s[i+3:]
+		if nl := strings.IndexByte(body, '\n'); nl >= 0 && !strings.ContainsAny(body[:nl], "{[") {
+			body = body[nl+1:]
+		}
+		if j := strings.Index(body, "```"); j >= 0 {
+			body = body[:j]
+		}
+		if b := strings.TrimSpace(body); json.Valid([]byte(b)) {
+			return b
+		}
+	}
+	var found []string
+	for i := 0; i < len(s); i++ {
+		if s[i] != '{' && s[i] != '[' {
+			continue
+		}
+		dec := json.NewDecoder(strings.NewReader(s[i:]))
+		var raw json.RawMessage
+		if dec.Decode(&raw) != nil {
+			continue
+		}
+		found = append(found, string(raw))
+		i += int(dec.InputOffset()) - 1
+	}
+	if len(found) == 1 {
+		return found[0]
+	}
+	return s
 }

@@ -534,7 +534,7 @@ func (e *Engine) runMemoryExtraction(ctx context.Context, sid string, requested 
 	var output struct {
 		Candidates []MemoryCandidate `json:"memory_candidates"`
 	}
-	if err := json.Unmarshal([]byte(response.Message.Content), &output); err != nil {
+	if err := json.Unmarshal([]byte(modelJSON(response.Message.Content)), &output); err != nil {
 		return err
 	}
 	if err := e.persistMemoryCandidates(ctx, sid, session.WorkspacePath, output.Candidates, refs); err != nil {

@@ -1287,9 +1287,9 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 				tools: names, readOnlyWorker: req.Workspace.Mode == "read", efficientWorker: efficientWorker,
 				deployment: runtimeCfg.Instructions, bootstrap: discovery.Bootstrap(), profile: e.profile,
 			})
-			history = append(history, provider.Message{Role: "user", Content: currentRequest(s, latestRequest)})
+			history = append(history, provider.Message{Role: "user", Content: currentRequest(s, latestRequest) + planSnapshotSection(s.DurableSummary)})
 			history = mode.apply(history)
-			return provider.Request{System: system, Memory: e.memoryForRequest(runtimeCfg, sid), DurableSpec: durableSpec(s), Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the durable summary.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: definitions, NoToolCalls: mode.noCalls, MaxOutput: min(outputCap, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
+			return provider.Request{System: system, Memory: e.memoryForRequest(runtimeCfg, sid), DurableSpec: durableSpec(s), Plan: "The live todo is carried in tool-result history; its phase-boundary snapshot is in the current request.", CacheKey: sid + ":" + m.ID, Messages: history, Tools: definitions, NoToolCalls: mode.noCalls, MaxOutput: min(outputCap, m.MaxOutput), Effort: d.Effort, Strict: d.ToolsetVariant == "strict"}, nil
 		}
 		var resp provider.Response
 		// A failed call is classified once and handled by its class's entry in
@@ -1771,8 +1771,9 @@ func taskSection(spec, latest string) string {
 
 // durableSpec excludes the continuation anchors that are cleared on pass.
 // The remaining state stays stable between compactions.
+// The todo snapshot is left out: it travels in the request message.
 func durableSpec(s store.Session) string {
-	summary := s.DurableSummary
+	summary, _ := splitPlanSnapshot(s.DurableSummary)
 	var state DurableState
 	if json.Unmarshal([]byte(summary), &state) == nil {
 		state.CurrentObjective = ""
@@ -1786,7 +1787,7 @@ func durableSpec(s store.Session) string {
 func currentRequest(s store.Session, latest string) string {
 	text := taskSection(s.Spec, latest)
 	var state DurableState
-	if json.Unmarshal([]byte(s.DurableSummary), &state) == nil && strings.TrimSpace(state.CurrentObjective) != "" {
+	if summary, _ := splitPlanSnapshot(s.DurableSummary); json.Unmarshal([]byte(summary), &state) == nil && strings.TrimSpace(state.CurrentObjective) != "" {
 		text += "\n\nCURRENT OBJECTIVE (continuation context; the latest request takes precedence)\n" + state.CurrentObjective
 		text += "\n\nPENDING REPORT (continuation context; the latest request takes precedence)\n" + state.PendingReport
 	}
@@ -1963,11 +1964,14 @@ func (e *Engine) finish(sid string, result agentproto.TaskResult, emit EmitFunc)
 		if result.Status == agentproto.Pass {
 			newSummary := s.DurableSummary
 			var state DurableState
-			if json.Unmarshal([]byte(s.DurableSummary), &state) == nil {
+			if rest, plan := splitPlanSnapshot(s.DurableSummary); json.Unmarshal([]byte(rest), &state) == nil {
 				state.CurrentObjective = ""
 				state.PendingReport = ""
 				if b, err := json.Marshal(state); err == nil {
 					newSummary = string(b)
+					if plan != "" {
+						newSummary = setPlanSnapshot(newSummary, plan)
+					}
 				}
 			}
 			_ = e.store.AcknowledgeReport(context.Background(), sid, newSummary)

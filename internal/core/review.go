@@ -236,7 +236,7 @@ func verdictFromJob(j store.Job, shard int) review.Verdict {
 		Escalate       bool   `json:"escalate"`
 		EscalateReason string `json:"escalate_reason"`
 	}
-	if json.Unmarshal([]byte(text), &result) == nil {
+	if json.Unmarshal([]byte(modelJSON(text)), &result) == nil {
 		for _, f := range result.Findings {
 			v.Findings = append(v.Findings, fmt.Sprint(f))
 		}

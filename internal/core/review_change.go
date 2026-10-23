@@ -63,7 +63,7 @@ func (e *Engine) ReviewChange(ctx context.Context, workspace, task string, chang
 	var result struct {
 		Findings []string `json:"findings"`
 	}
-	if json.Unmarshal([]byte(text), &result) == nil {
+	if json.Unmarshal([]byte(modelJSON(text)), &result) == nil {
 		out.Findings = result.Findings
 	}
 	out.Stage = "full"

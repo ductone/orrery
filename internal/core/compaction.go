@@ -199,7 +199,12 @@ func (e *Engine) compactState(ctx context.Context, sid, reason string, emit Emit
 	if err != nil {
 		return err
 	}
+	// The todo snapshot outlives compaction, still outside the cached prefix.
+	_, plan := splitPlanSnapshot(s.DurableSummary)
 	s.DurableSummary = string(encoded)
+	if plan != "" {
+		s.DurableSummary = setPlanSnapshot(s.DurableSummary, plan)
+	}
 	if err = e.store.ApplyCompaction(ctx, s, len(msgs)-keepAt); err != nil {
 		return err
 	}
@@ -345,8 +350,7 @@ func (e *Engine) summarizeTranscript(ctx context.Context, s store.Session, todos
 		attemptCost := spec.Pricing.EstimateDetailed(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CacheReadTokens, resp.Usage.CacheWriteTokens)
 		cost += attemptCost
 		_ = e.store.AddSpend(ctx, s.ID, attemptCost)
-		content := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(resp.Message.Content), "```json"), "```"))
-		err = json.Unmarshal([]byte(content), &state)
+		err = json.Unmarshal([]byte(modelJSON(resp.Message.Content)), &state)
 		if err == nil {
 			break
 		}
@@ -354,7 +358,7 @@ func (e *Engine) summarizeTranscript(ctx context.Context, s store.Session, todos
 			return DurableState{}, nil, fmt.Errorf("decode semantic summary (stop reason %q): %w", resp.StopReason, err)
 		}
 	}
-	state.PriorSummary = truncate(s.DurableSummary, 4000)
+	state.PriorSummary = truncate(withoutPlanSnapshot(s.DurableSummary), 4000)
 	state.CompactedAt = time.Now().UTC().Format(time.RFC3339)
 	if !state.valid() {
 		return DurableState{}, nil, errors.New("semantic summary omitted recovery state")
@@ -385,7 +389,7 @@ func fallbackDurableState(s store.Session, old []store.Message) DurableState {
 			open = appendBounded(open, line, 12)
 		}
 	}
-	return DurableState{Objective: s.Spec, Decisions: decisions, Completed: completed, Files: files, Verification: verification, OpenWork: open, Instructions: instructions, WorkerResults: workers, PriorSummary: truncate(s.DurableSummary, 4000), CompactedAt: time.Now().UTC().Format(time.RFC3339)}
+	return DurableState{Objective: s.Spec, Decisions: decisions, Completed: completed, Files: files, Verification: verification, OpenWork: open, Instructions: instructions, WorkerResults: workers, PriorSummary: truncate(withoutPlanSnapshot(s.DurableSummary), 4000), CompactedAt: time.Now().UTC().Format(time.RFC3339)}
 }
 
 // anchorDurableState derives recovery-critical continuation state from the
