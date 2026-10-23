@@ -33,6 +33,9 @@ type Model struct {
 	// before treating the call as a stalled transport failure. Zero uses the
 	// provider's default.
 	FirstByteTimeout time.Duration
+	// ExplicitOnly keeps the model out of automatic choices (session
+	// titles, memory extraction): it is used only where a caller names it.
+	ExplicitOnly bool
 }
 
 // Route is one provider serving a model. The route's id, as recorded in
@@ -55,7 +58,7 @@ var Models = []Model{
 	{Name: "claude-opus-5-5", Family: Anthropic, Tier: Frontier, Inputs: []Modality{Text, Image}, ContextWindow: 1000000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, WorkEffort: EffortLow, CallsPerTask: 1, EditDialect: HashlineXML, StreamIdleTimeout: 15 * time.Minute},
 	{Name: "claude-sonnet-5", Family: Anthropic, Tier: Efficient, Inputs: []Modality{Text, Image}, ContextWindow: 1000000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineXML, StreamIdleTimeout: 10 * time.Minute},
 	{Name: "claude-sonnet-5-5", Family: Anthropic, Tier: Efficient, Inputs: []Modality{Text, Image}, ContextWindow: 1000000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, WorkEffort: EffortLow, CallsPerTask: 1, EditDialect: HashlineXML, StreamIdleTimeout: 10 * time.Minute},
-	{Name: "claude-haiku-5-5", Family: Anthropic, Tier: Tiny, Inputs: []Modality{Text, Image}, ContextWindow: 1000000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineXML, StreamIdleTimeout: 5 * time.Minute},
+	{Name: "claude-haiku-5-5", Family: Anthropic, Tier: Tiny, Inputs: []Modality{Text, Image}, ContextWindow: 1000000, MaxOutput: 128000, Effort: []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineXML, StreamIdleTimeout: 5 * time.Minute, ExplicitOnly: true},
 
 	{Name: "gpt-5.6-sol", Family: OpenAI, Tier: Frontier, Inputs: []Modality{Text, Image}, ContextWindow: 1050000, MaxOutput: 128000, Effort: []Effort{EffortNone, EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineJSON, StreamIdleTimeout: 15 * time.Minute},
 	{Name: "gpt-5.6-terra", Family: OpenAI, Tier: Efficient, Inputs: []Modality{Text, Image}, ContextWindow: 1050000, MaxOutput: 128000, Effort: []Effort{EffortNone, EffortLow, EffortMedium, EffortHigh, EffortXHigh}, EditDialect: HashlineJSON, StreamIdleTimeout: 12 * time.Minute},
@@ -159,7 +162,7 @@ func (r Route) Spec(m Model) ModelSpec {
 	s := ModelSpec{
 		ID: r.Provider + "/" + wire, Model: m.Name, Family: m.Family, Tier: m.Tier,
 		Inputs: append([]Modality(nil), m.Inputs...), ContextWindow: m.ContextWindow, MaxOutput: m.MaxOutput,
-		Pricing: r.Pricing, Effort: effort, WorkEffort: m.WorkEffort, CallsPerTask: m.CallsPerTask, Compat: compat, EditDialect: m.EditDialect,
+		Pricing: r.Pricing, Effort: effort, WorkEffort: m.WorkEffort, CallsPerTask: m.CallsPerTask, Compat: compat, EditDialect: m.EditDialect, ExplicitOnly: m.ExplicitOnly,
 	}
 	if r.ContextWindow > 0 {
 		s.ContextWindow = r.ContextWindow

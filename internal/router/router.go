@@ -280,6 +280,8 @@ func (p *V1) score(ctx context.Context, s RoutingState, reviewHasAlternate, defa
 			c.Rejected = "model pinned"
 		case p.cfg.DisableSwitch && p.cfg.DefaultModel != "" && m.ID != p.cfg.DefaultModel:
 			c.Rejected = "default model pinned"
+		case m.ExplicitOnly && s.ModelPin == "" && m.ID != p.cfg.DefaultModel && m.Model != p.cfg.DefaultModel:
+			c.Rejected = "used only when named"
 		case s.AvailableModels != nil && !slices.Contains(s.AvailableModels, m.ID):
 			c.Rejected = "provider not configured"
 		case slices.Contains(s.ExcludeModels, m.ID):

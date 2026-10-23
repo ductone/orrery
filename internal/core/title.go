@@ -69,7 +69,7 @@ func sideModel(registry *provider.Registry, minTier model.Tier) model.ModelSpec 
 	}
 	var candidates []model.ModelSpec
 	for _, m := range model.All() {
-		if registry.Available(m) {
+		if registry.Available(m) && !m.ExplicitOnly {
 			candidates = append(candidates, m)
 		}
 	}

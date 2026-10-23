@@ -127,6 +127,8 @@ type ModelSpec struct {
 	// Discovered marks a model inferred from a provider listing rather than
 	// built in or vouched for by a config override that sets its tier.
 	Discovered bool `json:",omitempty"`
+	// ExplicitOnly keeps the model out of automatic choices; see Model.
+	ExplicitOnly bool `json:",omitempty"`
 }
 
 // Catalog is the built-in routes: one spec per Route, carrying its Model's
