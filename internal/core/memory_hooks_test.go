@@ -27,6 +27,8 @@ type retrievedPayload struct {
 	Injected         bool     `json:"injected"`
 	Reason           string   `json:"reason"`
 	Count            int      `json:"count"`
+	Outcome          string   `json:"outcome"`
+	CacheBoundaryID  string   `json:"cache_boundary_id"`
 }
 
 // lastRetrieved returns the most recent memory.retrieved event recorded in sid.
@@ -152,16 +154,18 @@ func TestMemorySelectorOrderLimitsAndPendingMarker(t *testing.T) {
 		t.Fatalf("payload: %+v", pl)
 	}
 
-	// The pinned set is reused until a cache-safe boundary, then re-selected.
+	// The pinned set is kept for the session; only compaction re-selects.
 	e.refreshMemory(ctx, "s1", root, "the spec", "implement", memoryBoundaryPhaseTransition, 2, nil)
-	if len(reqs) != 1 {
-		t.Fatal("selector re-ran without a boundary")
-	}
 	e.invalidateMemoryWorkspace(w.ID)
 	e.refreshMemory(ctx, "s1", root, "the spec", "implement", memoryBoundaryPhaseTransition, 3, nil)
 	e.refreshMemory(ctx, "s1", root, "the spec", "review", memoryBoundaryPhaseTransition, 4, nil)
-	if len(reqs) != 3 {
-		t.Fatalf("selector calls after stale and phase change = %d, want 3", len(reqs))
+	if len(reqs) != 1 {
+		t.Fatalf("selector calls after stale and phase change = %d, want 1", len(reqs))
+	}
+	e.setCacheBoundary("s1", "s1:compaction")
+	e.refreshMemory(ctx, "s1", root, "the spec", "review", memoryBoundaryCompaction, 5, nil)
+	if len(reqs) != 2 {
+		t.Fatalf("selector calls after compaction = %d, want 2", len(reqs))
 	}
 }
 

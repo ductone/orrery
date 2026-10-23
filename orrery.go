@@ -207,8 +207,10 @@ type Options struct {
 	MaxAutoAnswers int
 	// MemorySelector, when set, chooses the memory records injected into a
 	// session's prompt in place of the built-in ranking. Nil keeps the default.
-	// It is called whenever the engine would re-select (session start, a phase
-	// change, after memory changed or compaction); candidates include pending
+	// It is called once per session at its start and again only after
+	// compaction: the selected set stays fixed in the cached prompt prefix for
+	// the session, and later memory changes reach the model as MEMORY UPDATE
+	// messages. Candidates include pending
 	// records, which are rendered marked [unconfirmed]. The engine still
 	// enforces the record limit and token and byte budgets, ignores IDs that
 	// are not candidates, and falls back to the default ranking (logging the
