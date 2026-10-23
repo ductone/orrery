@@ -75,9 +75,9 @@ func TestHiddenPageInvalid(t *testing.T) {
 func TestHiddenPageStableUnderChange(t *testing.T) {
 	s := fill(6)
 	_, next, _ := s.Page("", 3) // after id003
-	s.Delete("id003")            // the item the cursor points at disappears
-	s.Add(Item{ID: "id000"})     // an earlier item appears
-	s.Add(Item{ID: "id003a"})    // a later one appears
+	s.Delete("id003")           // the item the cursor points at disappears
+	s.Add(Item{ID: "id000"})    // an earlier item appears
+	s.Add(Item{ID: "id003a"})   // a later one appears
 	items, next2, err := s.Page(next, 10)
 	if err != nil || fmt.Sprint(ids(items)) != "[id003a id004 id005 id006]" || next2 != "" {
 		t.Fatalf("Page = %v %q %v", ids(items), next2, err)
