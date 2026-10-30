@@ -160,7 +160,9 @@ type MemorySelector func(ctx context.Context, req MemorySelectRequest) ([]storag
 type MemorySelectRequest struct {
 	SessionID   string
 	WorkspaceID string
-	// Spec is the text the default ranker scores lexical overlap against.
+	// Spec is the text the default ranker scores lexical overlap against:
+	// what the person said (agentproto.TaskRequest.Said) when the host gave
+	// it, else the request's spec.
 	Spec  string
 	Phase string
 	// Candidates are the active and pending records in the scopes the
@@ -361,6 +363,17 @@ func (e *Engine) memorySource() string {
 		return memorySourceSelector
 	}
 	return memorySourceDefault
+}
+
+// memoryQuery is what memory selection ranks records against: the person's
+// own words when the host gave them, since a host's request around them
+// (instructions, rosters) is much the same in every session and would
+// select the same records for every question; else the spec.
+func memoryQuery(req agentproto.TaskRequest) string {
+	if strings.TrimSpace(req.Said) != "" {
+		return req.Said
+	}
+	return req.Spec
 }
 
 // selectMemory picks the records to pin: the host's MemorySelector when set

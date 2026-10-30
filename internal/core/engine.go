@@ -1187,7 +1187,7 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 			return agentproto.TaskResult{Status: agentproto.Fail, Error: err.Error()}
 		}
 		progress.beginTurn(s.Phase)
-		e.refreshMemory(ctx, sid, req.Workspace.Path, req.Spec, s.Phase, memoryBoundaryReason(s.Turn), s.Turn, emit)
+		e.refreshMemory(ctx, sid, req.Workspace.Path, memoryQuery(req), s.Phase, memoryBoundaryReason(s.Turn), s.Turn, emit)
 		// A repeated independent review rejection asks the person. Turn counts
 		// are not a stall: a long review-fix is not evidence the agent is stuck.
 		if reason := progress.reviewRemediationReason(parentJob); reason != "" {

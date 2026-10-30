@@ -10,7 +10,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ductone/orrery/agentproto"
 	"github.com/ductone/orrery/config"
 	"github.com/ductone/orrery/internal/store"
 	"github.com/ductone/orrery/storage"
@@ -281,5 +283,24 @@ func TestMemoryWakeRetriageKeepUncertainAndRecordsScore(t *testing.T) {
 				check(unsure.ID, "deleted", 0.6)
 			}
 		})
+	}
+}
+
+// Selection ranks against what the person said when the host gave it: a
+// long host request around it would score every record about the same.
+func TestMemoryQueryPrefersSaid(t *testing.T) {
+	roster := strings.Repeat("Governance PM triage delivery roadmap backlog commitments engineers lead manager ", 60)
+	req := agentproto.TaskRequest{Spec: roster + "\nTheir message: can you link the tickets?", Said: "can you link the tickets?"}
+	if got := memoryQuery(req); got != req.Said {
+		t.Fatalf("memoryQuery = %q, want said", got)
+	}
+	if got := memoryQuery(agentproto.TaskRequest{Spec: "run the daily check"}); got != "run the daily check" {
+		t.Fatalf("memoryQuery without said = %q", got)
+	}
+	now := time.Now()
+	links := store.MemoryRecord{ID: "b", Text: "Brandon wants Linear tickets linked in Slack replies", Confidence: 0.8, UpdatedAt: now}
+	triage := store.MemoryRecord{ID: "a", Text: "Gowthami and Erik own IGA triage", Confidence: 0.95, UpdatedAt: now}
+	if got := orderMemory([]store.MemoryRecord{triage, links}, memoryQuery(req), 1000); got[0].ID != "b" {
+		t.Fatalf("ranked against said, first = %s, want the links record", got[0].ID)
 	}
 }

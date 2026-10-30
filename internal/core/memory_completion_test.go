@@ -140,36 +140,60 @@ func TestMemoryGateJevNoSkips(t *testing.T) {
 	}
 }
 
-// A host's request can bury the person's words under its own context; the
-// gate reads what they said instead, one request per turn, and steered
-// messages too.
-func TestMemoryGateReadsWhatWasSaid(t *testing.T) {
+// A session in which a person spoke (the host passed their words as Said)
+// is extracted without asking Jev: the gate misjudged standing rules given
+// while asking for something. Steered messages reach the digest of sessions
+// without one.
+func TestMemoryGateSkippedWhenAPersonSpoke(t *testing.T) {
+	asked := 0
 	var state any
-	e, _ := memoryGateEngine(t, nil)
-	e.UseClassifier(&classify.Fake{Answer: func(s any, _ string, _ classify.Question) (classify.Answer, error) {
-		state = s
-		return classify.Prob(0.1), nil
+	e, calls := memoryGateEngine(t, nil)
+	e.UseClassifier(&classify.Fake{Answer: func(_ any, name string, _ classify.Question) (classify.Answer, error) {
+		if name == "worth_remembering" {
+			asked++
+		}
+		return classify.Prob(0.9), nil
 	}})
 	ctx := context.Background()
-	roster := strings.Repeat("Another agent's card. ", 400)
-	add := func(turn, typ string, data map[string]any) {
-		t.Helper()
-		if _, err := e.store.AddEventForTurn(ctx, "s1", turn, typ, data); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := e.store.AddEventForTurn(ctx, "s1", "t1", "session.started", map[string]any{"spec": "Answer them.\n" + strings.Repeat("Another agent's card. ", 400), "said": "For unassigned ones just comment, then take them out of the cycle."}); err != nil {
+		t.Fatal(err)
 	}
-	add("t1", "session.started", map[string]any{"spec": "Answer them.\nTheir message: I'm the CTO; bring me only big questions.\n" + roster, "said": "I'm the CTO; bring me only big questions."})
-	add("t1", "message.steered", map[string]any{"content": "And delegate the small stuff."})
-	add("t2", "user.message", map[string]any{"content": "New in the thread: use Slack links.\n" + roster})
-	add("t2", "session.started", map[string]any{"spec": "Answer them.\n" + roster, "said": "Use Slack links, please."})
-	add("t2", "session.terminal", map[string]any{"status": "pass", "result": "Noted."})
+	if _, err := e.store.AddEventForTurn(ctx, "s1", "t1", "session.terminal", map[string]any{"status": "pass", "result": "Will do."}); err != nil {
+		t.Fatal(err)
+	}
 	if err := e.extractMemory(ctx, "s1"); err != nil {
 		t.Fatal(err)
 	}
-	requests, _ := state.(map[string]any)["requests"].([]string)
-	want := []string{"I'm the CTO; bring me only big questions.", "And delegate the small stuff.", "Use Slack links, please."}
-	if strings.Join(requests, "|") != strings.Join(want, "|") {
-		t.Fatalf("gate requests = %q, want %q", requests, want)
+	if asked != 0 || calls.Load() != 1 {
+		t.Fatalf("gate asked %d times, extraction ran %d times", asked, calls.Load())
+	}
+	if gates := gateEvents(t, e); len(gates) != 1 || gates[0]["source"] != "said" || gates[0]["extract"] != true {
+		t.Fatalf("gate events = %+v", gates)
+	}
+
+	// Without Said, the gate decides, and reads steered messages.
+	e2, _ := memoryGateEngine(t, nil)
+	e2.UseClassifier(&classify.Fake{Answer: func(s any, _ string, _ classify.Question) (classify.Answer, error) {
+		state = s
+		return classify.Prob(0.1), nil
+	}})
+	for _, ev := range []struct {
+		typ  string
+		data map[string]any
+	}{
+		{"session.started", map[string]any{"spec": "Run the daily check."}},
+		{"message.steered", map[string]any{"content": "Also skip IGA-12, Erik owns it."}},
+		{"session.terminal", map[string]any{"status": "pass", "result": "Done."}},
+	} {
+		if _, err := e2.store.AddEvent(ctx, "s1", ev.typ, ev.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := e2.extractMemory(ctx, "s1"); err != nil {
+		t.Fatal(err)
+	}
+	if encoded := store.JSON(state); !strings.Contains(encoded, "Erik owns it") {
+		t.Fatalf("gate state lacks the steered message: %s", encoded)
 	}
 }
 
