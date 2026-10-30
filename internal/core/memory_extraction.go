@@ -435,6 +435,7 @@ func (e *Engine) runMemoryExtraction(ctx context.Context, sid string, requested 
 	refs := []string{}
 	inputEvents := []store.Event{}
 	requests, toolDigest, finalResult := []string{}, []string{}, ""
+	requestTurns := []string{} // requests[i]'s turn
 	for _, event := range events {
 		switch event.Type {
 		case "tool.finished":
@@ -450,14 +451,24 @@ func (e *Engine) runMemoryExtraction(ctx context.Context, sid string, requested 
 				inputEvents = append(inputEvents, event)
 				toolDigest = append(toolDigest, truncate(finished.Call.Name+" "+store.JSON(finished.Call.Arguments)+" → "+store.JSON(finished.Result), memoryGateToolChars))
 			}
-		case "session.started", "user.message":
+		case "session.started", "user.message", "message.steered":
 			var message struct {
 				Spec    string `json:"spec"`
+				Said    string `json:"said"`
 				Content string `json:"content"`
 			}
 			if json.Unmarshal(event.Data, &message) == nil {
-				if text := strings.TrimSpace(message.Spec + message.Content); text != "" {
-					requests = append(requests, truncateTail(text, memoryGateRequestChars))
+				// What the person said, when the host gave it, stands for
+				// the whole request: a host's request can bury it under
+				// context the tail would keep instead. It also replaces the
+				// message that started the turn, which wraps the same words.
+				if said := strings.TrimSpace(message.Said); said != "" {
+					if n := len(requests); n > 0 && requestTurns[n-1] == event.TurnID && event.TurnID != "" {
+						requests, requestTurns = requests[:n-1], requestTurns[:n-1]
+					}
+					requests, requestTurns = append(requests, truncateTail(said, memoryGateRequestChars)), append(requestTurns, event.TurnID)
+				} else if text := strings.TrimSpace(message.Spec + message.Content); text != "" {
+					requests, requestTurns = append(requests, truncateTail(text, memoryGateRequestChars)), append(requestTurns, event.TurnID)
 				}
 			}
 			inputEvents = append(inputEvents, event)

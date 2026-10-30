@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -104,5 +105,50 @@ func TestNewMessageKeepsTodoPlanAfterNonPassRun(t *testing.T) {
 				t.Fatalf("todos after a %s run = %+v, want kept", status, todos)
 			}
 		})
+	}
+}
+
+// A continuation's Said is recorded on its run's session.started, replacing
+// the previous request's, and one without Said clears it.
+func TestContinueWithRecordsSaid(t *testing.T) {
+	e, st := testEngine(t)
+	s := &scriptedResponses{reply: func(int, map[string]any) map[string]any { return responsesText("done") }}
+	srv := s.serve(t)
+	workspace := t.TempDir()
+	cfg := config.Config{
+		WorkspaceRoot: workspace,
+		Providers:     map[string]config.ProviderConfig{"openai": {APIKey: "test", BaseURL: srv.URL}},
+		Router:        config.RouterConfig{DisableSwitch: true, DefaultModel: "openai/gpt-5.6-terra"},
+	}
+	e.ReplaceRuntime(cfg, provider.New(cfg), nil)
+	ctx := context.Background()
+	sid := uuid.NewString()
+	req := agentproto.TaskRequest{Spec: "first task", Said: "first words"}
+	if err := st.CreateSession(ctx, store.Session{ID: sid, Spec: req.Spec, Phase: "implement", BudgetUSD: 5, WorkspacePath: workspace, RequestJSON: store.JSON(req)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSessionStatus(ctx, sid, string(agentproto.Pass)); err != nil {
+		t.Fatal(err)
+	}
+	var saids []any
+	for _, c := range []Continuation{{Instruction: "context and their words", Said: "their words"}, {Instruction: "a harness follow-up"}} {
+		info, err := e.ContinueWith(ctx, sid, c, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		<-info.Result
+		e.waitBackground()
+		events, _ := st.EventsAfter(ctx, sid, 0)
+		var last map[string]any
+		for _, ev := range events {
+			if ev.Type == "session.started" {
+				last = map[string]any{}
+				_ = json.Unmarshal(ev.Data, &last)
+			}
+		}
+		saids = append(saids, last["said"])
+	}
+	if saids[0] != "their words" || saids[1] != nil {
+		t.Fatalf("said on each run's session.started = %v", saids)
 	}
 }

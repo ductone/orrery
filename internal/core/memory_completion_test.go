@@ -140,6 +140,39 @@ func TestMemoryGateJevNoSkips(t *testing.T) {
 	}
 }
 
+// A host's request can bury the person's words under its own context; the
+// gate reads what they said instead, one request per turn, and steered
+// messages too.
+func TestMemoryGateReadsWhatWasSaid(t *testing.T) {
+	var state any
+	e, _ := memoryGateEngine(t, nil)
+	e.UseClassifier(&classify.Fake{Answer: func(s any, _ string, _ classify.Question) (classify.Answer, error) {
+		state = s
+		return classify.Prob(0.1), nil
+	}})
+	ctx := context.Background()
+	roster := strings.Repeat("Another agent's card. ", 400)
+	add := func(turn, typ string, data map[string]any) {
+		t.Helper()
+		if _, err := e.store.AddEventForTurn(ctx, "s1", turn, typ, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("t1", "session.started", map[string]any{"spec": "Answer them.\nTheir message: I'm the CTO; bring me only big questions.\n" + roster, "said": "I'm the CTO; bring me only big questions."})
+	add("t1", "message.steered", map[string]any{"content": "And delegate the small stuff."})
+	add("t2", "user.message", map[string]any{"content": "New in the thread: use Slack links.\n" + roster})
+	add("t2", "session.started", map[string]any{"spec": "Answer them.\n" + roster, "said": "Use Slack links, please."})
+	add("t2", "session.terminal", map[string]any{"status": "pass", "result": "Noted."})
+	if err := e.extractMemory(ctx, "s1"); err != nil {
+		t.Fatal(err)
+	}
+	requests, _ := state.(map[string]any)["requests"].([]string)
+	want := []string{"I'm the CTO; bring me only big questions.", "And delegate the small stuff.", "Use Slack links, please."}
+	if strings.Join(requests, "|") != strings.Join(want, "|") {
+		t.Fatalf("gate requests = %q, want %q", requests, want)
+	}
+}
+
 func TestMemoryGateFailsOpen(t *testing.T) {
 	for name, gate := range map[string]func(string) (classify.Answer, error){
 		"unavailable": nil,

@@ -46,6 +46,8 @@ type (
 	StartInfo = core.StartInfo
 	// SessionOptions carries integration identity for StartIntegrated.
 	SessionOptions = core.SessionOptions
+	// Continuation is one new message for a session; see Engine.ContinueWith.
+	Continuation = core.Continuation
 	// ReviewOutcome is the result of Engine.ReviewChange.
 	ReviewOutcome = core.ReviewOutcome
 	// RetentionReport is the result of Engine.MaintainStorage.

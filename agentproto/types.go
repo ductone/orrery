@@ -90,6 +90,11 @@ type TaskRequest struct {
 	Hints        RoutingHints    `json:"hints,omitempty"`
 	Depth        uint32          `json:"depth"`
 	Attachments  []AttachmentRef `json:"attachments,omitempty"`
+	// Said, if set, is what the people asking actually wrote, verbatim,
+	// when Spec wraps it in host context (instructions, rosters, thread
+	// history). Memory extraction reads it in place of Spec to judge
+	// whether a person said something worth remembering.
+	Said string `json:"said,omitempty"`
 }
 type Outcome struct {
 	Tokens                int           `json:"tokens"`

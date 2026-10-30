@@ -609,6 +609,34 @@ func (e *Engine) ContinueIntegrated(ctx context.Context, id, instruction, reques
 }
 
 func (e *Engine) ContinueIntegratedWithAttachments(ctx context.Context, id, instruction, requestID, source string, attachments []agentproto.AttachmentRef, emit EmitFunc) (StartInfo, error) {
+	return e.ContinueWith(ctx, id, Continuation{Instruction: instruction, RequestID: requestID, Source: source, Attachments: attachments}, emit)
+}
+
+// Continuation is one new message for a session.
+type Continuation struct {
+	// Instruction is the message the model reads.
+	Instruction string
+	// Said, if set, is what the people asking wrote, verbatim, when
+	// Instruction wraps it in host context; see agentproto.TaskRequest.Said.
+	// It replaces the previous request's Said, so a continuation without
+	// one is judged from Instruction.
+	Said string
+	// RequestID makes the message idempotent; empty for a new one.
+	RequestID string
+	// Source names where the message came from ("standalone" when empty).
+	Source      string
+	Attachments []agentproto.AttachmentRef
+}
+
+// ContinueWith runs session id again with c, the person's new message.
+func (e *Engine) ContinueWith(ctx context.Context, id string, c Continuation, emit EmitFunc) (StartInfo, error) {
+	instruction, requestID, source, attachments := c.Instruction, c.RequestID, c.Source, c.Attachments
+	if requestID == "" {
+		requestID = uuid.NewString()
+	}
+	if source == "" {
+		source = "standalone"
+	}
 	s, err := e.store.Session(ctx, id)
 	if err != nil {
 		return StartInfo{}, err
@@ -631,6 +659,7 @@ func (e *Engine) ContinueIntegratedWithAttachments(ctx context.Context, id, inst
 		req = agentproto.TaskRequest{Spec: s.Spec, Budget: agentproto.Budget{MaxUSD: s.BudgetUSD - s.SpentUSD, MaxTokens: e.sessionTokenLimit(), MaxWallClock: 2 * time.Hour, MaxDepth: 4}, Workspace: agentproto.Workspace{Path: s.WorkspacePath, Mode: "shared-write", Ownership: s.WorkspaceOwnership}, Depth: 4}
 	}
 	req.Attachments = append(req.Attachments, attachments...)
+	req.Said = c.Said
 	if err := validateAttachments(&req); err != nil {
 		return StartInfo{}, err
 	}
@@ -1126,7 +1155,11 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 	if answer, ok := e.limitAnswer(ctx, sid); ok && answer.declined {
 		return e.finish(sid, agentproto.TaskResult{Status: agentproto.Cancelled, Outcome: outcome, Error: "stopped at the person's request"}, emit)
 	}
-	e.emit(ctx, sid, "session.started", map[string]any{"spec": req.Spec}, emit)
+	startedData := map[string]any{"spec": req.Spec}
+	if req.Said != "" {
+		startedData["said"] = req.Said
+	}
+	e.emit(ctx, sid, "session.started", startedData, emit)
 	for {
 		if err := ctx.Err(); err != nil {
 			progress.export(&outcome)
