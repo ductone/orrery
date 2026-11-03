@@ -16,6 +16,9 @@ import (
 // run. The check fails open, and refuses at most maxAnswerRejections times.
 const (
 	maxAnswerRejections = 2
+	// maxFinalRejections bounds the refusals of the host's final check in a
+	// run (WithFinalCheck).
+	maxFinalRejections = 2
 	// offTopicBelow is the probability under which a result counts as not
 	// addressing the request. It is low: the check exists to catch answers
 	// to a different question, not to grade thin ones.

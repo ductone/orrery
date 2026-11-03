@@ -117,6 +117,9 @@ type Engine struct {
 	// maxAutoAnswers bounds the answers it gives in one run; 0 means the default.
 	inputHandler   InputHandler
 	maxAutoAnswers int
+	// finalCheck, when set, may refuse a root session's final result; see
+	// WithFinalCheck.
+	finalCheck FinalCheck
 }
 
 // log is the engine's logger.
@@ -1523,6 +1526,17 @@ func (e *Engine) run(ctx context.Context, sid, parentJob string, req agentproto.
 					}
 					e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": reason, "attempt": progress.answerRejections}, emit)
 					_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: nudge})
+					continue
+				}
+			}
+			// The host may know the result cannot stand (a reply it expected was
+			// never sent, say). Without tool calls the model could not act on it.
+			if e.finalCheck != nil && parentJob == "" && !mode.noCalls && progress.finalRejections < maxFinalRejections {
+				if note := strings.TrimSpace(e.finalCheck(ctx, sid, resp.Message.Content)); note != "" {
+					progress.finalRejections++
+					progress.completionRejections++
+					e.emit(ctx, sid, "completion.rejected", map[string]any{"reason": "host final check", "note": note, "attempt": progress.finalRejections}, emit)
+					_ = e.store.AddMessage(ctx, sid, "user", provider.Message{Role: "user", Harness: true, Content: note})
 					continue
 				}
 			}

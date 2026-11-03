@@ -52,6 +52,8 @@ type progressTracker struct {
 	// answerRejections counts completions refused for answering something
 	// other than the latest request.
 	answerRejections int
+	// finalRejections counts completions the host's final check refused.
+	finalRejections int
 	// todoRejections counts completions refused while the todo plan still had
 	// pending or in-progress items.
 	todoRejections int

@@ -90,6 +90,8 @@ A host can add its own tools with `Options.Tools`: each is a name, description, 
 
 A persistent agent should not wait on a person unless the host wants it to. A session can pause for input in three ways: the model's `ask` tool, the dollar budget, and the limits (`agentproto.InputRequest.Kind` is `ask`, `budget` or `limit`; a budget request also carries `BudgetUSD`, `SpentUSD` and `ExtensionUSD`). Set `Options.InputHandler` to answer these without a person: returning an answer and `true` applies it exactly as `Continue` would (same choice validation, budget extension and harness note) and the run goes on, so `Run` returns the final outcome; returning `false` or an error (logged) pauses as usual. `orrery.AutoAnswer(maxSessionUSD, askReply)` is a ready-made policy that extends the budget until it would exceed `maxSessionUSD` and then stops the session, answers `ask` with `askReply` (pausing if empty), and lets limit questions continue. `Options.MaxAutoAnswers` (default 10) bounds the answers per run, after which the session pauses for a person.
 
+A host can also refuse a root session's final result with `Options.FinalCheck`, asked after the answer check and before verification and review: it knows things the engine does not, such as a reply it expected the agent to send through a host tool and none was. A non-empty return refuses the result and reaches the model as a harness message (`completion.rejected`, reason `host final check`); the check is not asked on a turn without tool calls, and refuses at most twice in a run.
+
 ### Hosting many agents
 
 A host that runs one agent per store in one process creates an engine when an agent wakes and closes it when the agent sleeps:

@@ -74,6 +74,19 @@ type InputHandler func(ctx context.Context, sessionID string, input agentproto.I
 // answer before the session pauses for a person regardless.
 const DefaultMaxAutoAnswers = 10
 
+// FinalCheck is asked about a root session's final result before it
+// completes: a non-empty return refuses the result, and the text reaches the
+// model as a harness message. It may be called from any session's goroutine.
+type FinalCheck func(ctx context.Context, sessionID, result string) string
+
+// WithFinalCheck makes the engine ask c about each final result of a root
+// session, after the answer check and before verification and review. A run
+// refuses at most maxFinalRejections results this way, so a check that keeps
+// refusing cannot keep a session from finishing. See FinalCheck.
+func WithFinalCheck(c FinalCheck) Option {
+	return func(e *Engine) { e.finalCheck = c }
+}
+
 // WithInputHandler makes the engine ask h before pausing a session for input.
 // An answer is applied as if a person had given it through Continue, and Run
 // (or the channel of a Start or Continue) reports the outcome of the continued

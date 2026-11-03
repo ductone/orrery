@@ -82,6 +82,9 @@ type (
 	// InputHandler answers a session's request for input without a person; see
 	// Options.InputHandler and AutoAnswer.
 	InputHandler = core.InputHandler
+	// FinalCheck may refuse a root session's final result; see
+	// Options.FinalCheck.
+	FinalCheck = core.FinalCheck
 	// SQLiteStore is the SQLite-backed session store.
 	SQLiteStore = store.Store
 )
@@ -219,6 +222,15 @@ type Options struct {
 	// error) when it fails. Each selection is recorded as a memory.retrieved
 	// event in the session.
 	MemorySelector MemorySelector
+	// FinalCheck, if set, is asked about each final result of a root session
+	// (not a worker's) before it completes, after the answer check and before
+	// verification and review: the host may know the result cannot stand,
+	// such as a reply it expected the agent to send and none was. A non-empty
+	// return refuses the result; the text reaches the model as a harness
+	// message and the run goes on. It is not asked on a turn without tool
+	// calls, and refuses at most twice in a run; a check should refuse one
+	// problem once and then let the session finish.
+	FinalCheck FinalCheck
 }
 
 // CodingProfile is the default system prompt profile: an autonomous coding
@@ -286,6 +298,9 @@ func New(opts Options) (*Engine, error) {
 	}
 	if opts.MemorySelector != nil {
 		copts = append(copts, core.WithMemorySelector(opts.MemorySelector))
+	}
+	if opts.FinalCheck != nil {
+		copts = append(copts, core.WithFinalCheck(opts.FinalCheck))
 	}
 	if opts.MaxAutoAnswers > 0 {
 		copts = append(copts, core.WithMaxAutoAnswers(opts.MaxAutoAnswers))
